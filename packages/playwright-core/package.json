@@ -1,0 +1,52 @@
+{
+  "name": "@treegress.com/treegress-browser-core",
+  "version": "1.59.0-treegress.8",
+  "description": "A high-level API to automate web browsers",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MobiDev-Org/treegress-browser-core.git"
+  },
+  "homepage": "https://treegress.com",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": {
+    "name": "mobidev.biz"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json",
+    "./lib/outofprocess": "./lib/outofprocess.js",
+    "./lib/cli/program": "./lib/cli/program.js",
+    "./lib/cli/client/program": "./lib/cli/client/program.js",
+    "./lib/client/connect": "./lib/client/connect.js",
+    "./lib/mcpBundle": "./lib/mcpBundle.js",
+    "./lib/mcp/exports": "./lib/mcp/exports.js",
+    "./lib/tools/exports": "./lib/tools/exports.js",
+    "./lib/mcp/index": "./lib/mcp/index.js",
+    "./lib/remote/playwrightServer": "./lib/remote/playwrightServer.js",
+    "./lib/server": "./lib/server/index.js",
+    "./lib/server/utils/image_tools/stats": "./lib/server/utils/image_tools/stats.js",
+    "./lib/server/utils/image_tools/compare": "./lib/server/utils/image_tools/compare.js",
+    "./lib/server/utils/image_tools/imageChannel": "./lib/server/utils/image_tools/imageChannel.js",
+    "./lib/server/utils/image_tools/colorUtils": "./lib/server/utils/image_tools/colorUtils.js",
+    "./lib/server/registry/index": "./lib/server/registry/index.js",
+    "./lib/utils": "./lib/utils.js",
+    "./lib/utilsBundle": "./lib/utilsBundle.js",
+    "./lib/zipBundle": "./lib/zipBundle.js"
+  },
+  "bin": {
+    "playwright-core": "cli.js",
+    "treegress-browser-core": "cli.js"
+  },
+  "types": "types/types.d.ts"
+}

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Accessibility Experiment</title>
+  <style>
+    body { font-family: sans-serif; padding: 40px; background: #f5f5f5; }
+    h2 { color: #333; border-bottom: 2px solid #ccc; padding-bottom: 8px; }
+    .section { margin: 30px 0; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .row { display: flex; gap: 20px; align-items: center; margin: 15px 0; }
+    .label { min-width: 250px; font-size: 14px; color: #666; }
+
+    /* Shared icon-button style */
+    .icon-btn { width: 40px; height: 40px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid #ccc; background: #fff; }
+    .icon-btn:hover { background: #e0e0e0; }
+  </style>
+</head>
+<body>
+
+<h1>Playwright MCP Accessibility Detection Experiment</h1>
+<p>This page contains pairs of elements: one <strong>accessible</strong> and one <strong>inaccessible</strong>. Use Playwright MCP snapshot to see which ones are detected.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>1. SVG Icon Buttons</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button + aria-label</span>
+    <button class="icon-btn" aria-label="Delete item">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div, no role, no label</span>
+    <div class="icon-btn" onclick="alert('delete clicked')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — span + onclick, SVG only</span>
+    <span class="icon-btn" onclick="alert('edit clicked')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="blue" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+    </span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>2. Plus / Add Buttons</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with text</span>
+    <button class="icon-btn">+</button>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with aria-label</span>
+    <button class="icon-btn" aria-label="Add new item">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="green" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div, SVG plus, no label</span>
+    <div class="icon-btn" onclick="alert('add clicked')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="green" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>3. Custom Dropdown</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — native select</span>
+    <select>
+      <option>Option A</option>
+      <option>Option B</option>
+      <option>Option C</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div-based dropdown, no ARIA</span>
+    <div style="border:1px solid #ccc; padding:8px 12px; border-radius:4px; cursor:pointer; min-width:120px;" onclick="this.querySelector('.dropdown-list').style.display = this.querySelector('.dropdown-list').style.display === 'block' ? 'none' : 'block'">
+      Select...
+      <div class="dropdown-list" style="display:none; position:absolute; background:#fff; border:1px solid #ccc; margin-top:8px;">
+        <div style="padding:8px 12px; cursor:pointer;" onclick="event.stopPropagation()">Item 1</div>
+        <div style="padding:8px 12px; cursor:pointer;" onclick="event.stopPropagation()">Item 2</div>
+        <div style="padding:8px 12px; cursor:pointer;" onclick="event.stopPropagation()">Item 3</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>4. Toggle / Switch</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — checkbox with label</span>
+    <label><input type="checkbox" /> Enable notifications</label>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div toggle, no ARIA</span>
+    <div onclick="this.classList.toggle('on')" style="width:48px; height:26px; border-radius:13px; background:#ccc; cursor:pointer; position:relative; transition:background 0.2s;">
+      <div style="width:22px; height:22px; border-radius:50%; background:#fff; position:absolute; top:2px; left:2px; transition:left 0.2s; box-shadow:0 1px 3px rgba(0,0,0,0.3);"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>5. Navigation Tabs</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — proper tab roles</span>
+    <div role="tablist">
+      <button role="tab" aria-selected="true">Tab 1</button>
+      <button role="tab" aria-selected="false">Tab 2</button>
+      <button role="tab" aria-selected="false">Tab 3</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — styled divs, no roles</span>
+    <div style="display:flex; gap:0;">
+      <div onclick="alert('tab1')" style="padding:8px 16px; background:#007bff; color:#fff; cursor:pointer;">Tab 1</div>
+      <div onclick="alert('tab2')" style="padding:8px 16px; background:#e0e0e0; cursor:pointer;">Tab 2</div>
+      <div onclick="alert('tab3')" style="padding:8px 16px; background:#e0e0e0; cursor:pointer;">Tab 3</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>6. Image as Clickable Element</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — img with alt inside button</span>
+    <button style="border:none; background:none; cursor:pointer;">
+      <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect fill='%234CAF50' width='40' height='40' rx='6'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' fill='white' font-size='20' dy='.3em'%3E⚙%3C/text%3E%3C/svg%3E" alt="Settings" width="40" height="40"/>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — img no alt, div wrapper, onclick</span>
+    <div onclick="alert('settings clicked')" style="cursor:pointer;">
+      <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect fill='%234CAF50' width='40' height='40' rx='6'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' fill='white' font-size='20' dy='.3em'%3E⚙%3C/text%3E%3C/svg%3E" width="40" height="40"/>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>7. Text Input</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — input with label</span>
+    <label for="search-good">Search:</label>
+    <input type="text" id="search-good" placeholder="Search..."/>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — contenteditable div, no role</span>
+    <div contenteditable="true" style="border:1px solid #ccc; padding:8px 12px; min-width:200px; border-radius:4px; outline:none;" ></div>
+  </div>
+</div>
+
+</body>
+</html>
