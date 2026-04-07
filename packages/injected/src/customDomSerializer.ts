@@ -1,5 +1,14 @@
 // @ts-nocheck
 /**
+ * Copyright 2026 MobiDev Corporation. All rights reserved.
+ *
+ * This file (customDomSerializer.ts) is NOT licensed under the Apache License 2.0 used by the rest of this repository.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this file, to use, copy, and modify it strictly for NON-COMMERCIAL purposes.
+ * Any commercial use, redistribution, or integration into a commercial product requires a separate commercial license from MobiDev Corporation.
+ * Contact: esign@mobidev.biz
+ */
+
+/**
  * Advanced DOM Serializer with Self-Healing Locators for Playwright
  */
 

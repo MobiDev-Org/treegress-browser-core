@@ -3,3 +3,6 @@ Copyright (c) Microsoft Corporation
 
 This software contains code derived from the Puppeteer project (https://github.com/puppeteer/puppeteer),
 available under the Apache 2.0 license (https://github.com/puppeteer/puppeteer/blob/master/LICENSE).
+
+Copyright 2026 MobiDev Corporation. All rights reserved.
+This project is licensed under the Apache License 2.0, EXCEPT for the file packages/injected/src/customDomSerializer.ts, which is subject to a custom non-commercial license. See the file header for details.

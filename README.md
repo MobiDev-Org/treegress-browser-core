@@ -110,3 +110,9 @@ This is a customized fork built on top of Microsoft Playwright.
 - License: Apache-2.0
 
 Treegress-specific changes should stay clearly separated from upstream behavior where possible. The goal of this fork is to extend Playwright for Treegress browser automation, not to obscure its origin.
+
+## Copyright And Licensing
+
+Copyright 2026 MobiDev Corporation. All rights reserved.
+
+This project is licensed under the Apache License 2.0, except for `packages/injected/src/customDomSerializer.ts`, which is subject to a custom non-commercial license. See the file header for details.
