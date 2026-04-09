@@ -26,6 +26,11 @@ let locatorsMapping;
 let uniqueIdCounter;
 let hoverSelectorCache;
 
+const TRACKED_EVENT_LISTENERS_ATTR = 'data-pw-listens';
+// Keep the addEventListener tracking implementation in the codebase, but do not
+// currently use tracked listeners as an interactivity signal.
+const USE_TRACKED_EVENT_LISTENERS_FOR_INTERACTIVITY = false;
+
 /*****************************************************************
 * High-fidelity element visibility check
 *****************************************************************/
@@ -270,6 +275,12 @@ function eachElementDeep(root, callback) {
   }
 }
 
+function eachPageElementDeep(callback) {
+  const root = document.documentElement || document.body;
+  if (!root) return;
+  eachElementDeep(root, callback);
+}
+
 
 /******************************************************************************
 *       ULTIMATE INTERACTIVE ELEMENT DETECTOR (v5.15)
@@ -362,6 +373,13 @@ function parentOrHost(el) {
   if (el.parentElement) return el.parentElement;
   const root = el.getRootNode();
   return root instanceof ShadowRoot ? root.host : null;
+}
+
+function childElementsOfParentOrShadowRoot(el) {
+  if (el.parentElement) return Array.from(el.parentElement.children);
+  const root = el.getRootNode();
+  if (root instanceof ShadowRoot) return Array.from(root.children);
+  return [];
 }
 
 function unifyCompositeControls(root) {
@@ -640,14 +658,14 @@ function masterScoreFunction(element) {
   for (const attr of element.attributes) {
       if (DECLARATIVE_ATTR_PREFIXES.some(p => attr.name.startsWith(p))) return 9;
   }
-  if (tag === 'a' && ([...element.attributes].some(attr => attr.name.startsWith('data-')) || window.__eventTypes?.get(element)?.has('click'))) return 9;
+  if (tag === 'a' && ([...element.attributes].some(attr => attr.name.startsWith('data-')) || (USE_TRACKED_EVENT_LISTENERS_FOR_INTERACTIVITY && readTrackedEventListeners(element).has('click')))) return 9;
 
   const hasDirectText = element.textContent.trim() !== '' && Array.from(element.childNodes).some(cn => cn.nodeType === Node.TEXT_NODE);
   if ((tag === 'div' || tag === 'span') && style.cursor === 'pointer' && (hasOnlyIconChildren(element) || hasDirectText)) return 8;
   if ((tag === 'i' || tag === 'svg') && style.cursor === 'pointer') return 8;
 
   let score = 0;
-  const eventListeners = window.__eventTypes?.get(element);
+  const eventListeners = USE_TRACKED_EVENT_LISTENERS_FOR_INTERACTIVITY ? readTrackedEventListeners(element) : new Set();
   if (eventListeners && [...eventListeners].some(e => KEY_EVENT_LISTENERS.has(e))) score = 7;
   // New: Check for inline 'on...' event handlers as a fallback.
   const hasInlineHandler = Array.from(element.attributes).some(a => {
@@ -679,6 +697,31 @@ function masterScoreFunction(element) {
   }
 
   return score;
+}
+
+function readTrackedEventListeners(element) {
+  const listeners = new Set();
+  if (!(element instanceof Element))
+      return listeners;
+
+  const attributeValue = element.getAttribute(TRACKED_EVENT_LISTENERS_ATTR);
+  if (attributeValue) {
+      for (const type of attributeValue.split(',')) {
+          const normalizedType = type.trim().toLowerCase();
+          if (normalizedType)
+              listeners.add(normalizedType);
+      }
+  }
+
+  const runtimeListeners = window.__eventTypes?.get(element);
+  if (runtimeListeners) {
+      for (const type of runtimeListeners) {
+          const normalizedType = String(type).trim().toLowerCase();
+          if (normalizedType)
+              listeners.add(normalizedType);
+      }
+  }
+  return listeners;
 }
 
 function annotateAndBubbleUp(root) {
@@ -1116,38 +1159,9 @@ function getAssignedRole(element) {
           return cleanRole;
       }
 
-      const hasPopup = element.getAttribute('aria-haspopup');
-      if (hasPopup !== null && hasPopup.toLowerCase() !== 'false') {
-          return DROPDOWN_ROLE;
-      }
-
-      const controlsId = element.getAttribute('aria-controls');
-      if (controlsId) {
-          try {
-              const root = element.getRootNode && element.getRootNode();
-              const idList = controlsId.trim().split(/\s+/);
-              for (const id of idList) {
-                  if (!id) continue;
-                  let controlledElement = document.getElementById(id);
-                  if (!controlledElement && root && root !== document && typeof root.querySelector === 'function') {
-                      // FIX (robustness): Provide a fallback for CSS.escape for older browsers.
-                      const selectorId = (window.CSS && typeof window.CSS.escape === 'function')
-                          ? CSS.escape(id)
-                          : id.replace(/[^\w-]/g, '\\$&');
-                      controlledElement = root.querySelector(`#${selectorId}`);
-                  }
-
-                  if (controlledElement) {
-                      const controlledRole = getAssignedRole(controlledElement);
-                      const popupRoles = ['listbox', 'grid', 'tree', 'menu', 'dialog'];
-                      if (popupRoles.includes(controlledRole)) {
-                          return DROPDOWN_ROLE;
-                      }
-                  }
-              }
-          } catch (e) { /* ignore */
-          }
-      }
+      // Do not infer combobox from popup/menu trigger heuristics alone.
+      // `aria-haspopup`, `aria-controls`, and dropdown-flavored styling commonly
+      // describe menu buttons or generic popup triggers rather than real comboboxes.
 
       const dataAttrs = ['data-role', 'data-widget', 'data-control', 'data-component', 'data-type'];
       for (const attr of dataAttrs) {
@@ -1178,9 +1192,6 @@ function getAssignedRole(element) {
           if (RX_COLOR.test(haystack)) return COLORPICKER_ROLE;
           if (RX_CAL.test(haystack)) return CALENDAR_ROLE;
           if (RX_LISTBOX.test(haystack)) return 'listbox';
-          // If RX_CLASS test passed but none of the specific roles above did,
-          // it must be one of the general dropdown/combobox variations.
-          return DROPDOWN_ROLE;
       }
 
       const tag = element.tagName.toLowerCase();
@@ -1397,7 +1408,15 @@ function isTopInteractiveElement(el, opts = {}) {
 function isUniqueSelector(selector) {
   if (!selector) return false;
   try {
-      return document.querySelectorAll(selector).length === 1;
+      let count = 0;
+      eachPageElementDeep(element => {
+          if (count > 1) return;
+          try {
+              if (element.matches(selector)) count++;
+          } catch (e) {
+          }
+      });
+      return count === 1;
   } catch (e) {
       return false;
   }
@@ -1616,26 +1635,19 @@ function generateGuaranteedUniqueCssSelector(element, forceUnique = true) {
           if (isUniqueSelector(idSelector)) {
               path.unshift(idSelector);
               // Since we found a unique ID, the path from here is unique.
-              return path.join(' > ').replace(/\s*>>>\s*/g, ' >>> ');
+              return path.join(' > ');
           }
       }
-      if (current.parentElement) {
-          const siblings = Array.from(current.parentElement.children);
-          const siblingsOfSameTag = siblings.filter(sib => sib.tagName === current.tagName);
-          if (siblingsOfSameTag.length > 1) {
-              const index = siblingsOfSameTag.indexOf(current) + 1;
-              segment += `:nth-of-type(${index})`;
-          }
+      const siblings = childElementsOfParentOrShadowRoot(current);
+      const siblingsOfSameTag = siblings.filter(sib => sib.tagName === current.tagName);
+      if (siblingsOfSameTag.length > 1) {
+          const index = siblingsOfSameTag.indexOf(current) + 1;
+          segment += `:nth-of-type(${index})`;
       }
       path.unshift(segment);
-      const parent = current.parentElement;
-      if (!parent && current.getRootNode() instanceof ShadowRoot) {
-          path.unshift(generateGuaranteedUniqueCssSelector(current.getRootNode().host, true) + ' >>> ');
-          break;
-      }
-      current = parent;
+      current = parentOrHost(current);
   }
-  return path.join(' > ').replace(/\s*>>>\s*/g, ' >>> ');
+  return path.join(' > ');
 }
 
 
@@ -1712,9 +1724,7 @@ function generateXPathWithShadow(node) {
 function findElementsByRole(role) {
   if (!role) return [];
   const matches = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-  while (walker.nextNode()) {
-      const element = walker.currentNode;
+  eachPageElementDeep(element => {
       const elRole = getAssignedRole(element);
       if (elRole === role) {
           try {
@@ -1725,7 +1735,7 @@ function findElementsByRole(role) {
           } catch (e) {
           }
       }
-  }
+  });
   return matches;
 }
 
@@ -1779,10 +1789,8 @@ function findElementsByLabel(text) {
 function findElementsByText(text) {
   if (!text) return [];
   const matches = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-  while (walker.nextNode()) {
-      const element = walker.currentNode;
-      if (EXCLUDED_TAGS.has(element.tagName.toLowerCase())) continue;
+  eachPageElementDeep(element => {
+      if (EXCLUDED_TAGS.has(element.tagName.toLowerCase())) return;
 
       if (getDirectText(element) === text) {
           try {
@@ -1795,7 +1803,7 @@ function findElementsByText(text) {
           } catch (e) {
           }
       }
-  }
+  });
   return matches;
 }
 
@@ -1806,7 +1814,7 @@ function findElementsByText(text) {
 * @returns {{anchor: Element, strategy: string, details: object} | null} - Объект с якорем и его лучшим локатором или null.
 */
 function findBestAnchor(element) {
-  let parent = element.parentElement;
+  let parent = parentOrHost(element);
   let level = 0;
   while (parent && parent !== document.body && level < 5) { // Ограничим поиск 5 уровнями вверх
       // 1. Приоритет: Test ID
@@ -1836,7 +1844,7 @@ function findBestAnchor(element) {
           }
       }
 
-      parent = parent.parentElement;
+      parent = parentOrHost(parent);
       level++;
   }
   return null;

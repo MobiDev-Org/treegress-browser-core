@@ -69,6 +69,26 @@ const kInputTypeToRole: Record<string, string> = {
   url: 'textbox',
 };
 
+// Formatter-side semantic fallback for non-interactive HTML5 tags that the serializer
+// does not currently annotate with explicit roles. Alternative: serialize roles for
+// non-interactive semantic nodes too, but that would also require revisiting ref exposure.
+const kSemanticTagToRole: Record<string, string> = {
+  article: 'article',
+  aside: 'complementary',
+  details: 'group',
+  dialog: 'dialog',
+  footer: 'contentinfo',
+  form: 'form',
+  header: 'banner',
+  main: 'main',
+  nav: 'navigation',
+  summary: 'button',
+};
+
+// Keep the tracked-listener plumbing in place for future use, but do not surface
+// synthetic addEventListener-derived badges in snapshots for now.
+const kShowTrackedEventListeners = false;
+
 export function isCustomDomSnapshotEnvelope(value: unknown): value is AICustomDomSnapshotEnvelope {
   if (!value || typeof value !== 'object')
     return false;
@@ -126,13 +146,10 @@ function renderFrameSnapshot(frame: AICustomDomFrameSnapshot, framePath: number[
         inheritedName: collapsedName,
         suppressHidden: ancestorHidden,
       });
-      const collapsedAttributes = readRecord((collapsedLabelControl as Record<string, unknown>).attributes) || {};
-      const mediaFallbackName = resolveMediaFallbackName(collapsedLabelControl, collapsedAttributes, collapsedName);
-
       const nested: string[] = [];
       const childHidden = ancestorHidden || (collapsedLabelControl as Record<string, unknown>).isVisible === false;
       for (const child of readChildren(collapsedLabelControl)) {
-        const compact = compactMediaChild(child, consumedChildAlt, lineIndent + '  ', mediaFallbackName);
+        const compact = compactMediaChild(child, consumedChildAlt, lineIndent + '  ');
         if (compact !== undefined) {
           if (compact)
             nested.push(compact);
@@ -150,13 +167,11 @@ function renderFrameSnapshot(frame: AICustomDomFrameSnapshot, framePath: number[
 
     const ref = maybeAssignAlias(node, frame, framePath, state, isRoot, tag);
     const { label, consumedChildAlt } = formatNodeLabel(node, tag, ref, { suppressHidden: ancestorHidden });
-    const attributes = readRecord((node as Record<string, unknown>).attributes) || {};
-    const mediaFallbackName = resolveMediaFallbackName(node, attributes);
 
     const nested: string[] = [];
     const childHidden = ancestorHidden || (node as Record<string, unknown>).isVisible === false;
     for (const child of readChildren(node)) {
-      const compact = compactMediaChild(child, consumedChildAlt, lineIndent + '  ', mediaFallbackName);
+      const compact = compactMediaChild(child, consumedChildAlt, lineIndent + '  ');
       if (compact !== undefined) {
         if (compact)
           nested.push(compact);
@@ -243,6 +258,7 @@ function formatNodeLabel(node: AICustomDomTreeNode, tag: string, ref: string | u
   if (ref)
     parts.push(`[ref=${ref}]`);
   parts.push(...formatNamingExtraBadges(namingExtras));
+  parts.push(...formatStructuralHintBadges(nodeRecord, tag, semantic.role, attributes, displayName, explicitRole, new Set(namingExtras.map(extra => extra.key))));
   parts.push(...formatControlBadges(tag, attributes, displayName, nameSource));
   parts.push(...formatBehaviorBadges(nodeRecord, tag, semantic.role, attributes));
   if (nodeRecord.isVisible === false && !overrides.suppressHidden && tag !== 'option')
@@ -292,6 +308,9 @@ function inferRole(tag: string, explicitRole: string | undefined, attributes: Re
     const inputType = (readString(attributes.type) || 'text').toLowerCase();
     return { role: kInputTypeToRole[inputType] || 'textbox' };
   }
+  const semanticRole = kSemanticTagToRole[tag];
+  if (semanticRole)
+    return { role: semanticRole };
   return { role: 'generic' };
 }
 
@@ -329,7 +348,8 @@ function resolveNodeName(node: AICustomDomTreeNode, tag: string, attributes: Rec
   const childAlt = readImmediateChildAlt(node);
   const placeholder = normalizeText(readString(attributes.placeholder));
   const title = normalizeText(readString(attributes.title));
-  const testIdHint = readPreferredTestId(attributes);
+  const testIdHints = readPreferredTestIdHints(attributes);
+  const testIdHint = testIdHints[0];
   const formFieldName = normalizeText(readString(attributes.name));
   const semanticClassName = readDescriptiveSemanticClassName(attributes.class);
   const srcName = extractSourceName(attributes.src);
@@ -347,7 +367,7 @@ function resolveNodeName(node: AICustomDomTreeNode, tag: string, attributes: Rec
   if (ariaLabelledBy && accessibleName)
     pushCandidate(accessibleName, 'aria-labelledby');
 
-  const explicitSources = [ariaLabel, alt, childAlt, placeholder, title, testIdHint?.value, formFieldName, semanticClassName, srcName, text];
+  const explicitSources = [ariaLabel, alt, childAlt, placeholder, title, ...testIdHints.map(hint => hint.value), formFieldName, semanticClassName, srcName, text];
   if (accessibleName && !explicitSources.some(value => valuesEquivalent(accessibleName, value)))
     pushCandidate(accessibleName, 'accessibleName');
 
@@ -357,8 +377,8 @@ function resolveNodeName(node: AICustomDomTreeNode, tag: string, attributes: Rec
   pushCandidate(placeholder, 'placeholder');
   pushCandidate(title, 'title', 'title');
   pushCandidate(text, 'text');
-  if (testIdHint)
-    pushCandidate(testIdHint.value, testIdHint.key, testIdHint.key);
+  for (const hint of testIdHints)
+    pushCandidate(hint.value, hint.key, hint.key);
   pushCandidate(formFieldName, 'name', 'name');
   if (tag === 'img')
     pushCandidate(srcName, 'src', 'src');
@@ -400,28 +420,6 @@ function readImmediateChildAlt(node: AICustomDomTreeNode): string | undefined {
   return;
 }
 
-function resolveActionHint(onclick: unknown): string | undefined {
-  const raw = readString(onclick);
-  if (!raw)
-    return;
-  const normalized = raw.toLowerCase();
-  if (normalized === 'event.stoppropagation()')
-    return;
-  if (normalized.includes('queryselector') && normalized.includes('dropdown-list'))
-    return 'toggle-dropdown';
-  if (normalized.includes('classlist.toggle'))
-    return 'toggle';
-  if (normalized.includes('style.display') && normalized.includes('none') && normalized.includes('block'))
-    return 'toggle-visibility';
-  const alertMatch = raw.match(/alert\((['"`])(.+?)\1\)/i);
-  if (alertMatch) {
-    const action = normalizeActionHint(alertMatch[2].replace(/\bclicked\b/i, ''));
-    if (action)
-      return action;
-  }
-  return 'onclick';
-}
-
 function formatRawOnclick(value: unknown): string | undefined {
   const raw = readString(value);
   if (!raw)
@@ -432,20 +430,6 @@ function formatRawOnclick(value: unknown): string | undefined {
   if (raw.length <= 50)
     return raw;
   return raw.slice(0, 47) + '...';
-}
-
-function normalizeActionHint(value: string): string | undefined {
-  const normalized = normalizeText(value)?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  if (!normalized)
-    return;
-  return normalized;
-}
-
-function humanizeActionHint(value: string): string | undefined {
-  const normalized = normalizeActionHint(value);
-  if (!normalized)
-    return;
-  return normalized.split('-').filter(Boolean).map(token => token[0].toUpperCase() + token.slice(1)).join(' ');
 }
 
 function formatNamingExtraBadges(extras: NamingExtra[]): string[] {
@@ -497,6 +481,11 @@ function formatBehaviorBadges(nodeRecord: Record<string, unknown>, tag: string, 
   const rawOnclick = formatRawOnclick(attributes.onclick);
   if (rawOnclick)
     parts.push(`[onclick=${quoteValue(rawOnclick)}]`);
+  if (kShowTrackedEventListeners) {
+    const eventListeners = readTrackedEventListeners(attributes);
+    if (eventListeners.length)
+      parts.push(`[listens=${formatBadgeValue(eventListeners.join(','))}]`);
+  }
   if (isContentEditable(attributes))
     parts.push('[contenteditable]');
   if (hasPointerCursor(nodeRecord, attributes, role, tag))
@@ -510,6 +499,12 @@ function formatBehaviorBadges(nodeRecord: Record<string, unknown>, tag: string, 
   const target = readAttributeValue(attributes.target);
   if (target)
     parts.push(`[target=${formatBadgeValue(target)}]`);
+  const action = readAttributeValue(attributes.action);
+  if ((tag === 'form' || role === 'form') && action)
+    parts.push(`[action=${formatBadgeValue(action)}]`);
+  const method = readAttributeValue(attributes.method);
+  if ((tag === 'form' || role === 'form') && method)
+    parts.push(`[method=${formatBadgeValue(method.toLowerCase())}]`);
   return parts;
 }
 
@@ -533,23 +528,25 @@ function formatAriaBadges(attributes: Record<string, unknown>): string[] {
 function formatStructuralHintBadges(nodeRecord: Record<string, unknown>, tag: string, role: string, attributes: Record<string, unknown>, name: string | undefined, explicitRole: string | undefined, usedNamingExtraKeys: Set<string>): string[] {
   if (!isGenericContainerRole(tag, role) || explicitRole)
     return [];
-  if (!readBoolean(nodeRecord.isInteractive) && nodeRecord.isVisible !== false)
+  const isInteractiveLike = readBoolean(nodeRecord.isInteractive) || hasInlineHandler(attributes) || hasPointerCursor(nodeRecord, attributes, role, tag);
+  if (!isInteractiveLike && nodeRecord.isVisible !== false)
     return [];
 
-  const parts: string[] = [];
-  const classHint = readSemanticClassHint(attributes.class);
+  const hints: NamingExtra[] = [];
+  const classHint = readDescriptiveSemanticClassName(attributes.class);
   if (classHint && !usedNamingExtraKeys.has('class'))
-    parts.push(`[class=${formatBadgeValue(classHint)}]`);
+    hints.push({ key: 'class', value: classHint });
   for (const [key, value] of readAllowedDataHints(attributes)) {
     if (usedNamingExtraKeys.has(key))
       continue;
-    parts.push(`[${key}=${formatBadgeValue(value)}]`);
+    hints.push({ key, value });
   }
-  if (!parts.length)
-    return parts;
-  if (name && readBoolean(nodeRecord.isInteractive))
-    return parts.slice(0, 1);
-  return parts;
+  if (!hints.length)
+    return [];
+  const selectedHints = name && isInteractiveLike
+    ? hints.filter(hint => isHighSignalStructuralHintKey(hint.key))
+    : hints;
+  return selectedHints.map(hint => `[${hint.key}=${formatBadgeValue(hint.value)}]`);
 }
 
 function buildInlineTextHint(node: AICustomDomTreeNode, existingText?: string): string | undefined {
@@ -596,7 +593,7 @@ function containsText(haystack: string | undefined, needle: string): boolean {
 }
 
 function isGenericContainerRole(tag: string, role: string): boolean {
-  if (tag !== role)
+  if (role !== 'generic')
     return false;
   return ['div', 'span', 'section', 'article', 'aside', 'main', 'header', 'footer', 'nav', 'form', 'li'].includes(tag);
 }
@@ -633,14 +630,15 @@ function readDescriptiveSemanticClassName(value: unknown): string | undefined {
   return classHint;
 }
 
-function readPreferredTestId(attributes: Record<string, unknown>): NamingExtra | undefined {
+function readPreferredTestIdHints(attributes: Record<string, unknown>): NamingExtra[] {
+  const hints: NamingExtra[] = [];
   const keys = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
   for (const key of keys) {
     const value = readAttributeValue(attributes[key]);
     if (value)
-      return { key, value };
+      hints.push({ key, value });
   }
-  return;
+  return hints;
 }
 
 function readAllowedDataHints(attributes: Record<string, unknown>): Array<[string, string]> {
@@ -652,6 +650,10 @@ function readAllowedDataHints(attributes: Record<string, unknown>): Array<[strin
       hints.push([key, value]);
   }
   return hints;
+}
+
+function isHighSignalStructuralHintKey(key: string): boolean {
+  return ['class', 'data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy', 'data-action', 'data-state'].includes(key);
 }
 
 function hasTruthyAttribute(attributes: Record<string, unknown>, key: string): boolean {
@@ -707,7 +709,7 @@ function hasPointerCursor(nodeRecord: Record<string, unknown>, attributes: Recor
  * Returns a compact line for svg/img children, or undefined to render normally.
  * Empty string means "collapse completely" (skip the child).
  */
-function compactMediaChild(node: AICustomDomTreeNode, consumedChildAlt: string | undefined, indent: string, fallbackAlt?: string): string | undefined {
+function compactMediaChild(node: AICustomDomTreeNode, consumedChildAlt: string | undefined, indent: string): string | undefined {
   const nodeRecord = node as Record<string, unknown>;
   const tag = readString(nodeRecord.tag)?.toLowerCase();
   if (tag !== 'svg' && tag !== 'img')
@@ -717,27 +719,9 @@ function compactMediaChild(node: AICustomDomTreeNode, consumedChildAlt: string |
     return `${indent}- img [tag=svg]`;
 
   const attributes = readRecord(nodeRecord.attributes) || {};
-  const alt = normalizeText(readString(attributes.alt)) || normalizeText(fallbackAlt);
+  const alt = normalizeText(readString(attributes.alt));
   const altBadge = alt ? ` [alt=${quoteValue(alt)}]` : '';
   return `${indent}- img${altBadge}`;
-}
-
-function resolveMediaFallbackName(node: AICustomDomTreeNode, attributes: Record<string, unknown>, preferredName?: string): string | undefined {
-  const preferred = normalizeText(preferredName);
-  if (preferred)
-    return preferred;
-
-  const children = readChildren(node);
-  if (children.length !== 1)
-    return;
-  const onlyChildTag = readString((children[0] as Record<string, unknown>).tag)?.toLowerCase();
-  if (onlyChildTag !== 'img')
-    return;
-
-  const actionHint = resolveActionHint(attributes.onclick);
-  if (!actionHint || ['onclick', 'toggle', 'toggle-dropdown', 'toggle-visibility'].includes(actionHint))
-    return;
-  return humanizeActionHint(actionHint);
 }
 
 function findCollapsibleLabelControl(node: AICustomDomTreeNode): AICustomDomTreeNode | undefined {
@@ -849,6 +833,13 @@ function hasInlineHandler(attributes: Record<string, unknown>): boolean {
       return true;
   }
   return false;
+}
+
+function readTrackedEventListeners(attributes: Record<string, unknown>): string[] {
+  const value = readAttributeValue(attributes['data-pw-listens']);
+  if (!value)
+    return [];
+  return value.split(',').map(type => type.trim().toLowerCase()).filter(Boolean);
 }
 
 function valuesEquivalent(left: string | undefined, right: string | undefined): boolean {

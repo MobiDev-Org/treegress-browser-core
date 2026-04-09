@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 import { playwrightTest as it, expect } from '../config/browserTest';
 import { formatCustomDomSnapshot } from '../../packages/playwright-core/src/tools/customDomSnapshotFormatter';
@@ -67,7 +68,7 @@ it('should format the accessibility fixture with MCP-style enrichment', async ({
   expect(snapshot).toMatch(/- generic "Tab 1" \[ref=e\d+\] \[onclick="alert\('tab1'\)"\] \[cursor=pointer\]/);
   expect(snapshot).toMatch(/- generic "Tab 2" \[ref=e\d+\] \[onclick="alert\('tab2'\)"\] \[cursor=pointer\]/);
   expect(snapshot).toMatch(/- generic "Tab 3" \[ref=e\d+\] \[onclick="alert\('tab3'\)"\] \[cursor=pointer\]/);
-  expect(snapshot).toMatch(/- generic \[ref=e\d+\] \[onclick="alert\('settings clicked'\)"\] \[cursor=pointer\]:\n {8}- img \[alt="Settings"\]/);
+  expect(snapshot).toMatch(/- generic \[ref=e\d+\] \[onclick="alert\('settings clicked'\)"\] \[cursor=pointer\]:\n {8}- img$/m);
   expect(snapshot).toMatch(/- generic \[ref=e\d+\] \[contenteditable\]/);
   expect(snapshot).toContain(`- img [tag=svg]`);
 
@@ -78,7 +79,6 @@ it('should format the accessibility fixture with MCP-style enrichment', async ({
   expect(snapshot).toMatch(/- textbox "Search:" \[ref=e\d+\] \[placeholder=Search...\]/);
 
   expect(snapshot).not.toContain('[interactive]');
-  expect(snapshot).not.toContain('[action=');
   expect(snapshot).not.toContain('[class=icon-btn]');
 });
 
@@ -120,6 +120,106 @@ it('should prioritize visible user text over semantic class names while keeping 
 
   expect(snapshot).toMatch(/- generic "Dashboard" \[ref=e\d+\] \[class="sidebar-nav-item active"\] \[onclick="navigate\('\/dashboard'\)"\] \[cursor=pointer\]/);
   expect(snapshot).not.toContain(`- generic "sidebar-nav-item active"`);
+});
+
+it('should keep real img alt text but avoid synthetic alt fallback on v2 fixture', async ({ page }) => {
+  const html = fs.readFileSync(path.join(__dirname, '../../debug-pages/accessibility-test-v2.html'), 'utf8');
+  const serializerSource = fs.readFileSync(path.join(__dirname, '../../packages/injected/src/customDomSerializer.ts'), 'utf8');
+
+  await page.setContent(html);
+  await page.addScriptTag({ content: serializerSource });
+
+  const raw = await page.evaluate(() => (window as any).serializeDOM(document.body));
+  const idOrder: AICustomDomStableId[] = [];
+  const seenIds = new Set<AICustomDomStableId>();
+  collectStableIdOrder(raw.dom, idOrder, seenIds);
+
+  const envelope: AICustomDomSnapshotEnvelope = {
+    backend: 'custom-dom',
+    version: 1,
+    page: {
+      url: 'about:blank',
+      frameTree: {
+        dom: raw.dom,
+        stableIds: [...seenIds],
+        idOrder,
+        locatorPlans: raw.locators || {},
+        frameId: 'main',
+        frameSeq: 0,
+        url: 'about:blank',
+        name: '',
+        childFrames: [],
+      },
+    },
+  };
+
+  const { snapshot } = formatCustomDomSnapshot(envelope);
+
+  expect(snapshot).toMatch(/- button "Settings" \[ref=e\d+\][\s\S]*?\n {8}- img \[alt="Settings"\]/);
+  expect(snapshot).toMatch(/- generic "Open settings" \[ref=e\d+\] \[onclick="alert\('settings clicked'\)"\] \[cursor=pointer\]:\n {8}- img$/m);
+  expect(snapshot).not.toMatch(/- generic "Open settings" \[ref=e\d+\][\s\S]*?\n {8}- img \[alt="Settings"\]/);
+});
+
+it('should avoid false combobox roles and map semantic landmarks on v2 fixture', async ({ page }) => {
+  const html = fs.readFileSync(path.join(__dirname, '../../debug-pages/accessibility-test-v2.html'), 'utf8');
+  const serializerSource = fs.readFileSync(path.join(__dirname, '../../packages/injected/src/customDomSerializer.ts'), 'utf8');
+
+  await page.setContent(html);
+  await page.addScriptTag({ content: serializerSource });
+
+  const raw = await page.evaluate(() => (window as any).serializeDOM(document.body));
+  const idOrder: AICustomDomStableId[] = [];
+  const seenIds = new Set<AICustomDomStableId>();
+  collectStableIdOrder(raw.dom, idOrder, seenIds);
+
+  const envelope: AICustomDomSnapshotEnvelope = {
+    backend: 'custom-dom',
+    version: 1,
+    page: {
+      url: 'about:blank',
+      frameTree: {
+        dom: raw.dom,
+        stableIds: [...seenIds],
+        idOrder,
+        locatorPlans: raw.locators || {},
+        frameId: 'main',
+        frameSeq: 0,
+        url: 'about:blank',
+        name: '',
+        childFrames: [],
+      },
+    },
+  };
+
+  const { snapshot } = formatCustomDomSnapshot(envelope);
+
+  expect(snapshot).toMatch(/- generic "☰ Menu" \[ref=e\d+\] \[data-testid=main-menu-trigger\] \[class="dropdown-trigger nav-menu-btn"\] \[onclick="alert\('open menu'\)"\]/);
+  expect(snapshot).not.toContain('combobox "☰ Menu"');
+  expect(snapshot).toMatch(/- button "Open Menu" \[ref=e\d+\] \[onclick="var el=document.getElementById\('expandable-menu.*"\] \[expanded=false\] \[haspopup=menu\] \[controls=expandable-menu\]/);
+  expect(snapshot).not.toContain('combobox "Open Menu"');
+
+  expect(snapshot).toMatch(/^\s+- navigation:$/m);
+  expect(snapshot).toMatch(/^\s+- banner:$/m);
+  expect(snapshot).toMatch(/^\s+- main:$/m);
+  expect(snapshot).toMatch(/^\s+- complementary:$/m);
+  expect(snapshot).toMatch(/^\s+- article:$/m);
+  expect(snapshot).toMatch(/^\s+- contentinfo:$/m);
+});
+
+it('should surface high-signal class/data hints and form action/method through the production snapshot path', async ({ page }) => {
+  const target = pathToFileURL(path.join(__dirname, '../../debug-pages/accessibility-test-v2.html')).href;
+
+  await page.goto(target, { waitUntil: 'load' });
+
+  const snapshot = await (page as any)._snapshotForAI({ backend: 'custom-dom' });
+  const envelope: AICustomDomSnapshotEnvelope = snapshot.envelope;
+  const formatted = formatCustomDomSnapshot(envelope).snapshot;
+
+  expect(formatted).not.toContain('[listens=');
+  expect(formatted).toMatch(/- form \[action="\/api\/register"\] \[method=post\]:/);
+  expect(formatted).toMatch(/- button "Cancel" \[ref=e\d+\] \[data-testid=cancel-btn\] \[data-test=cancel-order\] \[data-cy=cancel-action\]/);
+  expect(formatted).toMatch(/- generic "Active" \[ref=e\d+\] \[data-testid=status-badge\] \[data-action=toggle-status\] \[data-state=active\] \[onclick="alert\('toggle status'\)"\] \[cursor=pointer\]/);
+  expect(formatted).toMatch(/- generic \[ref=e\d+\] \[class=toggle-switch\] \[onclick="this.classList.toggle\('on'\)"\] \[cursor=pointer\]:/);
 });
 
 function collectStableIdOrder(node: unknown, idOrder: AICustomDomStableId[], seen: Set<AICustomDomStableId>) {

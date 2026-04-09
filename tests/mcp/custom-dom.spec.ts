@@ -155,6 +155,69 @@ test.describe('custom-dom snapshot backend', () => {
     expect(evaluated).toContain('clicked');
   });
 
+  test('shadow DOM locator generation avoids legacy >>> combinator and prefers unique ids', async ({ client, server }) => {
+    server.setContent('/', `
+      <div id="host"></div>
+      <script>
+        const root = document.getElementById('host').attachShadow({ mode: 'open' });
+        root.innerHTML = \`
+          <button>Open</button>
+          <button id="shadow-target">Open</button>
+        \`;
+      </script>
+    `, 'text/html');
+
+    await client.callTool({
+      name: 'browser_navigate',
+      arguments: { url: server.PREFIX },
+    });
+
+    const snapshot = snapshotText(await client.callTool({ name: 'browser_snapshot' }));
+    const shadowRef = findNthRef(snapshot, /button "Open"[^\n]*\[ref=(e\d+)\]/g, 1);
+
+    const locator = parseResponse(await client.callTool({
+      name: 'browser_generate_locator',
+      arguments: { element: 'Shadow Open button', ref: shadowRef },
+    })).result;
+
+    expect(locator).toContain(`locator('#shadow-target')`);
+    expect(locator).not.toContain('>>>');
+  });
+
+  test('duplicated shadow DOM text falls back to non-text locator strategies', async ({ client, server }) => {
+    server.setContent('/', `
+      <div id="host"></div>
+      <script>
+        const root = document.getElementById('host').attachShadow({ mode: 'open' });
+        root.innerHTML = \`
+          <div class="card"><button>Open</button></div>
+          <div class="card"><button>Open</button></div>
+        \`;
+        root.querySelectorAll('button')[1].addEventListener('click', () => document.body.dataset.shadowDup = 'second');
+      </script>
+    `, 'text/html');
+
+    await client.callTool({
+      name: 'browser_navigate',
+      arguments: { url: server.PREFIX },
+    });
+
+    const snapshot = snapshotText(await client.callTool({ name: 'browser_snapshot' }));
+    const shadowRef = findNthRef(snapshot, /button "Open"[^\n]*\[ref=(e\d+)\]/g, 1);
+
+    const clickResponse = await client.callTool({
+      name: 'browser_click',
+      arguments: { element: 'Second shadow Open button', ref: shadowRef },
+    });
+    expect(parseResponse(clickResponse).isError).not.toBeTruthy();
+
+    const evaluated = parseResponse(await client.callTool({
+      name: 'browser_evaluate',
+      arguments: { function: '() => document.body.dataset.shadowDup' },
+    })).result;
+    expect(evaluated).toContain('second');
+  });
+
   test('iframe-hosted elements are discoverable and actionable', async ({ client, server }) => {
     server.setContent('/', `
       <iframe srcdoc="<button id='inside'>Inside Frame</button><script>document.getElementById('inside').addEventListener('click', () => parent.document.body.dataset.frameClicked = 'yes');</script>"></iframe>

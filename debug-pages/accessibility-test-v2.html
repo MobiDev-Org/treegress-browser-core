@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Accessibility Experiment</title>
+  <style>
+    body { font-family: sans-serif; padding: 40px; background: #f5f5f5; }
+    h2 { color: #333; border-bottom: 2px solid #ccc; padding-bottom: 8px; }
+    .section { margin: 30px 0; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .row { display: flex; gap: 20px; align-items: center; margin: 15px 0; }
+    .label { min-width: 250px; font-size: 14px; color: #666; }
+
+    /* Shared icon-button style */
+    .icon-btn { width: 40px; height: 40px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid #ccc; background: #fff; }
+    .icon-btn:hover { background: #e0e0e0; }
+  </style>
+</head>
+<body>
+
+<h1>Playwright MCP Accessibility Detection Experiment</h1>
+<p>This page contains pairs of elements: one <strong>accessible</strong> and one <strong>inaccessible</strong>. Use Playwright MCP snapshot to see which ones are detected.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>1. SVG Icon Buttons</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button + aria-label</span>
+    <button class="icon-btn" aria-label="Delete item" data-testid="delete-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div, no role, no label (has title)</span>
+    <div class="icon-btn" title="Delete" onclick="alert('delete clicked')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — span + onclick, SVG only</span>
+    <span class="icon-btn" onclick="alert('edit clicked')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="blue" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+    </span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>2. Plus / Add Buttons</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with text</span>
+    <button class="icon-btn">+</button>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with aria-label</span>
+    <button class="icon-btn" aria-label="Add new item" data-testid="add-item-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="green" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div, SVG plus, no label</span>
+    <div class="icon-btn" onclick="alert('add clicked')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="green" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>3. Custom Dropdown</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — native select</span>
+    <select>
+      <option>Option A</option>
+      <option>Option B</option>
+      <option>Option C</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div-based dropdown, no ARIA</span>
+    <div style="border:1px solid #ccc; padding:8px 12px; border-radius:4px; cursor:pointer; min-width:120px;" onclick="this.querySelector('.dropdown-list').style.display = this.querySelector('.dropdown-list').style.display === 'block' ? 'none' : 'block'">
+      Select...
+      <div class="dropdown-list" style="display:none; position:absolute; background:#fff; border:1px solid #ccc; margin-top:8px;">
+        <div style="padding:8px 12px; cursor:pointer;" onclick="event.stopPropagation()">Item 1</div>
+        <div style="padding:8px 12px; cursor:pointer;" onclick="event.stopPropagation()">Item 2</div>
+        <div style="padding:8px 12px; cursor:pointer;" onclick="event.stopPropagation()">Item 3</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>4. Toggle / Switch</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — checkbox with label</span>
+    <label><input type="checkbox" data-testid="notifications-toggle" /> Enable notifications</label>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div toggle, no ARIA</span>
+    <div onclick="this.classList.toggle('on')" style="width:48px; height:26px; border-radius:13px; background:#ccc; cursor:pointer; position:relative; transition:background 0.2s;">
+      <div style="width:22px; height:22px; border-radius:50%; background:#fff; position:absolute; top:2px; left:2px; transition:left 0.2s; box-shadow:0 1px 3px rgba(0,0,0,0.3);"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>5. Navigation Tabs</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — proper tab roles</span>
+    <div role="tablist">
+      <button role="tab" aria-selected="true">Tab 1</button>
+      <button role="tab" aria-selected="false">Tab 2</button>
+      <button role="tab" aria-selected="false">Tab 3</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — styled divs, no roles</span>
+    <div style="display:flex; gap:0;">
+      <div onclick="alert('tab1')" style="padding:8px 16px; background:#007bff; color:#fff; cursor:pointer;">Tab 1</div>
+      <div onclick="alert('tab2')" style="padding:8px 16px; background:#e0e0e0; cursor:pointer;">Tab 2</div>
+      <div onclick="alert('tab3')" style="padding:8px 16px; background:#e0e0e0; cursor:pointer;">Tab 3</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>6. Image as Clickable Element</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — img with alt inside button</span>
+    <button style="border:none; background:none; cursor:pointer;">
+      <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect fill='%234CAF50' width='40' height='40' rx='6'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' fill='white' font-size='20' dy='.3em'%3E⚙%3C/text%3E%3C/svg%3E" alt="Settings" width="40" height="40"/>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — img no alt, div wrapper, onclick</span>
+    <div title="Open settings" onclick="alert('settings clicked')" style="cursor:pointer;">
+      <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect fill='%234CAF50' width='40' height='40' rx='6'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' fill='white' font-size='20' dy='.3em'%3E⚙%3C/text%3E%3C/svg%3E" width="40" height="40"/>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>7. Text Input</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — input with label</span>
+    <label for="search-good">Search:</label>
+    <input type="text" id="search-good" placeholder="Search..."/>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — contenteditable div, no role</span>
+    <div contenteditable="true" style="border:1px solid #ccc; padding:8px 12px; min-width:200px; border-radius:4px; outline:none;" ></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>8. Links &amp; Navigation</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — basic anchor with href</span>
+    <a href="/dashboard">Dashboard</a>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — external link with target + title</span>
+    <a href="https://help.example.com" target="_blank" title="Opens help center in a new tab">Help Center</a>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — link with aria-label different from text</span>
+    <a href="/profile" aria-label="View your profile page">Profile</a>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — link with data-testid</span>
+    <a href="/orders" data-testid="nav-orders-link">My Orders</a>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div faking a link (onclick + class + data-testid)</span>
+    <div class="nav-link sidebar-item" data-testid="nav-settings" onclick="window.location='/settings'" style="cursor:pointer; color:#007bff; text-decoration:underline;">Settings</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — span faking a link (addEventListener only)</span>
+    <span id="js-nav-reports" style="cursor:pointer; color:#007bff; text-decoration:underline;">Reports</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>9. Form with Validation Constraints</h2>
+
+  <div class="row" style="flex-direction:column; align-items:flex-start;">
+    <span class="label">✅ Accessible — real form with action, method, labels, and constraints</span>
+    <form action="/api/register" method="POST" style="display:flex; flex-direction:column; gap:10px; margin-top:10px; width:400px;">
+      <div>
+        <label for="reg-email">Email</label>
+        <input type="email" id="reg-email" name="user_email" required placeholder="you@example.com" style="margin-left:8px;"/>
+      </div>
+      <div>
+        <label for="reg-pass">Password</label>
+        <input type="password" id="reg-pass" name="password" required minlength="8" maxlength="64" pattern="(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).+" placeholder="Min 8 chars, mixed case + digit" style="margin-left:8px;"/>
+      </div>
+      <div>
+        <label for="reg-age">Age</label>
+        <input type="number" id="reg-age" name="age" min="18" max="120" step="1" style="margin-left:8px;"/>
+      </div>
+      <div>
+        <label for="reg-date">Birth Date</label>
+        <input type="date" id="reg-date" name="birth_date" style="margin-left:8px;"/>
+      </div>
+      <div>
+        <label for="reg-avatar">Avatar</label>
+        <input type="file" id="reg-avatar" name="avatar" accept="image/*" style="margin-left:8px;"/>
+      </div>
+      <div>
+        <label for="reg-acct">Account ID</label>
+        <input type="text" id="reg-acct" name="account_id" value="ACC-12345" readonly style="margin-left:8px; background:#eee;"/>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button type="submit">Register</button>
+        <button type="submit" disabled>Processing...</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="row" style="flex-direction:column; align-items:flex-start;">
+    <span class="label">❌ Inaccessible — div "form" with no labels, only name attributes</span>
+    <div style="display:flex; flex-direction:column; gap:10px; margin-top:10px; width:400px; padding:12px; border:1px solid #ccc; border-radius:6px;">
+      <input name="search_query" placeholder="Search..." style="padding:6px 10px;"/>
+      <input name="zipcode" maxlength="5" pattern="[0-9]{5}" placeholder="ZIP code" style="padding:6px 10px;"/>
+      <input name="phone" type="tel" placeholder="(555) 123-4567" style="padding:6px 10px;"/>
+      <div onclick="alert('fake submit')" style="padding:8px 16px; background:#007bff; color:#fff; cursor:pointer; border-radius:4px; text-align:center;">Submit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>10. Data Attributes &amp; Test IDs</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with data-testid + aria-label (priority test)</span>
+    <button data-testid="submit-order-btn" aria-label="Submit Order" style="padding:8px 16px;">Submit</button>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with data-testid + data-cy + data-test (multiple test IDs)</span>
+    <button data-testid="cancel-btn" data-cy="cancel-action" data-test="cancel-order" style="padding:8px 16px;">Cancel</button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div with only data-testid for naming</span>
+    <div data-testid="delete-user-btn" onclick="alert('delete user')" style="cursor:pointer; padding:8px 16px; background:#dc3545; color:#fff; border-radius:4px; display:inline-flex; align-items:center; gap:6px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+      Delete
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div with multiple meaningful data-* attributes</span>
+    <div data-testid="status-badge" data-action="toggle-status" data-state="active" data-tooltip="Click to deactivate" onclick="alert('toggle status')" style="cursor:pointer; padding:6px 12px; background:#28a745; color:#fff; border-radius:12px; display:inline-block;">Active</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div with framework junk + useful data-testid (filtering test)</span>
+    <div data-reactid=".0.1.2" data-v-a3f2b="" data-testid="user-card" style="padding:12px; border:1px solid #ddd; border-radius:6px;">John Doe — john@example.com</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div with only framework data attrs (no useful data-*)</span>
+    <div data-reactid=".0.2.5" data-v-b8c4e="" data-rbd-draggable-id="item-3" style="padding:12px; border:1px solid #ddd; border-radius:6px;">Draggable Item</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>11. Title Attribute</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with title matching aria-label (redundancy)</span>
+    <button class="icon-btn" title="Edit profile" aria-label="Edit profile">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="blue" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — button with title different from aria-label (extra info)</span>
+    <button class="icon-btn" title="Removes this item permanently" aria-label="Delete item">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+    </button>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div icon with only title for description</span>
+    <div class="icon-btn" title="Delete item" onclick="alert('delete item')" style="cursor:pointer;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-1 0v12a2 2 0 01-2 2H9a2 2 0 01-2-2V6h10z"/></svg>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — div with title + data-testid + text content (all different)</span>
+    <div title="Click to expand details" data-testid="expand-panel" onclick="alert('toggle panel')" style="cursor:pointer; padding:8px 16px; border:1px solid #ccc; border-radius:4px;">More info ▸</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — abbreviation with title</span>
+    <p>We expose a <abbr title="Application Programming Interface">API</abbr> for third-party integrations via <abbr title="Representational State Transfer">REST</abbr> endpoints.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>12. CSS Class Semantics</h2>
+
+  <div class="row">
+    <span class="label">❌ Single semantic class</span>
+    <div class="toggle-switch" onclick="this.classList.toggle('on')" style="width:48px; height:26px; border-radius:13px; background:#ccc; cursor:pointer; position:relative;">
+      <div style="width:22px; height:22px; border-radius:50%; background:#fff; position:absolute; top:2px; left:2px; box-shadow:0 1px 3px rgba(0,0,0,0.3);"></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Semantic + Tailwind utilities mixed</span>
+    <div class="btn-delete flex items-center p-4 bg-red-500 hover:bg-red-600" onclick="alert('delete')" style="cursor:pointer; padding:8px 16px; background:#dc3545; color:#fff; border-radius:4px;">Delete</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Only Tailwind utility classes (no semantic value)</span>
+    <div class="flex gap-2 p-4 bg-white rounded-lg shadow-md" style="padding:12px; background:#fff; border:1px solid #eee; border-radius:8px;">Utility-only card content</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Framework-generated hash classes only</span>
+    <div class="css-1dbjc4n r-1awozwy _a3f2b" style="padding:12px; border:1px solid #ddd; border-radius:6px;">Hash-class content</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Multiple semantic classes</span>
+    <div class="sidebar-nav-item active menu-link highlighted" onclick="alert('navigate')" style="cursor:pointer; padding:8px 16px; background:#e8f0fe; border-radius:4px; border-left:3px solid #007bff;">Dashboard</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Semantic + hash + Tailwind combined</span>
+    <div class="modal-overlay _3xkf2 z-50 fixed inset-0" onclick="alert('close modal')" style="cursor:pointer; padding:12px; background:rgba(0,0,0,0.1); border-radius:4px;">Click to dismiss overlay</div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Semantic class + data-testid (collision: which one wins?)</span>
+    <div class="dropdown-trigger nav-menu-btn" data-testid="main-menu-trigger" onclick="alert('open menu')" style="cursor:pointer; padding:8px 16px; border:1px solid #ccc; border-radius:4px;">☰ Menu</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>13. Semantic HTML5 Tags</h2>
+
+  <nav style="padding:10px; background:#f0f0f0; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;nav&gt; — navigation landmark</span>
+    <a href="/home" style="margin-right:12px;">Home</a>
+    <a href="/about" style="margin-right:12px;">About</a>
+    <a href="/contact">Contact</a>
+  </nav>
+
+  <header style="padding:10px; background:#e8f0fe; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;header&gt; — page header</span>
+    <h3 style="margin:0;">Site Title</h3>
+    <p style="margin:4px 0 0;">A brief tagline for the site.</p>
+  </header>
+
+  <main style="padding:10px; border:2px dashed #ccc; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;main&gt; — main content area</span>
+    <p>This is the primary content region of the page.</p>
+  </main>
+
+  <aside style="padding:10px; background:#fff8e1; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;aside&gt; — sidebar / complementary</span>
+    <p>Related links or supplementary info would go here.</p>
+  </aside>
+
+  <article style="padding:10px; border:1px solid #ddd; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;article&gt; — self-contained content</span>
+    <h4 style="margin:0 0 4px;">Blog Post Title</h4>
+    <p style="margin:0;">This is a stand-alone article with its own meaning.</p>
+  </article>
+
+  <section style="padding:10px; border:1px solid #e0e0e0; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;section&gt; — thematic grouping</span>
+    <h4 style="margin:0 0 4px;">Features</h4>
+    <p style="margin:0;">A section grouping related content together.</p>
+  </section>
+
+  <footer style="padding:10px; background:#f0f0f0; border-radius:4px; margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;footer&gt; — page footer</span>
+    <p style="margin:0;">© 2026 Example Corp. All rights reserved.</p>
+  </footer>
+
+  <div style="margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;details&gt; + &lt;summary&gt; — native expandable (closed)</span>
+    <details>
+      <summary>Click to reveal more</summary>
+      <p>This content is hidden by default and revealed when the summary is clicked.</p>
+    </details>
+  </div>
+
+  <div style="margin-bottom:10px;">
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;details open&gt; + &lt;summary&gt; — native expandable (open)</span>
+    <details open>
+      <summary>Already expanded</summary>
+      <p>This content is visible by default because the <code>open</code> attribute is set.</p>
+    </details>
+  </div>
+
+  <div>
+    <span class="label" style="display:block; margin-bottom:6px;">✅ &lt;dialog&gt; — native dialog element (in DOM but not shown)</span>
+    <dialog id="demo-dialog" style="padding:20px; border-radius:8px;">
+      <h4 style="margin:0 0 8px;">Dialog Title</h4>
+      <p>This dialog can be opened via JavaScript.</p>
+      <button onclick="document.getElementById('demo-dialog').close()">Close</button>
+    </dialog>
+    <button onclick="document.getElementById('demo-dialog').showModal()">Open Dialog</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<div class="section">
+  <h2>14. ARIA Relationships &amp; Dynamic State</h2>
+
+  <div class="row">
+    <span class="label">✅ Accessible — aria-labelledby (external label)</span>
+    <span id="qty-label" style="font-weight:bold;">Quantity</span>
+    <input type="number" aria-labelledby="qty-label" value="1" min="1" max="99" style="margin-left:8px; width:60px;"/>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — aria-describedby (hint text)</span>
+    <div>
+      <label for="pwd-field">Password</label>
+      <input type="password" id="pwd-field" aria-describedby="pwd-hint" style="margin-left:8px;"/>
+      <span id="pwd-hint" style="font-size:12px; color:#888; margin-left:8px;">Must be at least 8 characters</span>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — aria-expanded + aria-controls + aria-haspopup</span>
+    <div>
+      <button aria-expanded="false" aria-controls="expandable-menu" aria-haspopup="menu" onclick="var el=document.getElementById('expandable-menu'); var open=el.hidden; el.hidden=!open; this.setAttribute('aria-expanded', open);">Open Menu</button>
+      <div id="expandable-menu" hidden role="menu" style="border:1px solid #ccc; border-radius:4px; padding:4px 0; margin-top:4px;">
+        <div role="menuitem" style="padding:6px 12px; cursor:pointer;">Profile</div>
+        <div role="menuitem" style="padding:6px 12px; cursor:pointer;">Settings</div>
+        <div role="menuitem" style="padding:6px 12px; cursor:pointer;">Logout</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — aria-hidden (decorative element)</span>
+    <div>
+      <span aria-hidden="true" style="font-size:24px; color:gold;">★</span>
+      <span>Premium Member</span>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">✅ Accessible — aria-live region</span>
+    <div>
+      <div aria-live="polite" id="live-status" style="padding:8px 12px; background:#e8f5e9; border-radius:4px; min-height:20px;">Status: Ready</div>
+      <button onclick="document.getElementById('live-status').textContent='Status: Processing...'" style="margin-top:6px;">Update Status</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — same expandable pattern without ARIA</span>
+    <div>
+      <div onclick="var el=document.getElementById('no-aria-menu'); el.style.display=el.style.display==='block'?'none':'block';" style="padding:8px 16px; background:#6c757d; color:#fff; cursor:pointer; border-radius:4px; display:inline-block;">Open Menu</div>
+      <div id="no-aria-menu" style="display:none; border:1px solid #ccc; border-radius:4px; padding:4px 0; margin-top:4px;">
+        <div onclick="alert('profile')" style="padding:6px 12px; cursor:pointer;">Profile</div>
+        <div onclick="alert('settings')" style="padding:6px 12px; cursor:pointer;">Settings</div>
+        <div onclick="alert('logout')" style="padding:6px 12px; cursor:pointer;">Logout</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="label">❌ Inaccessible — unlabeled input (no label, no aria-labelledby)</span>
+    <input type="text" placeholder="Enter quantity..." style="width:100px;"/>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- JavaScript: addEventListener-based handlers (no inline onclick) -->
+<script>
+  // Section 8: span faking a link — only detectable via addEventListener
+  document.getElementById('js-nav-reports').addEventListener('click', function() {
+    window.location = '/reports';
+  });
+
+  // Section 10 bonus: a button with no inline handler — only JS listener
+  // (element created in section 10: js-listener-btn)
+</script>
+
+</body>
+</html>

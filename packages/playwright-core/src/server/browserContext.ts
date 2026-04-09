@@ -68,6 +68,82 @@ const BrowserContextEvent = {
   InternalFrameNavigatedToNewDocument: 'internalframenavigatedtonewdocument',
 } as const;
 
+const kCustomDomEventListenerTrackerInitScript = `
+(() => {
+  const attrName = 'data-pw-listens';
+  const relevantEvents = new Set(['click', 'mousedown', 'keydown', 'keyup', 'change', 'submit', 'dblclick', 'pointerdown', 'pointerup', 'touchstart']);
+  const installFlag = '__pwCustomDomEventTrackerInstalled__';
+  const prototype = EventTarget && EventTarget.prototype;
+  if (!prototype || prototype[installFlag])
+    return;
+
+  const counts = new WeakMap();
+  const originalAddEventListener = prototype.addEventListener;
+  const originalRemoveEventListener = prototype.removeEventListener;
+
+  const normalizeEventType = type => typeof type === 'string' ? type.toLowerCase() : '';
+  const ensureTypeCounts = target => {
+    let map = counts.get(target);
+    if (!map) {
+      map = new Map();
+      counts.set(target, map);
+    }
+    return map;
+  };
+  const syncAttribute = target => {
+    if (!(target instanceof Element))
+      return;
+    const typeCounts = counts.get(target);
+    if (!typeCounts) {
+      target.removeAttribute(attrName);
+      return;
+    }
+    const activeTypes = [];
+    for (const [type, count] of typeCounts.entries()) {
+      if (count > 0 && relevantEvents.has(type))
+        activeTypes.push(type);
+    }
+    activeTypes.sort();
+    if (activeTypes.length)
+      target.setAttribute(attrName, activeTypes.join(','));
+    else
+      target.removeAttribute(attrName);
+  };
+
+  Object.defineProperty(prototype, installFlag, {
+    value: true,
+    configurable: true,
+  });
+
+  prototype.addEventListener = function(type, listener, options) {
+    const normalizedType = normalizeEventType(type);
+    if (normalizedType && relevantEvents.has(normalizedType)) {
+      const typeCounts = ensureTypeCounts(this);
+      typeCounts.set(normalizedType, (typeCounts.get(normalizedType) || 0) + 1);
+      syncAttribute(this);
+    }
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+
+  prototype.removeEventListener = function(type, listener, options) {
+    const normalizedType = normalizeEventType(type);
+    if (normalizedType && relevantEvents.has(normalizedType)) {
+      const typeCounts = ensureTypeCounts(this);
+      const currentCount = typeCounts.get(normalizedType) || 0;
+      if (currentCount <= 1)
+        typeCounts.delete(normalizedType);
+      else
+        typeCounts.set(normalizedType, currentCount - 1);
+      syncAttribute(this);
+    }
+    return originalRemoveEventListener.call(this, type, listener, options);
+  };
+})();
+`;
+// Keep the tracker script available for future work, but do not install it by
+// default until we decide to surface addEventListener-derived snapshot hints again.
+const kInstallCustomDomEventListenerTracker = false;
+
 export type BrowserContextEventMap = {
   [BrowserContextEvent.Console]: [message: ConsoleMessage];
   [BrowserContextEvent.Close]: [];
@@ -146,6 +222,8 @@ export abstract class BrowserContext<EM extends EventMap = EventMap> extends Sdk
   async _initialize() {
     if (this.attribution.playwright.options.isInternalPlaywright)
       return;
+    if (kInstallCustomDomEventListenerTracker)
+      await this.addInitScript(kCustomDomEventListenerTrackerInitScript);
     // Debugger will pause execution upon page.pause in headed mode.
     this._debugger = new Debugger(this);
 
