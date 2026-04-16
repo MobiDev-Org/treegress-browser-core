@@ -57,16 +57,25 @@ const kCustomDomVerificationMarker = '[custom-dom]';
 const kInputTypeToRole: Record<string, string> = {
   button: 'button',
   checkbox: 'checkbox',
+  color: 'colorpicker',
+  date: 'datepicker',
+  'datetime-local': 'datepicker',
   email: 'textbox',
-  number: 'textbox',
+  file: 'button',
+  image: 'button',
+  month: 'datepicker',
+  number: 'spinbutton',
   password: 'textbox',
   radio: 'radio',
+  range: 'slider',
   reset: 'button',
-  search: 'textbox',
+  search: 'searchbox',
   submit: 'button',
   tel: 'textbox',
   text: 'textbox',
+  time: 'datepicker',
   url: 'textbox',
+  week: 'datepicker',
 };
 
 // Formatter-side semantic fallback for non-interactive HTML5 tags that the serializer
@@ -75,15 +84,59 @@ const kInputTypeToRole: Record<string, string> = {
 const kSemanticTagToRole: Record<string, string> = {
   article: 'article',
   aside: 'complementary',
+  blockquote: 'blockquote',
+  code: 'code',
+  dd: 'definition',
+  del: 'deletion',
   details: 'group',
+  dfn: 'term',
   dialog: 'dialog',
+  dt: 'term',
+  em: 'emphasis',
+  figure: 'figure',
   footer: 'contentinfo',
   form: 'form',
   header: 'banner',
+  hr: 'separator',
+  li: 'listitem',
   main: 'main',
+  mark: 'mark',
+  menu: 'list',
+  meter: 'meter',
   nav: 'navigation',
+  ol: 'list',
+  output: 'status',
+  p: 'paragraph',
+  progress: 'progressbar',
+  strong: 'strong',
+  sub: 'subscript',
   summary: 'button',
+  sup: 'superscript',
+  table: 'table',
+  tbody: 'rowgroup',
+  td: 'cell',
+  tfoot: 'rowgroup',
+  thead: 'rowgroup',
+  time: 'time',
+  tr: 'row',
+  ul: 'list',
 };
+
+const kNameAsSuffixRoles = new Set([
+  'blockquote',
+  'code',
+  'definition',
+  'deletion',
+  'emphasis',
+  'insertion',
+  'mark',
+  'paragraph',
+  'strong',
+  'subscript',
+  'superscript',
+  'term',
+  'time',
+]);
 
 // Keep the tracked-listener plumbing in place for future use, but do not surface
 // synthetic addEventListener-derived badges in snapshots for now.
@@ -125,11 +178,11 @@ function renderFrameSnapshot(frame: AICustomDomFrameSnapshot, framePath: number[
   if (!root)
     return [];
 
-  let childFrameIndex = 0;
+  const remainingChildFrames = [...frame.childFrames];
   const lines = renderNode(root, true, indent, false);
-  while (childFrameIndex < frame.childFrames.length) {
-    const childFrame = frame.childFrames[childFrameIndex++];
-    const pathIndex = childFrame.childFrameIndex ?? childFrameIndex - 1;
+  while (remainingChildFrames.length) {
+    const childFrame = remainingChildFrames.shift()!;
+    const pathIndex = childFrame.childFrameIndex ?? 0;
     lines.push(`${indent}- iframe:`);
     lines.push(...renderFrameSnapshot(childFrame, [...framePath, pathIndex], indent + '  ', state));
   }
@@ -180,10 +233,12 @@ function renderFrameSnapshot(frame: AICustomDomFrameSnapshot, framePath: number[
       nested.push(...renderNode(child, false, lineIndent + '  ', childHidden));
     }
 
-    if (tag === 'iframe' && childFrameIndex < frame.childFrames.length) {
-      const childFrame = frame.childFrames[childFrameIndex++];
-      const pathIndex = childFrame.childFrameIndex ?? childFrameIndex - 1;
-      nested.push(...renderFrameSnapshot(childFrame, [...framePath, pathIndex], lineIndent + '  ', state));
+    if (tag === 'iframe') {
+      const childFrame = takeChildFrameForNode(node);
+      if (childFrame) {
+        const pathIndex = childFrame.childFrameIndex ?? 0;
+        nested.push(...renderFrameSnapshot(childFrame, [...framePath, pathIndex], lineIndent + '  ', state));
+      }
     }
 
     const hasNested = nested.length > 0;
@@ -191,6 +246,16 @@ function renderFrameSnapshot(frame: AICustomDomFrameSnapshot, framePath: number[
     if (isRoot)
       line += ` ${kCustomDomVerificationMarker}`;
     return [line, ...nested];
+  }
+
+  function takeChildFrameForNode(node: AICustomDomTreeNode): AICustomDomFrameSnapshot | undefined {
+    const stableId = readString((node as Record<string, unknown>).id);
+    if (stableId) {
+      const identityIndex = remainingChildFrames.findIndex(childFrame => childFrame.frameElementStableId === stableId);
+      if (identityIndex !== -1)
+        return remainingChildFrames.splice(identityIndex, 1)[0];
+    }
+    return remainingChildFrames.shift();
   }
 }
 
@@ -281,12 +346,13 @@ function formatNodeLabel(node: AICustomDomTreeNode, tag: string, ref: string | u
 }
 
 function inferRole(tag: string, explicitRole: string | undefined, attributes: Record<string, unknown>): { role: string, level?: number } {
-  if (explicitRole === 'heading') {
+  const normalizedExplicitRole = normalizeExplicitRole(tag, explicitRole, attributes);
+  if (normalizedExplicitRole === 'heading') {
     const headingLevel = readHeadingLevel(attributes['aria-level'], tag);
-    return headingLevel === undefined ? { role: explicitRole } : { role: explicitRole, level: headingLevel };
+    return headingLevel === undefined ? { role: normalizedExplicitRole } : { role: normalizedExplicitRole, level: headingLevel };
   }
-  if (explicitRole)
-    return { role: explicitRole };
+  if (normalizedExplicitRole)
+    return { role: normalizedExplicitRole };
   if (tag === 'iframe')
     return { role: 'iframe' };
   const heading = tag.match(/^h([1-6])$/);
@@ -305,13 +371,31 @@ function inferRole(tag: string, explicitRole: string | undefined, attributes: Re
   if (tag === 'img' || tag === 'svg')
     return { role: 'img' };
   if (tag === 'input') {
-    const inputType = (readString(attributes.type) || 'text').toLowerCase();
-    return { role: kInputTypeToRole[inputType] || 'textbox' };
+    return { role: inferInputRole(attributes) };
   }
   const semanticRole = kSemanticTagToRole[tag];
   if (semanticRole)
     return { role: semanticRole };
   return { role: 'generic' };
+}
+
+function normalizeExplicitRole(tag: string, explicitRole: string | undefined, attributes: Record<string, unknown>): string | undefined {
+  if (tag !== 'input')
+    return explicitRole;
+
+  const inferredInputRole = inferInputRole(attributes);
+  if (!explicitRole)
+    return inferredInputRole;
+
+  // The serializer still reports some specialized input types as "textbox".
+  if (explicitRole === 'textbox' && inferredInputRole !== 'textbox')
+    return inferredInputRole;
+  return explicitRole;
+}
+
+function inferInputRole(attributes: Record<string, unknown>): string {
+  const inputType = (readString(attributes.type) || 'text').toLowerCase();
+  return kInputTypeToRole[inputType] || 'textbox';
 }
 
 function formatTextSuffix(node: AICustomDomTreeNode, role: string, value: string | undefined, text: string | undefined, name?: string): string | undefined {
@@ -367,7 +451,7 @@ function resolveNodeName(node: AICustomDomTreeNode, tag: string, attributes: Rec
   if (ariaLabelledBy && accessibleName)
     pushCandidate(accessibleName, 'aria-labelledby');
 
-  const explicitSources = [ariaLabel, alt, childAlt, placeholder, title, ...testIdHints.map(hint => hint.value), formFieldName, semanticClassName, srcName, text];
+  const explicitSources = [ariaLabel, alt, childAlt, placeholder, title, ...testIdHints.map(hint => hint.value), semanticClassName, srcName, text];
   if (accessibleName && !explicitSources.some(value => valuesEquivalent(accessibleName, value)))
     pushCandidate(accessibleName, 'accessibleName');
 
@@ -465,6 +549,8 @@ function formatControlBadges(tag: string, attributes: Record<string, unknown>, n
 }
 
 function shouldRenderNameAsSuffix(nodeRecord: Record<string, unknown>, role: string, nameSource: string | undefined, attributes: Record<string, unknown>): boolean {
+  if (kNameAsSuffixRoles.has(role) && nameSource === 'text' && !readBoolean(nodeRecord.isInteractive) && !hasInlineHandler(attributes))
+    return true;
   if (role !== 'generic')
     return false;
   if (nameSource !== 'text')

@@ -29,7 +29,6 @@ it('should format the accessibility fixture with MCP-style enrichment', async ({
 
   await page.setContent(html);
   await page.addScriptTag({ content: serializerSource });
-
   const raw = await page.evaluate(() => (window as any).serializeDOM(document.body));
   const idOrder: AICustomDomStableId[] = [];
   const seenIds = new Set<AICustomDomStableId>();
@@ -155,9 +154,9 @@ it('should keep real img alt text but avoid synthetic alt fallback on v2 fixture
 
   const { snapshot } = formatCustomDomSnapshot(envelope);
 
-  expect(snapshot).toMatch(/- button "Settings" \[ref=e\d+\][\s\S]*?\n {8}- img \[alt="Settings"\]/);
-  expect(snapshot).toMatch(/- generic "Open settings" \[ref=e\d+\] \[onclick="alert\('settings clicked'\)"\] \[cursor=pointer\]:\n {8}- img$/m);
-  expect(snapshot).not.toMatch(/- generic "Open settings" \[ref=e\d+\][\s\S]*?\n {8}- img \[alt="Settings"\]/);
+  expect(snapshot).toMatch(/- button "Settings" \[ref=e\d+\][\s\S]*?\n\s+- img \[alt="Settings"\]/);
+  expect(snapshot).toMatch(/- generic "Open settings" \[ref=e\d+\] \[onclick="alert\('settings clicked'\)"\] \[cursor=pointer\]:\n\s+- img$/m);
+  expect(snapshot).not.toMatch(/- generic "Open settings" \[ref=e\d+\][\s\S]*?\n\s+- img \[alt="Settings"\]/);
 });
 
 it('should avoid false combobox roles and map semantic landmarks on v2 fixture', async ({ page }) => {
@@ -206,6 +205,89 @@ it('should avoid false combobox roles and map semantic landmarks on v2 fixture',
   expect(snapshot).toMatch(/^\s+- contentinfo:$/m);
 });
 
+it('should use semantic names for text content and accurate roles for specialized inputs on v2 fixture', async ({ page }) => {
+  const html = fs.readFileSync(path.join(__dirname, '../../debug-pages/accessibility-test-v2.html'), 'utf8');
+  const serializerSource = fs.readFileSync(path.join(__dirname, '../../packages/injected/src/customDomSerializer.ts'), 'utf8');
+
+  await page.setContent(html);
+  await page.addScriptTag({ content: serializerSource });
+
+  const raw = await page.evaluate(() => (window as any).serializeDOM(document.body));
+  const idOrder: AICustomDomStableId[] = [];
+  const seenIds = new Set<AICustomDomStableId>();
+  collectStableIdOrder(raw.dom, idOrder, seenIds);
+
+  const envelope: AICustomDomSnapshotEnvelope = {
+    backend: 'custom-dom',
+    version: 1,
+    page: {
+      url: 'about:blank',
+      frameTree: {
+        dom: raw.dom,
+        stableIds: [...seenIds],
+        idOrder,
+        locatorPlans: raw.locators || {},
+        frameId: 'main',
+        frameSeq: 0,
+        url: 'about:blank',
+        name: '',
+        childFrames: [],
+      },
+    },
+  };
+
+  const { snapshot } = formatCustomDomSnapshot(envelope);
+
+  expect(snapshot).toMatch(/- paragraph \[ref=e\d+\]: This page contains pairs of elements:/);
+  expect(snapshot).toMatch(/- strong \[ref=e\d+\]: accessible/);
+  expect(snapshot).toMatch(/- strong \[ref=e\d+\]: inaccessible/);
+  expect(snapshot).toMatch(/- code \[ref=e\d+\]: document\.body/);
+  expect(snapshot).toMatch(/- code \[ref=e\d+\]: open/);
+  expect(snapshot).toMatch(/- paragraph \[ref=e\d+\]: © 2026 Example Corp\. All rights reserved\./);
+  expect(snapshot).toMatch(/- spinbutton "Quantity" \[ref=e\d+\] \[min=1\] \[max=99\] \[type=number\] \[labelledby=qty-label\]: "?1"?/);
+  expect(snapshot).toMatch(/- button "Avatar" \[ref=e\d+\] \[type=file\]/);
+
+  expect(snapshot).not.toContain('textbox "Quantity"');
+  expect(snapshot).not.toContain('textbox "avatar"');
+});
+
+it('should infer separator for hr elements instead of generic', async ({ page }) => {
+  const serializerSource = fs.readFileSync(path.join(__dirname, '../../packages/injected/src/customDomSerializer.ts'), 'utf8');
+
+  await page.setContent(`<div role="menu"><hr style="margin:0; border-color:#eee;" /></div>`);
+  await page.addScriptTag({ content: serializerSource });
+
+  const raw = await page.evaluate(() => (window as any).serializeDOM(document.body));
+  const idOrder: AICustomDomStableId[] = [];
+  const seenIds = new Set<AICustomDomStableId>();
+  collectStableIdOrder(raw.dom, idOrder, seenIds);
+
+  const envelope: AICustomDomSnapshotEnvelope = {
+    backend: 'custom-dom',
+    version: 1,
+    page: {
+      url: 'about:blank',
+      frameTree: {
+        dom: raw.dom,
+        stableIds: [...seenIds],
+        idOrder,
+        locatorPlans: raw.locators || {},
+        frameId: 'main',
+        frameSeq: 0,
+        url: 'about:blank',
+        name: '',
+        childFrames: [],
+      },
+    },
+  };
+
+  const { snapshot } = formatCustomDomSnapshot(envelope);
+
+  expect(snapshot).toMatch(/^\s+- menu(?: \[ref=e\d+\])?:$/m);
+  expect(snapshot).toMatch(/^\s+- separator$/m);
+  expect(snapshot).not.toMatch(/^\s+- generic$/m);
+});
+
 it('should surface high-signal class/data hints and form action/method through the production snapshot path', async ({ page }) => {
   const target = pathToFileURL(path.join(__dirname, '../../debug-pages/accessibility-test-v2.html')).href;
 
@@ -222,6 +304,32 @@ it('should surface high-signal class/data hints and form action/method through t
   expect(formatted).toMatch(/- generic \[ref=e\d+\] \[class=toggle-switch\] \[onclick="this.classList.toggle\('on'\)"\] \[cursor=pointer\]:/);
 });
 
+it('should keep dynamically injected iframe content matched to the correct iframe node', async ({ page }) => {
+  const html = fs.readFileSync(path.join(__dirname, '../../debug-pages/accessibility-test-v2.html'), 'utf8');
+  await page.setContent(html, { waitUntil: 'load' });
+
+  await page.getByRole('tab', { name: 'P0 — Iframes' }).click();
+  await page.getByTestId('inject-iframe-btn').click();
+  await page.waitForFunction(() => {
+    const iframe = document.querySelector('#dynamic-iframe-container iframe') as HTMLIFrameElement | null;
+    return iframe?.contentDocument?.body?.textContent?.includes('I was dynamically injected!') ?? false;
+  });
+
+  const snapshot = await (page as any)._snapshotForAI({ backend: 'custom-dom' });
+  const formatted = formatCustomDomSnapshot(snapshot.envelope).snapshot;
+
+  const dynamicIframeBlock = extractIndentedBlock(formatted, /- iframe "Dynamically injected iframe"/);
+  expect(dynamicIframeBlock).toContain('heading "I was dynamically injected!"');
+  expect(dynamicIframeBlock).toContain('button "Dynamic Button"');
+  expect(dynamicIframeBlock).not.toContain('heading "Payment Details"');
+
+  const paymentIframeBlock = extractIndentedBlock(formatted, /- iframe "Payment form iframe"/);
+  expect(paymentIframeBlock).toContain('heading "Payment Details"');
+  expect(paymentIframeBlock).toContain('textbox "Card Number"');
+  expect(paymentIframeBlock).toContain('button "Pay Now"');
+  expect(paymentIframeBlock).not.toContain('heading "I was dynamically injected!"');
+});
+
 function collectStableIdOrder(node: unknown, idOrder: AICustomDomStableId[], seen: Set<AICustomDomStableId>) {
   if (!node || typeof node !== 'object')
     return;
@@ -234,4 +342,21 @@ function collectStableIdOrder(node: unknown, idOrder: AICustomDomStableId[], see
     return;
   for (const child of maybeNode.children)
     collectStableIdOrder(child, idOrder, seen);
+}
+
+function extractIndentedBlock(snapshot: string, startLinePattern: RegExp): string {
+  const lines = snapshot.split('\n');
+  const startIndex = lines.findIndex(line => startLinePattern.test(line));
+  expect(startIndex).toBeGreaterThanOrEqual(0);
+
+  const startIndent = lines[startIndex].match(/^(\s*)/)?.[1].length ?? 0;
+  const block = [lines[startIndex]];
+  for (let index = startIndex + 1; index < lines.length; index++) {
+    const line = lines[index];
+    const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+    if (line.trim() && indent <= startIndent)
+      break;
+    block.push(line);
+  }
+  return block.join('\n');
 }

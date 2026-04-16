@@ -1,6 +1,6 @@
 {
   "name": "@treegress.com/treegress-browser-core",
-  "version": "1.59.0-treegress.10",
+  "version": "1.59.0-treegress.12",
   "description": "A high-level API to automate web browsers",
   "repository": {
     "type": "git",

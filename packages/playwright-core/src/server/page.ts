@@ -1111,8 +1111,10 @@ async function snapshotFrameForAICustomDom(progress: Progress, frame: frames.Fra
   const childFrames = frame.childFrames();
   const childSnapshots = await Promise.all(childFrames.map(async (child, childFrameIndex) => {
     try {
+      const frameElementStableId = await snapshotFrameElementStableId(progress, child);
       return {
         childFrameIndex,
+        frameElementStableId,
         snapshot: await snapshotFrameForAICustomDom(progress, child),
       };
     } catch {
@@ -1132,9 +1134,29 @@ async function snapshotFrameForAICustomDom(progress: Progress, frame: frames.Fra
     locatorPlans: snapshotData.locatorPlans,
     childFrames: childSnapshots.filter(Boolean).map(child => ({
       ...child!.snapshot,
+      frameElementStableId: child!.frameElementStableId,
       childFrameIndex: child!.childFrameIndex,
     })),
   };
+}
+
+async function snapshotFrameElementStableId(progress: Progress, frame: frames.Frame): Promise<string | undefined> {
+  if (!frame.parentFrame())
+    return;
+
+  const frameElement = await progress.race(frame.frameElement());
+  try {
+    const stableId = await progress.race(frameElement.evaluateInUtility(([injected, node]) => {
+      const snapshot = injected.customDomSnapshot(node);
+      const dom = snapshot?.dom as { id?: unknown } | undefined;
+      return typeof dom?.id === 'string' ? dom.id : undefined;
+    }, {}));
+    if (stableId === 'error:notconnected')
+      return;
+    return typeof stableId === 'string' ? stableId : undefined;
+  } finally {
+    frameElement.dispose();
+  }
 }
 
 async function snapshotFrameRefForAI(progress: Progress, parentFrame: frames.Frame, frameRef: string, options: { track?: string, mode?: 'full' | 'incremental' }): Promise<{ full: string[], incremental?: string[] }> {

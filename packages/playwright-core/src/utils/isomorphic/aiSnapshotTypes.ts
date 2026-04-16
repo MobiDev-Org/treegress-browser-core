@@ -37,6 +37,7 @@ export type AICustomDomFrameSnapshot = AICustomDomFrameData & {
   frameSeq: number;
   url: string;
   name: string;
+  frameElementStableId?: AICustomDomStableId;
   childFrameIndex?: number;
   childFrames: AICustomDomFrameSnapshot[];
 };

@@ -13,12 +13,76 @@
     /* Shared icon-button style */
     .icon-btn { width: 40px; height: 40px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid #ccc; background: #fff; }
     .icon-btn:hover { background: #e0e0e0; }
+
+    /* ═══ Tab Navigation ═══ */
+    .tab-nav { display: flex; gap: 0; margin-bottom: 30px; border-bottom: 3px solid #007bff; flex-wrap: wrap; }
+    .tab-nav button {
+      padding: 12px 24px; border: 1px solid #ccc; border-bottom: none; background: #e9ecef;
+      cursor: pointer; font-size: 14px; font-weight: 600; color: #555;
+      border-radius: 8px 8px 0 0; margin-right: 2px; transition: background 0.2s, color 0.2s;
+    }
+    .tab-nav button:hover { background: #dee2e6; }
+    .tab-nav button.active { background: #007bff; color: #fff; border-color: #007bff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ═══ Iframe tests ═══ */
+    .iframe-demo { border: 2px solid #aaa; border-radius: 4px; }
+
+    /* ═══ CSS Visibility tests ═══ */
+    .vis-container { position: relative; padding: 10px; border: 1px dashed #ccc; border-radius: 4px; min-height: 40px; }
+    .vis-indicator { font-size: 12px; color: #999; font-style: italic; margin-top: 4px; }
+
+    /* ═══ Drag & Drop ═══ */
+    .drag-item {
+      padding: 12px 16px; background: #e3f2fd; border: 2px solid #90caf9; border-radius: 6px;
+      cursor: grab; user-select: none; margin: 6px 0; transition: opacity 0.2s, transform 0.2s;
+    }
+    .drag-item:active { cursor: grabbing; }
+    .drag-item.dragging { opacity: 0.4; transform: scale(0.95); }
+    .drop-zone {
+      min-height: 120px; padding: 16px; border: 3px dashed #ccc; border-radius: 8px;
+      background: #fafafa; transition: background 0.2s, border-color 0.2s;
+    }
+    .drop-zone.over { background: #e8f5e9; border-color: #66bb6a; }
+    .drop-zone .placeholder { color: #aaa; text-align: center; padding: 30px; }
+
+    /* ═══ Dynamic content ═══ */
+    .skeleton { background: linear-gradient(90deg, #eee 25%, #f5f5f5 50%, #eee 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .lazy-item { opacity: 0; transform: translateY(20px); transition: opacity 0.5s, transform 0.5s; }
+    .lazy-item.visible { opacity: 1; transform: translateY(0); }
+
+    /* ═══ Portal overlay ═══ */
+    .portal-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);
+      display: flex; align-items: center; justify-content: center; z-index: 9999;
+    }
+    .portal-modal {
+      background: #fff; padding: 24px; border-radius: 12px; min-width: 300px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
   </style>
 </head>
 <body>
 
 <h1>Playwright MCP Accessibility Detection Experiment</h1>
 <p>This page contains pairs of elements: one <strong>accessible</strong> and one <strong>inaccessible</strong>. Use Playwright MCP snapshot to see which ones are detected.</p>
+
+<!-- ═══ Tab Navigation ═══ -->
+<div class="tab-nav" role="tablist">
+  <button role="tab" class="active" aria-selected="true" onclick="switchTab('v1')">V1 — Original</button>
+  <button role="tab" aria-selected="false" onclick="switchTab('iframes')">P0 — Iframes</button>
+  <button role="tab" aria-selected="false" onclick="switchTab('css-visibility')">P0 — CSS Visibility</button>
+  <button role="tab" aria-selected="false" onclick="switchTab('windows-portals')">P1 — Windows &amp; Portals</button>
+  <button role="tab" aria-selected="false" onclick="switchTab('dynamic-content')">P1 — Dynamic Content</button>
+  <button role="tab" aria-selected="false" onclick="switchTab('drag-drop')">Interactive — Drag &amp; Drop</button>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TAB: V1 — Original Content                              -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div id="tab-v1" class="tab-panel active">
 
 <!-- ═══════════════════════════════════════════ -->
 <div class="section">
@@ -514,9 +578,933 @@
   document.getElementById('js-nav-reports').addEventListener('click', function() {
     window.location = '/reports';
   });
+</script>
 
-  // Section 10 bonus: a button with no inline handler — only JS listener
-  // (element created in section 10: js-listener-btn)
+</div><!-- end tab-v1 -->
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TAB: P0 — Iframes                                       -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div id="tab-iframes" class="tab-panel">
+
+  <div class="section">
+    <h2>1. Same-Origin Iframe (srcdoc)</h2>
+    <p class="label">Iframe with inline HTML via <code>srcdoc</code>. MCP should traverse into it and detect all elements.</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start;">
+      <iframe class="iframe-demo" width="100%" height="200" title="Same-origin inline iframe"
+        srcdoc="
+          <html><body style='font-family:sans-serif; padding:16px;'>
+            <h3>Inside Same-Origin Iframe</h3>
+            <button data-testid='iframe-btn'>Click Me Inside Iframe</button>
+            <input type='text' placeholder='Type here in iframe' aria-label='Iframe text input'/>
+            <p>This paragraph is inside the iframe.</p>
+            <a href='#iframe-link'>Iframe internal link</a>
+          </body></html>
+        ">
+      </iframe>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>2. Cross-Origin Iframe</h2>
+    <p class="label">Iframe loading external content. Browser security blocks DOM access — does MCP handle this gracefully?</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start;">
+      <iframe class="iframe-demo" width="100%" height="250" title="Cross-origin iframe"
+        src="https://example.com"
+        sandbox="allow-scripts">
+      </iframe>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>3. Nested Iframes (iframe inside iframe)</h2>
+    <p class="label">Tests depth handling — iframe containing another iframe. Can MCP traverse both levels?</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start;">
+      <iframe class="iframe-demo" width="100%" height="300" title="Outer nested iframe"
+        srcdoc="
+          <html><body style='font-family:sans-serif; padding:16px; background:#f0f8ff;'>
+            <h3>Outer Iframe (Level 1)</h3>
+            <p>This is the outer iframe content.</p>
+            <button>Outer iframe button</button>
+            <iframe width='90%' height='120' title='Inner nested iframe' style='border:2px solid #ff9800; border-radius:4px; margin-top:10px;'
+              srcdoc=&quot;<html><body style='font-family:sans-serif; padding:12px; background:#fff8e1;'>
+                <h4>Inner Iframe (Level 2)</h4>
+                <button data-testid='nested-inner-btn'>Deep nested button</button>
+                <input placeholder='Nested input' />
+              </body></html>&quot;>
+            </iframe>
+          </body></html>
+        ">
+      </iframe>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4. Dynamically Injected Iframe</h2>
+    <p class="label">Iframe created via JavaScript after page load. Click the button to inject it. Tests whether MCP captures dynamically added iframes.</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start;">
+      <button onclick="injectIframe()" data-testid="inject-iframe-btn">Inject Iframe Now</button>
+      <div id="dynamic-iframe-container" style="margin-top:12px; width:100%;"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>5. Iframe with Form (Payment Form Pattern)</h2>
+    <p class="label">Simulates Stripe/payment form pattern — a same-origin iframe containing a complete form.</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start;">
+      <iframe class="iframe-demo" width="100%" height="200" title="Payment form iframe"
+        srcdoc="
+          <html><body style='font-family:sans-serif; padding:16px; background:#f9f9f9;'>
+            <form>
+              <h4>Payment Details</h4>
+              <div style='margin:8px 0;'>
+                <label for='card-num'>Card Number</label>
+                <input id='card-num' type='text' placeholder='4242 4242 4242 4242' style='margin-left:8px; padding:4px 8px;'/>
+              </div>
+              <div style='margin:8px 0;'>
+                <label for='card-exp'>Expiry</label>
+                <input id='card-exp' type='text' placeholder='MM/YY' style='margin-left:8px; padding:4px 8px; width:80px;'/>
+                <label for='card-cvc' style='margin-left:12px;'>CVC</label>
+                <input id='card-cvc' type='text' placeholder='123' style='margin-left:8px; padding:4px 8px; width:60px;'/>
+              </div>
+              <button type='submit' style='margin-top:8px; padding:8px 24px; background:#007bff; color:#fff; border:none; border-radius:4px; cursor:pointer;'>Pay Now</button>
+            </form>
+          </body></html>
+        ">
+      </iframe>
+    </div>
+  </div>
+
+</div><!-- end tab-iframes -->
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TAB: P0 — CSS Visibility Tricks                         -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div id="tab-css-visibility" class="tab-panel">
+
+  <div class="section">
+    <h2>CSS Visibility Tricks</h2>
+    <p class="label">Real apps use many patterns to hide content. Key question: which does the snapshot include? Which are clickable vs truly hidden?</p>
+
+    <div class="row">
+      <span class="label">Reference: ✅ Fully visible button</span>
+      <button data-testid="vis-reference-btn">I am fully visible</button>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>display: none</code> — not in layout, not clickable</span>
+      <div class="vis-container">
+        <button data-testid="vis-display-none" style="display: none;">Hidden with display:none</button>
+        <span class="vis-indicator">Button is here but display:none</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>visibility: hidden</code> — takes space, not clickable</span>
+      <div class="vis-container">
+        <button data-testid="vis-visibility-hidden" style="visibility: hidden;">Hidden with visibility:hidden</button>
+        <span class="vis-indicator">Button takes space but is invisible</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>opacity: 0</code> — invisible but still clickable!</span>
+      <div class="vis-container">
+        <button data-testid="vis-opacity-0" style="opacity: 0;" onclick="alert('opacity:0 button clicked!')">Hidden with opacity:0</button>
+        <span class="vis-indicator">Button is transparent but interactive (click the empty area above)</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>clip-path: inset(50%)</code> — SR-only pattern, in DOM</span>
+      <div class="vis-container">
+        <button data-testid="vis-clip-path" style="clip-path: inset(50%); position: absolute;">Hidden with clip-path</button>
+        <span class="vis-indicator">Button clipped to nothing (screen-reader-only pattern)</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>clip: rect(0,0,0,0)</code> + <code>position: absolute</code> — legacy SR-only</span>
+      <div class="vis-container">
+        <button data-testid="vis-clip-rect" style="position: absolute; clip: rect(0,0,0,0); width: 1px; height: 1px; overflow: hidden;">Hidden with clip:rect</button>
+        <span class="vis-indicator">Legacy screen-reader-only technique</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>position: absolute; left: -9999px</code> — off-screen</span>
+      <div class="vis-container" style="overflow: hidden;">
+        <button data-testid="vis-offscreen" style="position: absolute; left: -9999px;">Hidden off-screen</button>
+        <span class="vis-indicator">Button pushed far off-screen</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>transform: scale(0)</code> — scaled to zero</span>
+      <div class="vis-container">
+        <button data-testid="vis-scale-0" style="transform: scale(0);">Hidden with scale(0)</button>
+        <span class="vis-indicator">Button scaled down to nothing</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>height: 0; overflow: hidden</code> — collapsed (accordion pattern)</span>
+      <div class="vis-container">
+        <div data-testid="vis-collapsed" style="height: 0; overflow: hidden; border: 1px solid #ccc; padding: 0 12px;">
+          <button>Button inside collapsed container</button>
+          <p>This text is inside a collapsed accordion panel.</p>
+        </div>
+        <span class="vis-indicator">Content exists in DOM but container has height:0</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>max-height: 0; overflow: hidden</code> — CSS transition collapse</span>
+      <div class="vis-container">
+        <div data-testid="vis-max-height-0" style="max-height: 0; overflow: hidden; transition: max-height 0.3s;">
+          <button>Button in max-height:0 container</button>
+          <p>Hidden via CSS transition pattern (max-height: 0)</p>
+        </div>
+        <span class="vis-indicator">Common CSS animation collapse pattern</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>z-index</code> — element covered by overlay</span>
+      <div class="vis-container" style="position: relative; height: 60px;">
+        <button data-testid="vis-covered-btn" style="position: absolute; top: 10px; left: 10px; z-index: 1;">Covered button</button>
+        <div data-testid="vis-overlay" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(128,128,128,0.7); z-index: 2; display: flex; align-items: center; justify-content: center; border-radius: 4px;">
+          <span style="color: #fff; font-weight: bold;">Overlay covering the button</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>pointer-events: none</code> — visible but not clickable</span>
+      <div class="vis-container">
+        <button data-testid="vis-no-pointer" style="pointer-events: none; opacity: 0.5;">Visible but unclickable (pointer-events:none)</button>
+        <span class="vis-indicator">Button is visible and grayed out but cannot receive clicks</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>content-visibility: hidden</code> — modern CSS containment</span>
+      <div class="vis-container">
+        <div data-testid="vis-content-visibility" style="content-visibility: hidden;">
+          <button>Button inside content-visibility:hidden</button>
+          <p>This uses the modern content-visibility CSS property.</p>
+        </div>
+        <span class="vis-indicator">Modern CSS property — skips rendering entirely</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>hidden</code> attribute — semantic HTML hiding</span>
+      <div class="vis-container">
+        <button data-testid="vis-hidden-attr" hidden>Hidden with HTML attribute</button>
+        <span class="vis-indicator">Using the native hidden attribute</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>aria-hidden="true"</code> — hidden from assistive tech only</span>
+      <div class="vis-container">
+        <button data-testid="vis-aria-hidden" aria-hidden="true">Visually present but aria-hidden</button>
+        <span class="vis-indicator">Visible to sighted users, invisible to screen readers</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label"><code>inert</code> attribute — non-interactive subtree</span>
+      <div class="vis-container">
+        <div inert data-testid="vis-inert-container" style="opacity: 0.5;">
+          <button>Button inside inert container</button>
+          <input type="text" placeholder="Input inside inert" />
+          <a href="#">Link inside inert</a>
+        </div>
+        <span class="vis-indicator">All children are non-interactive and hidden from a11y tree</span>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end tab-css-visibility -->
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TAB: P1 — Windows & Portals                             -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div id="tab-windows-portals" class="tab-panel">
+
+  <div class="section">
+    <h2>1. New Tab / Window (target="_blank")</h2>
+    <p class="label">Link opens a new tab. Can MCP switch to the new tab and snapshot it?</p>
+    <div class="row">
+      <a href="https://example.com" target="_blank" rel="noopener noreferrer" data-testid="new-tab-link">Open example.com in new tab</a>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>2. window.open() Popup</h2>
+    <p class="label">JavaScript-opened popup window. Tests tab management capabilities.</p>
+    <div class="row">
+      <button onclick="window.open('https://example.com', '_blank', 'width=600,height=400')" data-testid="window-open-btn">Open Popup Window</button>
+    </div>
+    <div class="row">
+      <button onclick="window.open('about:blank', '_blank')" data-testid="window-open-blank-btn">Open Blank Popup</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>3. Simulated OAuth Flow</h2>
+    <p class="label">Click opens a popup "login" window → after action, popup closes → original page updated. Tests cross-window communication.</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start; gap:10px;">
+      <div id="oauth-status" style="padding:8px 16px; background:#f0f0f0; border-radius:4px;">Status: Not authenticated</div>
+      <button onclick="startOAuthFlow()" data-testid="oauth-start-btn">Login with OAuth (simulated)</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4. Portal-Rendered Modal (body-level)</h2>
+    <p class="label">Simulates React Portal — button click renders a modal at <code>document.body</code> level, outside the component tree. Does MCP see the modal content?</p>
+    <div class="row">
+      <button onclick="openPortalModal()" data-testid="portal-modal-btn">Open Portal Modal</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>5. Portal-Rendered Dropdown (body-level)</h2>
+    <p class="label">Dropdown menu rendered at body level (like Material UI, Ant Design). The dropdown is not a child of the trigger button in DOM.</p>
+    <div class="row" style="position:relative;">
+      <button onclick="togglePortalDropdown(event)" data-testid="portal-dropdown-btn">Open Dropdown ▾</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>6. Tooltip via Portal (body-level)</h2>
+    <p class="label">Tooltip appended to body on hover. Tests whether MCP captures transient portal content.</p>
+    <div class="row">
+      <button onmouseenter="showPortalTooltip(event, 'This tooltip lives at body level')" onmouseleave="hidePortalTooltip()" data-testid="portal-tooltip-btn">Hover for Portal Tooltip</button>
+    </div>
+  </div>
+
+</div><!-- end tab-windows-portals -->
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TAB: P1 — Dynamic Content                               -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div id="tab-dynamic-content" class="tab-panel">
+
+  <div class="section">
+    <h2>1. Skeleton Screen → Real Content</h2>
+    <p class="label">Simulates API loading: skeleton placeholders are replaced with real content after delay. Does MCP snapshot capture the correct state?</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start; width:100%;">
+      <button onclick="loadSkeletonContent()" data-testid="skeleton-load-btn">Load Content (2s delay)</button>
+      <div id="skeleton-container" style="width:100%; margin-top:12px;">
+        <div id="skeleton-card" style="padding:16px; border:1px solid #eee; border-radius:8px; width:400px;">
+          <div class="skeleton" style="height:20px; width:60%; margin-bottom:12px;">&nbsp;</div>
+          <div class="skeleton" style="height:14px; width:100%; margin-bottom:8px;">&nbsp;</div>
+          <div class="skeleton" style="height:14px; width:80%; margin-bottom:8px;">&nbsp;</div>
+          <div class="skeleton" style="height:36px; width:120px;">&nbsp;</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>2. Delayed Modal (setTimeout)</h2>
+    <p class="label">Click triggers a 2-second delay before modal appears. Tests whether MCP can wait and re-snapshot to capture the modal.</p>
+    <div class="row">
+      <button onclick="triggerDelayedModal()" data-testid="delayed-modal-btn">Show Modal After 2s Delay</button>
+    </div>
+    <div id="delayed-modal-container"></div>
+  </div>
+
+  <div class="section">
+    <h2>3. Debounced Search</h2>
+    <p class="label">Type in search box → 500ms debounce → results appear. Tests capturing results after debounce.</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start; width:100%;">
+      <label for="debounce-search">Search:</label>
+      <input type="text" id="debounce-search" placeholder="Type to search (500ms debounce)..." style="padding:8px 12px; width:300px; border:1px solid #ccc; border-radius:4px;" data-testid="debounce-search-input" oninput="debouncedSearch(this.value)" />
+      <div id="debounce-results" style="margin-top:12px; width:400px;"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4. Lazy-Loaded Content (IntersectionObserver)</h2>
+    <p class="label">Elements appear with animation as you scroll them into view. Only visible items are "activated" — tests snapshot accuracy for partially loaded content.</p>
+    <div style="max-height:300px; overflow-y:auto; border:1px solid #ddd; border-radius:8px; padding:16px;" id="lazy-scroll-container">
+      <p>Scroll down to reveal lazy-loaded items ↓</p>
+      <div style="height:200px;"></div>
+      <div class="lazy-item" data-testid="lazy-item-1">
+        <div style="padding:12px; background:#e3f2fd; border-radius:4px; margin:8px 0;">Lazy Item 1 — Appears on scroll</div>
+      </div>
+      <div style="height:100px;"></div>
+      <div class="lazy-item" data-testid="lazy-item-2">
+        <div style="padding:12px; background:#fce4ec; border-radius:4px; margin:8px 0;">Lazy Item 2 — Appears on scroll</div>
+      </div>
+      <div style="height:100px;"></div>
+      <div class="lazy-item" data-testid="lazy-item-3">
+        <div style="padding:12px; background:#e8f5e9; border-radius:4px; margin:8px 0;">Lazy Item 3 — Appears on scroll</div>
+      </div>
+      <div style="height:100px;"></div>
+      <div class="lazy-item" data-testid="lazy-item-4">
+        <div style="padding:12px; background:#fff3e0; border-radius:4px; margin:8px 0;">Lazy Item 4 — Appears on scroll</div>
+      </div>
+      <div style="height:50px;"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>5. Infinite Scroll</h2>
+    <p class="label">Scroll to bottom loads more items. Does snapshot show all currently-loaded items or only viewport?</p>
+    <div style="max-height:250px; overflow-y:auto; border:1px solid #ddd; border-radius:8px; padding:16px;" id="infinite-scroll-container">
+      <div id="infinite-scroll-list">
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 1</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 2</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 3</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 4</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 5</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 6</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 7</div>
+        <div style="padding:10px; border-bottom:1px solid #eee;">Item 8</div>
+      </div>
+      <div id="infinite-scroll-loader" style="text-align:center; padding:12px; color:#888; display:none;">Loading more items...</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>6. Content Toggled by State (Conditional Rendering)</h2>
+    <p class="label">Simulates logged-in vs logged-out UI. Same area shows different content based on state. Does snapshot capture the current state correctly?</p>
+    <div class="row" style="flex-direction:column; align-items:flex-start; gap:10px;">
+      <div style="display:flex; gap:10px;">
+        <button onclick="setAuthState(true)" data-testid="auth-login-btn">Simulate Login</button>
+        <button onclick="setAuthState(false)" data-testid="auth-logout-btn">Simulate Logout</button>
+      </div>
+      <div id="auth-state-container" style="padding:16px; border:1px solid #ddd; border-radius:8px; width:400px;">
+        <div id="auth-logged-out">
+          <p>Welcome, guest!</p>
+          <button data-testid="auth-signin-btn">Sign In</button>
+          <button data-testid="auth-signup-btn">Sign Up</button>
+        </div>
+        <div id="auth-logged-in" style="display:none;">
+          <p>Welcome back, <strong>John Doe</strong>!</p>
+          <button data-testid="auth-profile-btn">My Profile</button>
+          <button data-testid="auth-signout-btn">Sign Out</button>
+          <button data-testid="auth-admin-btn" style="background:#dc3545; color:#fff; border:none; padding:6px 12px; border-radius:4px; cursor:pointer;">Admin Panel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end tab-dynamic-content -->
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TAB: Interactive — Drag & Drop                          -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div id="tab-drag-drop" class="tab-panel">
+
+  <div class="section">
+    <h2>1. Basic Drag & Drop (HTML5 API)</h2>
+    <p class="label">Drag items from the source list and drop them into the drop zone. Tests whether MCP can identify draggable elements and drop targets.</p>
+
+    <div style="display:flex; gap:24px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:250px;">
+        <h3>Draggable Items</h3>
+        <div id="drag-source">
+          <div class="drag-item" draggable="true" data-testid="drag-item-1" id="drag-1">
+            📦 Item 1 — Package
+          </div>
+          <div class="drag-item" draggable="true" data-testid="drag-item-2" id="drag-2">
+            📋 Item 2 — Document
+          </div>
+          <div class="drag-item" draggable="true" data-testid="drag-item-3" id="drag-3">
+            🖼️ Item 3 — Image
+          </div>
+          <div class="drag-item" draggable="true" data-testid="drag-item-4" id="drag-4">
+            🎵 Item 4 — Audio
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:1; min-width:250px;">
+        <h3>Drop Zone</h3>
+        <div class="drop-zone" id="drop-zone-1" data-testid="drop-zone-1">
+          <div class="placeholder">Drop items here</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>2. Sortable List (Drag to Reorder)</h2>
+    <p class="label">Drag items within the list to reorder them. Tests drag-and-drop within a single container.</p>
+
+    <div id="sortable-list" data-testid="sortable-list" style="max-width:400px;">
+      <div class="drag-item" draggable="true" data-testid="sort-item-1" data-sort-id="1">1. First Priority Task</div>
+      <div class="drag-item" draggable="true" data-testid="sort-item-2" data-sort-id="2">2. Second Priority Task</div>
+      <div class="drag-item" draggable="true" data-testid="sort-item-3" data-sort-id="3">3. Third Priority Task</div>
+      <div class="drag-item" draggable="true" data-testid="sort-item-4" data-sort-id="4">4. Fourth Priority Task</div>
+      <div class="drag-item" draggable="true" data-testid="sort-item-5" data-sort-id="5">5. Fifth Priority Task</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>3. Multi-Zone Drag & Drop (Kanban Board)</h2>
+    <p class="label">Drag cards between columns — simulates a Kanban/Trello board. Multiple drop zones with state tracking.</p>
+
+    <div style="display:flex; gap:16px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:200px;">
+        <h3 style="text-align:center; color:#1976d2;">To Do</h3>
+        <div class="drop-zone" id="kanban-todo" data-testid="kanban-todo" style="min-height:200px; background:#e3f2fd;">
+          <div class="drag-item" draggable="true" data-testid="kanban-card-1" id="kanban-1">Design homepage</div>
+          <div class="drag-item" draggable="true" data-testid="kanban-card-2" id="kanban-2">Write API docs</div>
+          <div class="drag-item" draggable="true" data-testid="kanban-card-3" id="kanban-3">Setup CI/CD</div>
+        </div>
+      </div>
+
+      <div style="flex:1; min-width:200px;">
+        <h3 style="text-align:center; color:#f57c00;">In Progress</h3>
+        <div class="drop-zone" id="kanban-progress" data-testid="kanban-progress" style="min-height:200px; background:#fff3e0;">
+          <div class="drag-item" draggable="true" data-testid="kanban-card-4" id="kanban-4">Fix login bug</div>
+        </div>
+      </div>
+
+      <div style="flex:1; min-width:200px;">
+        <h3 style="text-align:center; color:#388e3c;">Done</h3>
+        <div class="drop-zone" id="kanban-done" data-testid="kanban-done" style="min-height:200px; background:#e8f5e9;">
+          <div class="placeholder">Drop completed items here</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4. Drag with Visual Feedback (Custom Drag Image)</h2>
+    <p class="label">Dragging shows a custom ghost image. Tests whether MCP recognizes drag state and custom drag feedback elements.</p>
+
+    <div style="display:flex; gap:24px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:250px;">
+        <h3>Files to Upload</h3>
+        <div class="drag-item" draggable="true" data-testid="file-drag-1" id="file-1" style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:24px;">📄</span>
+          <div>
+            <div style="font-weight:bold;">report.pdf</div>
+            <div style="font-size:12px; color:#888;">2.4 MB</div>
+          </div>
+        </div>
+        <div class="drag-item" draggable="true" data-testid="file-drag-2" id="file-2" style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:24px;">🖼️</span>
+          <div>
+            <div style="font-weight:bold;">photo.jpg</div>
+            <div style="font-size:12px; color:#888;">5.1 MB</div>
+          </div>
+        </div>
+        <div class="drag-item" draggable="true" data-testid="file-drag-3" id="file-3" style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:24px;">📊</span>
+          <div>
+            <div style="font-weight:bold;">data.xlsx</div>
+            <div style="font-size:12px; color:#888;">1.8 MB</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:1; min-width:250px;">
+        <h3>Upload Area</h3>
+        <div class="drop-zone" id="upload-zone" data-testid="upload-zone" style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px;">
+          <span style="font-size:48px;">☁️</span>
+          <div class="placeholder">Drag files here to upload</div>
+          <div id="upload-list" style="width:100%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>5. Range Slider with Drag Interaction</h2>
+    <p class="label">Native range inputs and custom slider. Tests MCP's ability to interact with slider-type drag elements.</p>
+
+    <div class="row" style="flex-direction:column; align-items:flex-start; gap:16px;">
+      <div>
+        <label for="native-range">Native Range Input (0-100): <span id="native-range-value">50</span></label><br/>
+        <input type="range" id="native-range" min="0" max="100" value="50" data-testid="native-range" style="width:300px;" oninput="document.getElementById('native-range-value').textContent=this.value" />
+      </div>
+
+      <div style="width:300px;">
+        <label>Custom Drag Slider: <span id="custom-slider-value">50</span>%</label>
+        <div data-testid="custom-slider" style="position:relative; height:30px; margin-top:8px;">
+          <div style="position:absolute; top:12px; left:0; right:0; height:6px; background:#ddd; border-radius:3px;">
+            <div id="custom-slider-fill" style="height:100%; width:50%; background:#007bff; border-radius:3px;"></div>
+          </div>
+          <div id="custom-slider-thumb" data-testid="custom-slider-thumb"
+            style="position:absolute; top:4px; left:calc(50% - 11px); width:22px; height:22px; background:#007bff; border-radius:50%; cursor:grab; box-shadow:0 2px 4px rgba(0,0,0,0.3);"
+            onmousedown="startSliderDrag(event)">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end tab-drag-drop -->
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- JavaScript                                              -->
+<!-- ════════════════════════════════════════════════════════ -->
+<script>
+  // ═══ Tab switching ═══
+  function switchTab(tabId) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-nav button').forEach(b => {
+      b.classList.remove('active');
+      b.setAttribute('aria-selected', 'false');
+    });
+    document.getElementById('tab-' + tabId).classList.add('active');
+    event.target.classList.add('active');
+    event.target.setAttribute('aria-selected', 'true');
+  }
+
+  // ═══ V1: Original handlers ═══
+  document.getElementById('js-nav-reports').addEventListener('click', function() {
+    window.location = '/reports';
+  });
+
+  // ═══ Iframes: Dynamic injection ═══
+  function injectIframe() {
+    var container = document.getElementById('dynamic-iframe-container');
+    if (container.querySelector('iframe')) return; // prevent duplicates
+    var iframe = document.createElement('iframe');
+    iframe.title = 'Dynamically injected iframe';
+    iframe.className = 'iframe-demo';
+    iframe.width = '100%';
+    iframe.height = '150';
+    iframe.srcdoc = "<html><body style='font-family:sans-serif; padding:16px; background:#e8f5e9;'>" +
+      "<h4>I was dynamically injected!</h4>" +
+      "<button data-testid='dynamic-iframe-btn'>Dynamic Button</button>" +
+      "<p>This iframe was created via JavaScript after page load.</p>" +
+      "</body></html>";
+    container.appendChild(iframe);
+  }
+
+  // ═══ Windows & Portals: OAuth simulation ═══
+  function startOAuthFlow() {
+    var popup = window.open('', 'oauth-popup', 'width=400,height=300');
+    if (popup) {
+      popup.document.write(
+        "<html><head><title>OAuth Login</title></head>" +
+        "<body style='font-family:sans-serif; padding:20px; text-align:center;'>" +
+        "<h3>Simulated OAuth Provider</h3>" +
+        "<p>Click to authorize:</p>" +
+        "<button onclick='window.opener.completeOAuth(); window.close();' style='padding:12px 24px; background:#007bff; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:16px;'>Authorize App</button>" +
+        "</body></html>"
+      );
+    }
+  }
+  window.completeOAuth = function() {
+    document.getElementById('oauth-status').innerHTML = 'Status: <strong style="color:green;">Authenticated as John Doe</strong>';
+  };
+
+  // ═══ Windows & Portals: Portal modal ═══
+  function openPortalModal() {
+    var existing = document.getElementById('portal-modal-overlay');
+    if (existing) existing.remove();
+    var overlay = document.createElement('div');
+    overlay.id = 'portal-modal-overlay';
+    overlay.className = 'portal-overlay';
+    overlay.setAttribute('data-testid', 'portal-modal-overlay');
+    overlay.innerHTML =
+      '<div class="portal-modal" data-testid="portal-modal-content">' +
+        '<h3>Portal Modal</h3>' +
+        '<p>This modal is rendered at document.body level (simulating React Portal).</p>' +
+        '<p>It is <strong>not</strong> a child of the button that opened it in the DOM tree.</p>' +
+        '<input type="text" placeholder="Input inside portal modal" data-testid="portal-modal-input" style="padding:8px; width:100%; border:1px solid #ccc; border-radius:4px; margin:8px 0;" />' +
+        '<div style="display:flex; gap:8px; margin-top:12px;">' +
+          '<button onclick="document.getElementById(\'portal-modal-overlay\').remove()" data-testid="portal-modal-close">Close Modal</button>' +
+          '<button data-testid="portal-modal-confirm" style="background:#007bff; color:#fff; border:none; padding:8px 16px; border-radius:4px; cursor:pointer;">Confirm</button>' +
+        '</div>' +
+      '</div>';
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
+  }
+
+  // ═══ Windows & Portals: Portal dropdown ═══
+  function togglePortalDropdown(e) {
+    var existing = document.getElementById('portal-dropdown');
+    if (existing) { existing.remove(); return; }
+    var rect = e.target.getBoundingClientRect();
+    var dropdown = document.createElement('div');
+    dropdown.id = 'portal-dropdown';
+    dropdown.setAttribute('data-testid', 'portal-dropdown-menu');
+    dropdown.setAttribute('role', 'menu');
+    dropdown.style.cssText = 'position:fixed; top:' + (rect.bottom + 4) + 'px; left:' + rect.left + 'px; background:#fff; border:1px solid #ccc; border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.15); min-width:180px; z-index:9999;';
+    dropdown.innerHTML =
+      '<div role="menuitem" data-testid="portal-dd-profile" style="padding:10px 16px; cursor:pointer;" onmouseenter="this.style.background=\'#f0f0f0\'" onmouseleave="this.style.background=\'#fff\'">👤 Profile</div>' +
+      '<div role="menuitem" data-testid="portal-dd-settings" style="padding:10px 16px; cursor:pointer;" onmouseenter="this.style.background=\'#f0f0f0\'" onmouseleave="this.style.background=\'#fff\'">⚙️ Settings</div>' +
+      '<hr style="margin:0; border-color:#eee;" />' +
+      '<div role="menuitem" data-testid="portal-dd-logout" style="padding:10px 16px; cursor:pointer; color:#dc3545;" onmouseenter="this.style.background=\'#fff5f5\'" onmouseleave="this.style.background=\'#fff\'">🚪 Logout</div>';
+    document.body.appendChild(dropdown);
+    setTimeout(function() {
+      document.addEventListener('click', function closeDropdown(ev) {
+        if (!dropdown.contains(ev.target) && ev.target !== e.target) {
+          dropdown.remove();
+          document.removeEventListener('click', closeDropdown);
+        }
+      });
+    }, 0);
+  }
+
+  // ═══ Windows & Portals: Portal tooltip ═══
+  var portalTooltipEl = null;
+  function showPortalTooltip(e, text) {
+    hidePortalTooltip();
+    var rect = e.target.getBoundingClientRect();
+    portalTooltipEl = document.createElement('div');
+    portalTooltipEl.id = 'portal-tooltip';
+    portalTooltipEl.setAttribute('data-testid', 'portal-tooltip');
+    portalTooltipEl.setAttribute('role', 'tooltip');
+    portalTooltipEl.textContent = text;
+    portalTooltipEl.style.cssText = 'position:fixed; top:' + (rect.top - 40) + 'px; left:' + (rect.left + rect.width/2) + 'px; transform:translateX(-50%); background:#333; color:#fff; padding:6px 12px; border-radius:4px; font-size:13px; z-index:9999; pointer-events:none; white-space:nowrap;';
+    document.body.appendChild(portalTooltipEl);
+  }
+  function hidePortalTooltip() {
+    if (portalTooltipEl) { portalTooltipEl.remove(); portalTooltipEl = null; }
+  }
+
+  // ═══ Dynamic Content: Skeleton loading ═══
+  function loadSkeletonContent() {
+    var card = document.getElementById('skeleton-card');
+    card.innerHTML =
+      '<div class="skeleton" style="height:20px; width:60%; margin-bottom:12px;">&nbsp;</div>' +
+      '<div class="skeleton" style="height:14px; width:100%; margin-bottom:8px;">&nbsp;</div>' +
+      '<div class="skeleton" style="height:14px; width:80%; margin-bottom:8px;">&nbsp;</div>' +
+      '<div class="skeleton" style="height:36px; width:120px;">&nbsp;</div>';
+    setTimeout(function() {
+      card.innerHTML =
+        '<h3 data-testid="skeleton-title" style="margin:0 0 8px;">Product Name</h3>' +
+        '<p data-testid="skeleton-desc" style="margin:0 0 8px; color:#666;">This is the real product description loaded from the API. It replaces the skeleton placeholder.</p>' +
+        '<p style="margin:0 0 8px; color:#888; font-size:13px;">$49.99 · In Stock · ★★★★☆</p>' +
+        '<button data-testid="skeleton-add-btn" style="padding:8px 20px; background:#007bff; color:#fff; border:none; border-radius:4px; cursor:pointer;">Add to Cart</button>';
+    }, 2000);
+  }
+
+  // ═══ Dynamic Content: Delayed modal ═══
+  function triggerDelayedModal() {
+    var container = document.getElementById('delayed-modal-container');
+    container.innerHTML = '<p style="color:#888; font-style:italic;">Loading modal in 2 seconds...</p>';
+    setTimeout(function() {
+      container.innerHTML =
+        '<div data-testid="delayed-modal" style="padding:20px; background:#fff; border:2px solid #007bff; border-radius:8px; margin-top:12px;">' +
+          '<h3>Delayed Modal Content</h3>' +
+          '<p>This modal appeared after a 2-second delay (simulating async operation).</p>' +
+          '<button onclick="document.getElementById(\'delayed-modal-container\').innerHTML=\'\'" data-testid="delayed-modal-close">Dismiss</button>' +
+        '</div>';
+    }, 2000);
+  }
+
+  // ═══ Dynamic Content: Debounced search ═══
+  var debounceTimer = null;
+  var searchData = ['Apple', 'Banana', 'Cherry', 'Date', 'Elderberry', 'Fig', 'Grape', 'Honeydew', 'Kiwi', 'Lemon', 'Mango', 'Nectarine', 'Orange', 'Papaya', 'Quince', 'Raspberry', 'Strawberry', 'Tangerine', 'Watermelon'];
+  function debouncedSearch(query) {
+    clearTimeout(debounceTimer);
+    var container = document.getElementById('debounce-results');
+    if (!query) { container.innerHTML = ''; return; }
+    container.innerHTML = '<p style="color:#888;">Searching...</p>';
+    debounceTimer = setTimeout(function() {
+      var results = searchData.filter(function(item) {
+        return item.toLowerCase().indexOf(query.toLowerCase()) !== -1;
+      });
+      if (results.length === 0) {
+        container.innerHTML = '<p data-testid="search-no-results" style="color:#999;">No results found for "' + query + '"</p>';
+      } else {
+        container.innerHTML = results.map(function(r, i) {
+          return '<div data-testid="search-result-' + i + '" style="padding:8px 12px; border-bottom:1px solid #eee;">' + r + '</div>';
+        }).join('');
+      }
+    }, 500);
+  }
+
+  // ═══ Dynamic Content: Lazy load (IntersectionObserver) ═══
+  (function() {
+    var observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { root: document.getElementById('lazy-scroll-container'), threshold: 0.3 });
+    document.querySelectorAll('.lazy-item').forEach(function(el) { observer.observe(el); });
+  })();
+
+  // ═══ Dynamic Content: Infinite scroll ═══
+  (function() {
+    var itemCount = 8;
+    var container = document.getElementById('infinite-scroll-container');
+    var list = document.getElementById('infinite-scroll-list');
+    var loader = document.getElementById('infinite-scroll-loader');
+    if (!container) return;
+    container.addEventListener('scroll', function() {
+      if (container.scrollTop + container.clientHeight >= container.scrollHeight - 20) {
+        if (loader.style.display === 'block') return;
+        loader.style.display = 'block';
+        setTimeout(function() {
+          for (var i = 0; i < 5; i++) {
+            itemCount++;
+            var div = document.createElement('div');
+            div.style.cssText = 'padding:10px; border-bottom:1px solid #eee;';
+            div.setAttribute('data-testid', 'infinite-item-' + itemCount);
+            div.textContent = 'Item ' + itemCount;
+            list.appendChild(div);
+          }
+          loader.style.display = 'none';
+          if (itemCount >= 30) {
+            var end = document.createElement('div');
+            end.style.cssText = 'padding:12px; text-align:center; color:#666; font-style:italic;';
+            end.textContent = 'No more items to load';
+            list.appendChild(end);
+            container.removeEventListener('scroll', arguments.callee);
+          }
+        }, 800);
+      }
+    });
+  })();
+
+  // ═══ Dynamic Content: Auth state toggle ═══
+  function setAuthState(loggedIn) {
+    document.getElementById('auth-logged-in').style.display = loggedIn ? 'block' : 'none';
+    document.getElementById('auth-logged-out').style.display = loggedIn ? 'none' : 'block';
+  }
+
+  // ═══ Drag & Drop: Basic source→target ═══
+  (function() {
+    // Basic drag-drop from source to zone
+    document.querySelectorAll('#drag-source .drag-item').forEach(function(item) {
+      item.addEventListener('dragstart', function(e) {
+        e.dataTransfer.setData('text/plain', item.id);
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend', function() { item.classList.remove('dragging'); });
+    });
+
+    var dropZone1 = document.getElementById('drop-zone-1');
+    if (dropZone1) {
+      dropZone1.addEventListener('dragover', function(e) { e.preventDefault(); dropZone1.classList.add('over'); });
+      dropZone1.addEventListener('dragleave', function() { dropZone1.classList.remove('over'); });
+      dropZone1.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropZone1.classList.remove('over');
+        var id = e.dataTransfer.getData('text/plain');
+        var el = document.getElementById(id);
+        if (el) {
+          var placeholder = dropZone1.querySelector('.placeholder');
+          if (placeholder) placeholder.remove();
+          dropZone1.appendChild(el);
+        }
+      });
+    }
+
+    // Sortable list
+    var sortList = document.getElementById('sortable-list');
+    if (sortList) {
+      var dragSrcEl = null;
+      sortList.querySelectorAll('.drag-item').forEach(function(item) {
+        item.addEventListener('dragstart', function(e) {
+          dragSrcEl = item;
+          item.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        item.addEventListener('dragend', function() { item.classList.remove('dragging'); });
+        item.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          var rect = item.getBoundingClientRect();
+          var midY = rect.top + rect.height / 2;
+          if (e.clientY < midY) {
+            sortList.insertBefore(dragSrcEl, item);
+          } else {
+            sortList.insertBefore(dragSrcEl, item.nextSibling);
+          }
+        });
+      });
+    }
+
+    // Kanban multi-zone
+    document.querySelectorAll('#tab-drag-drop .drop-zone[id^="kanban-"]').forEach(function(zone) {
+      zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('over'); });
+      zone.addEventListener('dragleave', function() { zone.classList.remove('over'); });
+      zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        zone.classList.remove('over');
+        var id = e.dataTransfer.getData('text/plain');
+        var el = document.getElementById(id);
+        if (el) {
+          var placeholder = zone.querySelector('.placeholder');
+          if (placeholder) placeholder.remove();
+          zone.appendChild(el);
+        }
+      });
+    });
+    document.querySelectorAll('[id^="kanban-"] .drag-item').forEach(function(item) {
+      item.addEventListener('dragstart', function(e) {
+        e.dataTransfer.setData('text/plain', item.id);
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend', function() { item.classList.remove('dragging'); });
+    });
+
+    // File upload drag
+    document.querySelectorAll('[id^="file-"]').forEach(function(item) {
+      item.addEventListener('dragstart', function(e) {
+        e.dataTransfer.setData('text/plain', item.id);
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend', function() { item.classList.remove('dragging'); });
+    });
+    var uploadZone = document.getElementById('upload-zone');
+    if (uploadZone) {
+      uploadZone.addEventListener('dragover', function(e) { e.preventDefault(); uploadZone.classList.add('over'); });
+      uploadZone.addEventListener('dragleave', function() { uploadZone.classList.remove('over'); });
+      uploadZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadZone.classList.remove('over');
+        var id = e.dataTransfer.getData('text/plain');
+        var el = document.getElementById(id);
+        if (el) {
+          var uploadList = document.getElementById('upload-list');
+          var uploaded = document.createElement('div');
+          uploaded.style.cssText = 'padding:8px 12px; background:#e8f5e9; border-radius:4px; margin:4px 0; display:flex; align-items:center; gap:8px;';
+          uploaded.innerHTML = '✅ ' + el.querySelector('div div:first-child').textContent + ' uploaded';
+          uploaded.setAttribute('data-testid', 'uploaded-' + id);
+          uploadList.appendChild(uploaded);
+          el.style.opacity = '0.3';
+          el.style.pointerEvents = 'none';
+          el.setAttribute('draggable', 'false');
+        }
+      });
+    }
+  })();
+
+  // ═══ Drag & Drop: Custom slider ═══
+  function startSliderDrag(e) {
+    e.preventDefault();
+    var thumb = document.getElementById('custom-slider-thumb');
+    var fill = document.getElementById('custom-slider-fill');
+    var valueDisplay = document.getElementById('custom-slider-value');
+    var slider = thumb.parentElement;
+    var rect = slider.getBoundingClientRect();
+    function onMove(ev) {
+      var x = Math.max(0, Math.min(ev.clientX - rect.left, rect.width));
+      var pct = Math.round((x / rect.width) * 100);
+      thumb.style.left = (pct + '% ');
+      thumb.style.left = 'calc(' + pct + '% - 11px)';
+      fill.style.width = pct + '%';
+      valueDisplay.textContent = pct;
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
 </script>
 
 </body>
