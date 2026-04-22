@@ -1,17 +1,19 @@
 # Support
 
-## How to file issues and get help  
+## Issues and feature requests
 
-This project uses GitHub issues to track bugs and feature requests. Please search the [existing issues][gh-issues] before filing new ones to avoid duplicates. For new issues, file your bug or feature request as a new issue using corresponding template.
+Use this repository's GitHub issues for bugs and feature requests.
 
-For help and questions about using this project, please see the [docs site for Playwright][docs].
+Before opening a new issue:
 
-Join our community [Discord Server][discord-server] to connect with other developers using Playwright and ask questions in our 'help-playwright' forum.
+1. Search existing issues.
+2. Use the relevant issue template.
+3. Provide a minimal reproducible example when reporting bugs.
 
-## Microsoft Support Policy  
+## Usage questions
 
-Support for Playwright is limited to the resources listed above.
+For product usage and integration questions, use project documentation and repository discussions (if enabled).
 
-[gh-issues]: https://github.com/microsoft/playwright/issues/
-[docs]: https://playwright.dev/
-[discord-server]: https://aka.ms/playwright/discord
+## Scope
+
+Support is provided on a best-effort basis through the project channels above.
