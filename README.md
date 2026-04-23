@@ -93,6 +93,16 @@ The Treegress browser stack is split into two published packages:
 - [`@treegress.com/treegress-browser-core`](https://www.npmjs.com/package/@treegress.com/treegress-browser-core)
 - [`@treegress.com/treegress-browser-mcp`](https://www.npmjs.com/package/@treegress.com/treegress-browser-mcp)
 
+Source repositories:
+
+- Core runtime repository: [github.com/MobiDev-Org/treegress-browser-core](https://github.com/MobiDev-Org/treegress-browser-core)
+- MCP adapter repository: [github.com/MobiDev-Org/treegress-browser-mcp](https://github.com/MobiDev-Org/treegress-browser-mcp)
+
+Role split:
+
+- `treegress-browser-core` (this repository) is the source of truth for custom-dom snapshot/runtime behavior.
+- `treegress-browser-mcp` consumes the core runtime and exposes MCP server/tool integration.
+
 This repository keeps the upstream Playwright monorepo structure. The publishable core package lives in:
 
 - [`packages/playwright-core`](packages/playwright-core)
