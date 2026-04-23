@@ -11,13 +11,14 @@ This repository is the source for the published package [`@treegress.com/treegre
 
 AI agents need access to the actual page structure they are testing.
 
-Standard Playwright MCP flows expose an ARIA snapshot derived from the accessibility tree. In real test flows, not just simple demos, that can leave part of the UI outside the model's view when interactable elements are poorly represented in the accessibility layer.
+Standard Playwright MCP flows expose an ARIA snapshot derived from the accessibility tree. In real test flows, not just simple demos, this can leave part of the UI outside the model's view when interactable elements are poorly represented in the accessibility layer. Even when an element is returned by an ARIA snapshot, the information about that element can be too abstract for an agent to properly understand how to interact with the website and implement the scenario.
 
 Treegress extends this flow by:
 
 - serializing the full DOM tree
 - extracting the full set of interactable elements
-- assigning a `refId` to each element so downstream actions such as `click`, `fill`, and similar operations can target them reliably
+- enriching the information about the elements
+- assigning a `refId` to each element so downstream tools such as `browser_click`, `browser_fill_form`, and similar operations can target it reliably.
 
 This gives the agent a structurally complete representation of the page instead of a partial accessibility-based abstraction. In practice, that improves element coverage and enables broader, more reliable test scenarios.
 
@@ -32,45 +33,12 @@ If you want to see what Treegress is building in this area, visit [treegress.com
 
 ## Installation
 
+### MCP installation
+
 Most users should install the MCP package, not the core package directly.
 
-### Recommended: generic MCP client setup
+You can find installation instructions for Treegress MCP by this link: [github.com/MobiDev-Org/treegress-browser-mcp](https://github.com/MobiDev-Org/treegress-browser-mcp)
 
-Any MCP client that supports a local `stdio` server can run Treegress with this process configuration:
-
-```json
-{
-  "name": "treegress-browser",
-  "type": "stdio",
-  "command": "npx",
-  "args": [
-    "--yes",
-    "--package=@treegress.com/treegress-browser-mcp@latest",
-    "treegress-browser-mcp",
-    "--snapshot-engine",
-    "dom"
-  ]
-}
-```
-
-Use the same `command` and `args` values in your client-specific config format:
-
-- Cursor: place this server under `mcpServers` in `.cursor/mcp.json`
-- VS Code or other MCP-capable editors: add the same `stdio` server in the client's MCP settings UI or config file
-- Claude Desktop and similar clients: map the same values into that client's server definition format
-
-If your client only accepts a single shell command, use this equivalent launcher:
-
-```bash
-bash -lc 'npm_config_cache=/tmp/treegress-mcp-cache npx --yes --package=@treegress.com/treegress-browser-mcp@latest treegress-browser-mcp --snapshot-engine dom'
-```
-
-Notes:
-
-- Requires `Node.js 18+`
-- Global `npm i -g` is not required
-- `@treegress.com/treegress-browser-core` is installed automatically as a dependency of `@treegress.com/treegress-browser-mcp`
-- `--snapshot-engine dom` enables the Treegress custom DOM path
 
 ### Direct core install
 
