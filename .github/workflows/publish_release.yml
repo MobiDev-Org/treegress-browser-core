@@ -17,7 +17,7 @@ jobs:
   publish-npm-and-driver:
     name: "publish NPM and driver"
     runs-on: ubuntu-24.04
-    if: github.repository == 'microsoft/playwright'
+    if: github.repository == 'microsoft/playwright' || github.repository == 'MobiDev-Org/treegress-browser-core'
     permissions:
       id-token: write  # This is required for OIDC login (azure/login, NPM publish) to succeed
       contents: read   # This is required for actions/checkout to succeed
@@ -35,12 +35,12 @@ jobs:
     - run: npm run build
 
     - name: "@next: publish with commit timestamp (triggered manually)"
-      if: contains(github.ref, 'main') && github.event_name == 'workflow_dispatch'
+      if: github.ref_name == github.event.repository.default_branch && github.event_name == 'workflow_dispatch'
       run: |
         node utils/build/update_canary_version.js --alpha --commit-timestamp
         utils/publish_all_packages.sh --alpha
     - name: "@next: publish with today's date (triggered automatically)"
-      if: contains(github.ref, 'main') && github.event.schedule
+      if: github.ref_name == github.event.repository.default_branch && github.event.schedule
       run: |
         node utils/build/update_canary_version.js --alpha --today-date
         utils/publish_all_packages.sh --alpha
@@ -69,7 +69,7 @@ jobs:
   publish-trace-viewer:
     name: "publish Trace Viewer to trace.playwright.dev"
     runs-on: ubuntu-24.04
-    if: github.repository == 'microsoft/playwright'
+    if: github.repository == 'microsoft/playwright' || github.repository == 'MobiDev-Org/treegress-browser-core'
     steps:
     - uses: actions/checkout@v6
     - uses: actions/setup-node@v6
@@ -82,7 +82,7 @@ jobs:
         private-key: ${{ secrets.PLAYWRIGHT_PRIVATE_KEY }}
         repositories: trace.playwright.dev
     - name: Deploy Canary
-      if: contains(github.ref, 'main') && github.event.schedule
+      if: github.ref_name == github.event.repository.default_branch && github.event.schedule
       run: bash utils/build/deploy-trace-viewer.sh --canary
       env:
         GH_SERVICE_ACCOUNT_TOKEN: ${{ steps.app-token.outputs.token }}
