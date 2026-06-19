@@ -54,7 +54,7 @@ jobs:
       id-token: write   # This is required for OIDC login (azure/login) to succeed
       contents: read    # This is required for actions/checkout to succeed
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: ./.github/actions/run-test
       with:
         node-version: ${{ matrix.node-version }}
@@ -77,7 +77,7 @@ jobs:
       id-token: write   # This is required for OIDC login (azure/login) to succeed
       contents: read    # This is required for actions/checkout to succeed
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: ./.github/actions/run-test
       with:
         browsers-to-install: chromium-tip-of-tree
@@ -141,7 +141,7 @@ jobs:
       id-token: write   # This is required for OIDC login (azure/login) to succeed
       contents: read    # This is required for actions/checkout to succeed
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: ./.github/actions/run-test
       with:
         node-version: ${{matrix.node-version}}
@@ -159,7 +159,7 @@ jobs:
     name: VSCode Extension
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: actions/setup-node@v6
       with:
         node-version: 20
@@ -207,7 +207,7 @@ jobs:
       id-token: write   # This is required for OIDC login (azure/login) to succeed
       contents: read    # This is required for actions/checkout to succeed
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - run: npm install -g yarn@1
     - run: npm install -g pnpm@8
     - name: Setup Ubuntu Binary Installation # TODO: Remove when https://github.com/electron/electron/issues/42510 is fixed
