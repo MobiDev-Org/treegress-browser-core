@@ -55,6 +55,12 @@ a {
   color: var(--vscode-textLink-foreground);
 }
 
+a:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
 dialog {
   border: none;
   padding: 0;
@@ -175,6 +181,11 @@ input[type=text], input[type=search] {
   background-color: var(--vscode-input-background);
   border: none;
   outline: none;
+}
+
+input[type=text]:focus-visible, input[type=search]:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .codicon-loading {

@@ -40,6 +40,7 @@ export type HTMLReportOptions = {
   title?: string;
   noCopyPrompt?: boolean;
   noSnippets?: boolean;
+  mergeFiles?: boolean;
 };
 
 export type HTMLReport = {
@@ -84,6 +85,7 @@ export type TestCaseSummary = {
   duration: number;
   ok: boolean;
   results: TestResultSummary[];
+  repeatEachIndex?: number;
 };
 
 export type TestResultSummary = {
@@ -117,6 +119,7 @@ export type TestResult = {
 
 export type TestStep = {
   title: string;
+  subtitle?: string;
   startTime: string;
   duration: number;
   location?: Location;

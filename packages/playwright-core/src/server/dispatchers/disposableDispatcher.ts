@@ -18,8 +18,8 @@ import { Dispatcher } from './dispatcher';
 
 import type { DisposableObject } from '../disposable';
 import type { DispatcherScope } from './dispatcher';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 export class DisposableDispatcher extends Dispatcher<DisposableObject, channels.DisposableChannel, DispatcherScope> implements channels.DisposableChannel {
   _type_Disposable = true;
@@ -29,8 +29,7 @@ export class DisposableDispatcher extends Dispatcher<DisposableObject, channels.
   }
 
   async dispose(_: any, progress: Progress) {
-    progress.metadata.potentiallyClosesScope = true;
-    await this._object.dispose();
+    await progress.race(this._object.dispose());
     this._dispose();
   }
 }

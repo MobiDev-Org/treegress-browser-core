@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Google LLC.
+ * Copyright 2026 Google LLC.
  * Copyright (c) Microsoft Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -101,6 +101,7 @@ export const enum ErrorCode {
   NoSuchNetworkData = 'no such network data',
   NoSuchNode = 'no such node',
   NoSuchRequest = 'no such request',
+  NoSuchScreencast = 'no such screencast',
   NoSuchScript = 'no such script',
   NoSuchStoragePartition = 'no such storage partition',
   NoSuchUserContext = 'no such user context',
@@ -473,7 +474,10 @@ export type BrowsingContextCommand =
   | BrowsingContext.Navigate
   | BrowsingContext.Print
   | BrowsingContext.Reload
+  | BrowsingContext.SetBypassCsp
   | BrowsingContext.SetViewport
+  | BrowsingContext.StartScreencast
+  | BrowsingContext.StopScreencast
   | BrowsingContext.TraverseHistory;
 export type BrowsingContextResult =
   | BrowsingContext.ActivateResult
@@ -486,7 +490,10 @@ export type BrowsingContextResult =
   | BrowsingContext.NavigateResult
   | BrowsingContext.PrintResult
   | BrowsingContext.ReloadResult
+  | BrowsingContext.SetBypassCspResult
   | BrowsingContext.SetViewportResult
+  | BrowsingContext.StartScreencastResult
+  | BrowsingContext.StopScreencastResult
   | BrowsingContext.TraverseHistoryResult;
 export type BrowsingContextEvent =
   | BrowsingContext.ContextCreated
@@ -570,11 +577,15 @@ export namespace BrowsingContext {
   export type Navigation = string;
 }
 export namespace BrowsingContext {
+  export type Download = string;
+}
+export namespace BrowsingContext {
   export type BaseNavigationInfo = {
     context: BrowsingContext.BrowsingContext;
     navigation: BrowsingContext.Navigation | null;
     timestamp: JsUint;
     url: string;
+    userContext?: Browser.UserContext;
   };
 }
 export namespace BrowsingContext {
@@ -624,6 +635,7 @@ export namespace BrowsingContext {
     origin?: 'viewport' | 'document';
     format?: BrowsingContext.ImageFormat;
     clip?: BrowsingContext.ClipRectangle;
+    imageSize?: BrowsingContext.ImageSize;
   };
 }
 export namespace BrowsingContext {
@@ -633,6 +645,18 @@ export namespace BrowsingContext {
      * Must be between `0` and `1`, inclusive.
      */
     quality?: number;
+  };
+}
+export namespace BrowsingContext {
+  export type ImageSize = {
+    /**
+     * Must be greater than or equal to `1`.
+     */
+    maxWidth?: JsUint;
+    /**
+     * Must be greater than or equal to `1`.
+     */
+    maxHeight?: JsUint;
   };
 }
 export namespace BrowsingContext {
@@ -704,6 +728,7 @@ export namespace BrowsingContext {
 export namespace BrowsingContext {
   export type CreateResult = {
     context: BrowsingContext.BrowsingContext;
+    userContext?: Browser.UserContext;
   };
 }
 export namespace BrowsingContext {
@@ -879,6 +904,25 @@ export namespace BrowsingContext {
   export type ReloadResult = BrowsingContext.NavigateResult;
 }
 export namespace BrowsingContext {
+  export type SetBypassCsp = {
+    method: 'browsingContext.setBypassCSP';
+    params: BrowsingContext.SetBypassCspParameters;
+  };
+}
+export namespace BrowsingContext {
+  export type SetBypassCspParameters = {
+    bypass: true | null;
+    contexts?: [
+      BrowsingContext.BrowsingContext,
+      ...BrowsingContext.BrowsingContext[],
+    ];
+    userContexts?: [Browser.UserContext, ...Browser.UserContext[]];
+  };
+}
+export namespace BrowsingContext {
+  export type SetBypassCspResult = EmptyResult;
+}
+export namespace BrowsingContext {
   export type SetViewport = {
     method: 'browsingContext.setViewport';
     params: BrowsingContext.SetViewportParameters;
@@ -903,6 +947,56 @@ export namespace BrowsingContext {
 }
 export namespace BrowsingContext {
   export type SetViewportResult = EmptyResult;
+}
+export namespace BrowsingContext {
+  export type StartScreencast = {
+    method: 'browsingContext.startScreencast';
+    params: BrowsingContext.StartScreencastParameters;
+  };
+}
+export namespace BrowsingContext {
+  export type StartScreencastParameters = {
+    context: BrowsingContext.BrowsingContext;
+    mimeType?: string;
+    video?: BrowsingContext.MediaTrackConstraints;
+    /**
+     * @defaultValue `false`
+     */
+    audio?: boolean;
+  };
+}
+export namespace BrowsingContext {
+  export type MediaTrackConstraints = {
+    width?: JsUint;
+    height?: JsUint;
+    frameRate?: JsUint;
+  };
+}
+export namespace BrowsingContext {
+  export type StartScreencastResult = {
+    screencast: BrowsingContext.Screencast;
+    path: string;
+  };
+}
+export namespace BrowsingContext {
+  export type Screencast = string;
+}
+export namespace BrowsingContext {
+  export type StopScreencast = {
+    method: 'browsingContext.stopScreencast';
+    params: BrowsingContext.StopScreencastParameters;
+  };
+}
+export namespace BrowsingContext {
+  export type StopScreencastParameters = {
+    screencast: BrowsingContext.Screencast;
+  };
+}
+export namespace BrowsingContext {
+  export type StopScreencastResult = {
+    path: string;
+    error?: string;
+  };
 }
 export namespace BrowsingContext {
   export type TraverseHistory = {
@@ -954,6 +1048,7 @@ export namespace BrowsingContext {
     context: BrowsingContext.BrowsingContext;
     timestamp: JsUint;
     url: string;
+    userContext?: Browser.UserContext;
   };
 }
 export namespace BrowsingContext {
@@ -976,6 +1071,7 @@ export namespace BrowsingContext {
 }
 export namespace BrowsingContext {
   export type DownloadWillBeginParams = {
+    download: BrowsingContext.Download;
     suggestedFilename: string;
   } & BrowsingContext.BaseNavigationInfo;
 }
@@ -993,11 +1089,13 @@ export namespace BrowsingContext {
 export namespace BrowsingContext {
   export type DownloadCanceledParams = {
     status: 'canceled';
+    download: BrowsingContext.Download;
   } & BrowsingContext.BaseNavigationInfo;
 }
 export namespace BrowsingContext {
   export type DownloadCompleteParams = {
     status: 'complete';
+    download: BrowsingContext.Download;
     filepath: string | null;
   } & BrowsingContext.BaseNavigationInfo;
 }
@@ -1030,6 +1128,7 @@ export namespace BrowsingContext {
     context: BrowsingContext.BrowsingContext;
     accepted: boolean;
     type: BrowsingContext.UserPromptType;
+    userContext?: Browser.UserContext;
     userText?: string;
   };
 }
@@ -1045,6 +1144,7 @@ export namespace BrowsingContext {
     handler: Session.UserPromptHandlerType;
     message: string;
     type: BrowsingContext.UserPromptType;
+    userContext?: Browser.UserContext;
     defaultValue?: string;
   };
 }
@@ -1054,8 +1154,11 @@ export type EmulationCommand =
   | Emulation.SetLocaleOverride
   | Emulation.SetNetworkConditions
   | Emulation.SetScreenOrientationOverride
+  | Emulation.SetScreenSettingsOverride
   | Emulation.SetScriptingEnabled
+  | Emulation.SetScrollbarTypeOverride
   | Emulation.SetTimezoneOverride
+  | Emulation.SetTouchOverride
   | Emulation.SetUserAgentOverride;
 export type EmulationResult =
   | Emulation.SetForcedColorsModeThemeOverrideResult
@@ -1063,7 +1166,9 @@ export type EmulationResult =
   | Emulation.SetLocaleOverrideResult
   | Emulation.SetScreenOrientationOverrideResult
   | Emulation.SetScriptingEnabledResult
+  | Emulation.SetScrollbarTypeOverrideResult
   | Emulation.SetTimezoneOverrideResult
+  | Emulation.SetTouchOverrideResult
   | Emulation.SetUserAgentOverrideResult;
 export namespace Emulation {
   export type SetForcedColorsModeThemeOverride = {
@@ -1308,6 +1413,25 @@ export namespace Emulation {
   export type SetScriptingEnabledResult = EmptyResult;
 }
 export namespace Emulation {
+  export type SetScrollbarTypeOverride = {
+    method: 'emulation.setScrollbarTypeOverride';
+    params: Emulation.SetScrollbarTypeOverrideParameters;
+  };
+}
+export namespace Emulation {
+  export type SetScrollbarTypeOverrideParameters = {
+    scrollbarType: 'classic' | 'overlay' | null;
+    contexts?: [
+      BrowsingContext.BrowsingContext,
+      ...BrowsingContext.BrowsingContext[],
+    ];
+    userContexts?: [Browser.UserContext, ...Browser.UserContext[]];
+  };
+}
+export namespace Emulation {
+  export type SetScrollbarTypeOverrideResult = EmptyResult;
+}
+export namespace Emulation {
   export type SetTimezoneOverride = {
     method: 'emulation.setTimezoneOverride';
     params: Emulation.SetTimezoneOverrideParameters;
@@ -1325,6 +1449,28 @@ export namespace Emulation {
 }
 export namespace Emulation {
   export type SetTimezoneOverrideResult = EmptyResult;
+}
+export namespace Emulation {
+  export type SetTouchOverride = {
+    method: 'emulation.setTouchOverride';
+    params: Emulation.SetTouchOverrideParameters;
+  };
+}
+export namespace Emulation {
+  export type SetTouchOverrideParameters = {
+    /**
+     * Must be greater than or equal to `1`.
+     */
+    maxTouchPoints: JsUint | null;
+    contexts?: [
+      BrowsingContext.BrowsingContext,
+      ...BrowsingContext.BrowsingContext[],
+    ];
+    userContexts?: [Browser.UserContext, ...Browser.UserContext[]];
+  };
+}
+export namespace Emulation {
+  export type SetTouchOverrideResult = EmptyResult;
 }
 export type NetworkCommand =
   | Network.AddDataCollector
@@ -1381,6 +1527,7 @@ export namespace Network {
     redirectCount: JsUint;
     request: Network.RequestData;
     timestamp: JsUint;
+    userContext?: Browser.UserContext | null;
     intercepts?: [Network.Intercept, ...Network.Intercept[]];
   };
 }
@@ -2059,6 +2206,7 @@ export namespace Script {
   export type WindowRealmInfo = Script.BaseRealmInfo & {
     type: 'window';
     context: BrowsingContext.BrowsingContext;
+    userContext?: Browser.UserContext;
     sandbox?: string;
   };
 }
@@ -2367,6 +2515,7 @@ export namespace Script {
   export type Source = {
     realm: Script.Realm;
     context?: BrowsingContext.BrowsingContext;
+    userContext?: Browser.UserContext;
   };
 }
 export namespace Script {
@@ -2833,38 +2982,26 @@ export namespace Input {
 }
 export namespace Input {
   export type PointerCommonProperties = {
-    /**
-     * @defaultValue `1`
-     */
     width?: JsUint;
-    /**
-     * @defaultValue `1`
-     */
     height?: JsUint;
     /**
-     * @defaultValue `0`
+     * Must be between `0` and `1`, inclusive.
      */
     pressure?: number;
     /**
-     * @defaultValue `0`
+     * Must be between `-1` and `1`, inclusive.
      */
     tangentialPressure?: number;
     /**
      * Must be between `0` and `359`, inclusive.
-     *
-     * @defaultValue `0`
      */
     twist?: number;
     /**
      * Must be between `0` and `1.5707963267948966`, inclusive.
-     *
-     * @defaultValue `0`
      */
     altitudeAngle?: number;
     /**
      * Must be between `0` and `6.283185307179586`, inclusive.
-     *
-     * @defaultValue `0`
      */
     azimuthAngle?: number;
   };
@@ -2914,6 +3051,7 @@ export namespace Input {
 export namespace Input {
   export type FileDialogInfo = {
     context: BrowsingContext.BrowsingContext;
+    userContext?: Browser.UserContext;
     element?: Script.SharedReference;
     multiple: boolean;
   };

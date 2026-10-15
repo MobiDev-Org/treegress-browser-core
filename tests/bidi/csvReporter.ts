@@ -27,6 +27,8 @@ type ReporterOptions = {
   configDir: string,
 };
 
+const header = ['Test Name', 'Expected Status', 'Status', 'Error Message'];
+
 class CsvReporter implements Reporter {
   private _suite: Suite;
   private _options: ReporterOptions;
@@ -41,7 +43,7 @@ class CsvReporter implements Reporter {
   }
 
   onEnd(result: FullResult) {
-    const rows = [['Test Name', 'Expected Status', 'Status', 'Error Message']];
+    const rows: string[][] = [];
     for (const project of this._suite.suites) {
       for (const file of project.suites) {
         for (const test of file.allTests()) {
@@ -51,7 +53,7 @@ class CsvReporter implements Reporter {
             continue;
           const row = [];
           const [, , , ...titles] = test.titlePath();
-          row.push(csvEscape(`${file.title} › ${titles.join(' › ')}`));
+          row.push(`${file.title} › ${titles.join(' › ')}`);
           row.push(test.expectedStatus);
           row.push(test.outcome());
           if (fixme) {
@@ -60,11 +62,11 @@ class CsvReporter implements Reporter {
             const result = test.results.find(r => r.error);
             if (result) {
               const errorMessage = stripAnsi(result.error?.message.replace(/\s+/g, ' ').trim().substring(0, 1024) ?? '');
-              row.push(csvEscape(errorMessage));
+              row.push(errorMessage);
             } else {
               const fail = test.annotations.find(a => a.type === 'fail');
               if (fail)
-                row.push(csvEscape(`Should have failed: ${fail.description}`));
+                row.push(`Should have failed: ${fail.description}`);
               else
                 row.push('');
             }
@@ -73,10 +75,10 @@ class CsvReporter implements Reporter {
         }
       }
     }
-    const csv = rows.map(r => r.join(',')).join('\n');
     const reportFile = path.resolve(this._options.configDir, this._options.outputFile || 'test-results.csv');
     this._pendingWrite = (async () => {
       await fs.promises.mkdir(path.dirname(reportFile), { recursive: true });
+      const csv = [header, ...rows].map(r => r.map(csvEscape).join(',')).join('\n');
       await fs.promises.writeFile(reportFile, csv);
     })();
   }

@@ -14,31 +14,34 @@
   limitations under the License.
 */
 
-import type { ActionTraceEvent } from '@trace/trace';
-import { clsx, msToString } from '@web/uiUtils';
+import type { ActionTraceEvent } from '@isomorphic/trace/trace';
+import { clsx } from '@web/uiUtils';
+import { msToString } from '@isomorphic/formatUtils';
 import * as React from 'react';
 import './actionList.css';
-import { stats, buildActionTree } from '@isomorphic/trace/traceModel';
-import { asLocatorDescription, type Language } from '@isomorphic/locatorGenerators';
+import { buildActionTree } from '@isomorphic/trace/traceModel';
+import { type Language } from '@isomorphic/locatorGenerators';
 import type { TreeState } from '@web/components/treeView';
 import { TreeView } from '@web/components/treeView';
-import type { ActionTraceEventInContext, ActionTreeItem } from '@isomorphic/trace/traceModel';
+import type { ActionTreeItem, TraceModel } from '@isomorphic/trace/traceModel';
+import type { ActionEntry } from '@isomorphic/trace/entries';
+import { useTraceModel } from './traceModelContext';
 import type { Boundaries } from './geometry';
 import { ToolbarButton } from '@web/components/toolbarButton';
 import { testStatusIcon } from './testUtils';
-import { methodMetainfo } from '@isomorphic/protocolMetainfo';
-import { formatProtocolParam } from '@isomorphic/protocolFormatter';
+import { getMetainfo } from '@isomorphic/protocolMetainfo';
+import { formatProtocolParam, renderSubtitleForCall } from '@isomorphic/protocolFormatter';
 
 export interface ActionListProps {
-  actions: ActionTraceEventInContext[],
-  selectedAction: ActionTraceEventInContext | undefined,
+  actions: ActionEntry[],
+  selectedAction: ActionEntry | undefined,
   selectedTime: Boundaries | undefined,
   setSelectedTime: (time: Boundaries | undefined) => void,
   treeState: TreeState,
   setTreeState: React.Dispatch<React.SetStateAction<TreeState>>,
   sdkLanguage: Language | undefined;
-  onSelected?: (action: ActionTraceEventInContext) => void,
-  onHighlighted?: (action: ActionTraceEventInContext | undefined) => void,
+  onSelected?: (action: ActionEntry) => void,
+  onHighlighted?: (action: ActionEntry | undefined) => void,
   revealConsole?: () => void,
   revealActionAttachment?(callId: string): void,
   isLive?: boolean,
@@ -62,6 +65,7 @@ export const ActionList: React.FC<ActionListProps> = ({
   isLive,
   actionFilterText,
 }) => {
+  const model = useTraceModel();
   const { rootItem, itemMap } = React.useMemo(() => buildActionTree(actions), [actions]);
 
   const { selectedItem } = React.useMemo(() => {
@@ -79,19 +83,20 @@ export const ActionList: React.FC<ActionListProps> = ({
 
   const render = React.useCallback((item: ActionTreeItem) => {
     const showAttachments = !!revealActionAttachment && !!item.action.attachments?.length;
-    return renderAction(item.action, { sdkLanguage, revealConsole, revealActionAttachment: () => revealActionAttachment?.(item.action.callId), isLive, showDuration: true, showBadges: true, showAttachments });
-  }, [isLive, revealConsole, revealActionAttachment, sdkLanguage]);
+    return renderAction(item.action, { model, sdkLanguage, revealConsole, revealActionAttachment: () => revealActionAttachment?.(item.action.callId), isLive, showDuration: true, showBadges: true, showAttachments });
+  }, [model, isLive, revealConsole, revealActionAttachment, sdkLanguage]);
 
   const isVisible = React.useCallback((item: ActionTreeItem) => {
     const timeVisible = !selectedTime || !item.action || (item.action.startTime <= selectedTime.maximum && item.action.endTime >= selectedTime.minimum);
     if (!timeVisible)
       return false;
-    const title = renderTitleForCall(item.action).title;
     if (!actionFilterText)
       return true;
-    const isIncluded = title.toLowerCase().includes(actionFilterText.toLowerCase());
+    const { title, subtitle } = renderTitleForCall(item.action, sdkLanguage);
+    const text = subtitle ? `${title} ${subtitle}` : title;
+    const isIncluded = text.toLowerCase().includes(actionFilterText.toLowerCase());
     return isIncluded ? true : 'if-needed';
-  }, [selectedTime, actionFilterText]);
+  }, [selectedTime, actionFilterText, sdkLanguage]);
 
   const onSelectedAction = React.useCallback((item: ActionTreeItem) => {
     onSelected?.(item.action);
@@ -101,8 +106,14 @@ export const ActionList: React.FC<ActionListProps> = ({
     onHighlighted?.(item?.action);
   }, [onHighlighted]);
 
+  const [showAllCounter, setShowAllCounter] = React.useState<number>();
+  const onShowAll = React.useCallback(() => {
+    setSelectedTime(undefined);
+    setShowAllCounter(n => (n ?? 0) + 1);
+  }, [setSelectedTime]);
+
   return <div className='vbox action-list-container'>
-    {selectedTime && <div className='action-list-show-all' onClick={() => setSelectedTime(undefined)}><span className='codicon codicon-triangle-left'></span>Show all</div>}
+    {selectedTime && <ToolbarButton className='action-list-show-all' icon='triangle-left' onClick={onShowAll}>Show all</ToolbarButton>}
     <ActionTreeView
       name='actions'
       rootItem={rootItem}
@@ -116,13 +127,15 @@ export const ActionList: React.FC<ActionListProps> = ({
       isVisible={isVisible}
       render={render}
       autoExpandDepth={actionFilterText?.trim() ? 5 : 0}
+      revealSelectedKey={showAllCounter}
     />
   </div>;
 };
 
 export const renderAction = (
-  action: ActionTraceEvent,
+  action: ActionEntry,
   options: {
+    model?: TraceModel,
     sdkLanguage?: Language,
     revealConsole?: () => void,
     revealActionAttachment?(): void,
@@ -131,10 +144,9 @@ export const renderAction = (
     showBadges?: boolean,
     showAttachments?: boolean,
   }) => {
-  const { sdkLanguage, revealConsole, revealActionAttachment, isLive, showDuration, showBadges, showAttachments } = options;
-  const { errors, warnings } = stats(action);
-
-  const locator = action.params.selector ? asLocatorDescription(sdkLanguage || 'javascript', action.params.selector) : undefined;
+  const { model, sdkLanguage, revealConsole, revealActionAttachment, isLive, showDuration, showBadges, showAttachments } = options;
+  const { errors, warnings } = model?.stats(action) ?? { errors: 0, warnings: 0 };
+  const badgeLabel = [pluralize(errors, 'error'), pluralize(warnings, 'warning')].filter(Boolean).join(', ');
 
   const isSkipped = action.class === 'Test' && action.method === 'test.step' && action.annotations?.some(a => a.type === 'skip');
   let time: string = '';
@@ -144,7 +156,7 @@ export const renderAction = (
     time = 'Timed out';
   else if (!isLive)
     time = '-';
-  const { elements, title } = renderTitleForCall(action);
+  const { elements, title, subtitle } = renderTitleForCall(action, sdkLanguage);
   return <div className='action-title vbox'>
     <div className='hbox'>
       <span className='action-title-method' title={title}>{elements}</span>
@@ -152,17 +164,21 @@ export const renderAction = (
       {showAttachments && <ToolbarButton icon='attach' title='Open Attachment' onClick={() => revealActionAttachment?.()} />}
       {showDuration && !isSkipped && <div className='action-duration'>{time || <span className='codicon codicon-loading'></span>}</div>}
       {isSkipped && <span className={clsx('action-skipped', 'codicon', testStatusIcon('skipped'))} title='skipped'></span>}
-      {showBadges && <div className='action-icons' onClick={() => revealConsole?.()}>
-        {!!errors && <div className='action-icon'><span className='codicon codicon-error'></span><span className='action-icon-value'>{errors}</span></div>}
-        {!!warnings && <div className='action-icon'><span className='codicon codicon-warning'></span><span className='action-icon-value'>{warnings}</span></div>}
-      </div>}
+      {showBadges && !!badgeLabel && <ToolbarButton
+        className='action-icons'
+        title='Reveal console'
+        ariaLabel={`Reveal console, ${badgeLabel}`}
+        onClick={() => revealConsole?.()}>
+        {!!errors && <span className='action-icon'><span className='codicon codicon-error'></span><span className='action-icon-value'>{errors}</span></span>}
+        {!!warnings && <span className='action-icon'><span className='codicon codicon-warning'></span><span className='action-icon-value'>{warnings}</span></span>}
+      </ToolbarButton>}
     </div>
-    {locator && <div className='action-title-selector' title={locator}>{locator}</div>}
+    {subtitle && <div className='action-title-subtitle' title={subtitle}>{subtitle}</div>}
   </div>;
 };
 
-export function renderTitleForCall(action: ActionTraceEvent, sdkLanguage?: Language): { elements: React.ReactNode[], title: string } {
-  let titleFormat = action.title ?? methodMetainfo.get(action.class + '.' + action.method)?.title ?? action.method;
+export function renderTitleForCall(action: ActionTraceEvent, sdkLanguage?: Language): { elements: React.ReactNode[], title: string, subtitle?: string } {
+  let titleFormat = action.title ?? getMetainfo({ type: action.class, method: action.method })?.title ?? action.method;
   titleFormat = titleFormat.replace(/\n/g, ' ');
 
   const elements: React.ReactNode[] = [];
@@ -178,7 +194,7 @@ export function renderTitleForCall(action: ActionTraceEvent, sdkLanguage?: Langu
     elements.push(chunk);
     title.push(chunk);
 
-    const param = formatProtocolParam(action.params, quotedText);
+    const param = formatProtocolParam(action.params, quotedText, sdkLanguage);
     if (param === undefined) {
       elements.push(fullMatch);
       title.push(fullMatch);
@@ -198,10 +214,12 @@ export function renderTitleForCall(action: ActionTraceEvent, sdkLanguage?: Langu
     title.push(chunk);
   }
 
-  const locator = action.params.selector ? asLocatorDescription(sdkLanguage || 'javascript', action.params.selector) : undefined;
-  if (locator) {
-    title.push(' ');
-    title.push(locator);
-  }
-  return { elements, title: title.join('') };
+  const subtitle = renderSubtitleForCall({ type: action.class, method: action.method, params: action.params, subtitle: action.subtitle }, sdkLanguage);
+  return { elements, title: title.join(''), subtitle };
+}
+
+function pluralize(count: number, noun: string): string {
+  if (!count)
+    return '';
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }

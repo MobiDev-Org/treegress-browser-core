@@ -98,7 +98,7 @@ export class ClockController {
 
   install(time: number) {
     this._replayLogOnce();
-    this._innerSetTime(asWallTime(time));
+    this._innerInstall(asWallTime(time));
   }
 
   setSystemTime(time: number) {
@@ -134,6 +134,15 @@ export class ClockController {
     this._now.isFixedTime = false;
     if (this._now.origin < 0)
       this._now.origin = this._now.time;
+  }
+
+  private _innerInstall(time: WallTime) {
+    // On a fresh install, reset the monotonic counter so that drift
+    // accumulated by the realTime ticker before the user called install()
+    // does not leak into performance.now().
+    if (this._now.origin < 0)
+      this._now.ticks = 0 as Ticks;
+    this._innerSetTime(time);
   }
 
   private _innerSetFixedTime(time: WallTime) {
@@ -440,7 +449,7 @@ export class ClockController {
       lastLogTime = time;
 
       if (type === 'install') {
-        this._innerSetTime(asWallTime(param!));
+        this._innerInstall(asWallTime(param!));
       } else if (type === 'fastForward' || type === 'runFor') {
         this._advanceNow(shiftTicks(this._now.ticks, param!));
       } else if (type === 'pauseAt') {
@@ -569,6 +578,27 @@ function createIntl(clock: ClockController, NativeIntl: Builtins['Intl']): Built
   return ClockIntl;
 }
 
+function createTemporal(clock: ClockController, NativeTemporal: Builtins['Temporal']): Builtins['Temporal'] {
+  const NativeNow = NativeTemporal.Now;
+  const instant = () => NativeTemporal.Instant.fromEpochMilliseconds(Math.trunc(clock.now()));
+  const zonedDateTimeISO = (timeZone?: Temporal.TimeZoneLike) => instant().toZonedDateTimeISO(timeZone ?? NativeNow.timeZoneId());
+  const overrides: Partial<typeof Temporal.Now> = {
+    instant,
+    zonedDateTimeISO,
+    plainDateTimeISO: timeZone => zonedDateTimeISO(timeZone).toPlainDateTime(),
+    plainDateISO: timeZone => zonedDateTimeISO(timeZone).toPlainDate(),
+    plainTimeISO: timeZone => zonedDateTimeISO(timeZone).toPlainTime(),
+  };
+
+  // All properties of Temporal are non-enumerable, mirror them with their descriptors.
+  const ClockNow = Object.create(Object.getPrototypeOf(NativeNow), Object.getOwnPropertyDescriptors(NativeNow));
+  for (const [key, value] of Object.entries(overrides))
+    Object.defineProperty(ClockNow, key, { value, writable: true, enumerable: false, configurable: true });
+  const ClockTemporal = Object.create(Object.getPrototypeOf(NativeTemporal), Object.getOwnPropertyDescriptors(NativeTemporal));
+  Object.defineProperty(ClockTemporal, 'Now', { value: ClockNow, writable: true, enumerable: false, configurable: true });
+  return ClockTemporal;
+}
+
 function compareTimers(a: Timer, b: Timer) {
   // Sort first by absolute timing
   if (a.callAt < b.callAt)
@@ -614,6 +644,7 @@ function platformOriginals(globalObject: WindowOrWorkerGlobalScope): { raw: Buil
     performance: globalObject.performance,
     Intl: (globalObject as any).Intl,
     AbortSignal: (globalObject as any).AbortSignal,
+    Temporal: (globalObject as any).Temporal,
   };
   const bound = { ...raw };
   for (const key of Object.keys(bound) as (keyof Builtins)[]) {
@@ -691,6 +722,7 @@ function createApi(clock: ClockController, originals: Builtins, browserName?: st
     Date: createDate(clock, originals.Date),
     performance: originals.performance ? fakePerformance(clock, originals.performance) : (undefined as unknown as Builtins['performance']),
     AbortSignal: originals.AbortSignal ? fakeAbortSignal(clock, originals.AbortSignal, browserName) : (undefined as unknown as Builtins['AbortSignal']),
+    Temporal: originals.Temporal ? createTemporal(clock, originals.Temporal) : (undefined as unknown as Builtins['Temporal']),
   };
 }
 
@@ -699,6 +731,24 @@ function getClearHandler(type: TimerType) {
     return `cancel${type}`;
 
   return `clear${type}`;
+}
+
+class FakePerformanceEntry {
+  name: string;
+  entryType: string;
+  startTime: number;
+  duration: number;
+
+  constructor(name: string, entryType: string, startTime: number, duration: number) {
+    this.name = name;
+    this.entryType = entryType;
+    this.startTime = startTime;
+    this.duration = duration;
+  }
+
+  toJSON() {
+    return JSON.stringify({ ...this });
+  }
 }
 
 function fakePerformance(clock: ClockController, performance: Builtins['performance']): Builtins['performance'] {
@@ -712,6 +762,10 @@ function fakePerformance(clock: ClockController, performance: Builtins['performa
       continue;
     if (key === 'getEntries' || key === 'getEntriesByName' || key === 'getEntriesByType')
       result[key] = () => [];
+    else if (key === 'mark')
+      result[key] = (name: string) => new FakePerformanceEntry(name, 'mark', 0, 0);
+    else if (key === 'measure')
+      result[key] = (name: string) => new FakePerformanceEntry(name, 'measure', 0, 50);
     else
       result[key] = () => {};
   }
@@ -769,12 +823,16 @@ export function install(globalObject: WindowOrWorkerGlobalScope, config: Install
   const toFake = config.toFake?.length ? config.toFake : Object.keys(originals) as (keyof Builtins)[];
 
   for (const method of toFake) {
+    if (method === 'Temporal' && !api.Temporal)
+      continue;
     if (method === 'Date') {
       (globalObject as any).Date = mirrorDateProperties(api.Date, (globalObject as any).Date);
     } else if (method === 'Intl') {
       (globalObject as any).Intl = api[method]!;
     } else if (method === 'AbortSignal') {
       (globalObject as any).AbortSignal = api[method]!;
+    } else if (method === 'Temporal') {
+      (globalObject as any).Temporal = api[method]!;
     } else if (method === 'performance') {
       (globalObject as any).performance = api[method]!;
       const kEventTimeStamp = Symbol('playwrightEventTimeStamp');

@@ -16,6 +16,8 @@
  */
 
 import { test as it, expect } from './pageTest';
+import { server as coreServer } from '../../packages/playwright-core/lib/coreBundle';
+const { nullProgress } = coreServer;
 
 const expectedOutput = '<html><head></head><body><div>hello</div></body></html>';
 
@@ -50,6 +52,14 @@ it('should work with HTML 4 doctype', async ({ page, server }) => {
   await page.setContent(`${doctype}<div>hello</div>`);
   const result = await page.content();
   expect(result).toBe(`${doctype}${expectedOutput}`);
+});
+
+it('should include shadow roots', async ({ page }) => {
+  const html = '<!DOCTYPE html><html lang="en"><head></head><body><div id="host"><template shadowrootmode="open"><div id="nested"><template shadowrootmode="open"><span>nested</span></template><slot></slot></div></template><span>light</span></div><div id="closed"></div></body></html>';
+  // Closed shadow roots are not accessible from script and are never serialized.
+  await page.setContent(html.replace('<div id="closed">', '<div id="closed"><template shadowrootmode="closed"><span>closed</span></template>'));
+  expect(await page.content()).toBe('<!DOCTYPE html><html lang="en"><head></head><body><div id="host"><span>light</span></div><div id="closed"></div></body></html>');
+  expect(await page.content({ includeShadow: true })).toBe(html);
 });
 
 it('should respect timeout', async ({ page, server, playwright }) => {
@@ -124,7 +134,7 @@ it('content() should throw nice error during navigation', async ({ page, server 
 });
 
 it('should return empty content there is no iframe src', async ({ page, browserName }) => {
-  it.fixme(browserName === 'webkit', 'Hangs in all browsers because there is no utility context');
+  it.fixme(browserName === 'webkit', 'there is no utility context');
   await page.setContent(`<iframe src="javascript:console.log(1)"></iframe>`);
   expect(page.frames().length).toBe(2);
   expect(await page.frames()[1].content()).toBe('<html><head></head><body></body></html>');
@@ -133,7 +143,7 @@ it('should return empty content there is no iframe src', async ({ page, browserN
 it('should handle timeout properly', async ({ page, toImpl, browserName }) => {
   it.skip(browserName === 'firefox', 'tampering with console.debug in utility world does not work');
 
-  await toImpl(page).mainFrame().evaluateExpression(String(() => {
+  await toImpl(page).mainFrame().evaluateExpression(nullProgress, String(() => {
     window['saved'] = console.debug.bind(console);
     console.debug = () => {};
   }), { isFunction: true, world: 'utility' });
@@ -141,7 +151,7 @@ it('should handle timeout properly', async ({ page, toImpl, browserName }) => {
   expect(error.message).toContain('page.setContent: Timeout 1000ms exceeded');
 
   // Should recover after timeout.
-  await toImpl(page).mainFrame().evaluateExpression(String(() => {
+  await toImpl(page).mainFrame().evaluateExpression(nullProgress, String(() => {
     console.debug = window['saved'];
   }), { isFunction: true, world: 'utility' });
   await page.setContent(`<div>world</div>`);
@@ -151,7 +161,7 @@ it('should handle timeout properly', async ({ page, toImpl, browserName }) => {
 it('should handle timeout properly 2', async ({ page, toImpl, trace }) => {
   it.skip(trace === 'on');
 
-  await toImpl(page).mainFrame().evaluateExpression(String(() => {
+  await toImpl(page).mainFrame().evaluateExpression(nullProgress, String(() => {
     document.close = () => {
       while (true) {}
     };

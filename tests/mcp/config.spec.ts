@@ -17,8 +17,7 @@
 import fs from 'node:fs';
 
 import { test, expect, parseResponse } from './fixtures';
-import { resolveCLIConfig } from '../../packages/playwright-core/lib/mcp/config';
-import type { Config } from '../../packages/playwright-core/src/mcp/config.d';
+import type { Config } from '../../packages/playwright-core/src/tools/mcp/config.d';
 
 test('config user data dir', async ({ startClient, server }, testInfo) => {
   server.setContent('/', `
@@ -105,17 +104,35 @@ test.describe(() => {
   });
 });
 
-async function sandboxOption(cli: any) {
-  const config: any = await resolveCLIConfig(cli);
-  return config.browser.launchOptions.chromiumSandbox;
-}
+test('config ignoreDefaultArgs merged with persistent mode defaults', async ({ startClient, mcpBrowser }, testInfo) => {
+  test.skip(!['chrome', 'chromium', 'msedge'].includes(mcpBrowser!), 'chrome://version is Chromium-specific');
+  const config: Config = {
+    browser: {
+      userDataDir: testInfo.outputPath('user-data-dir'),
+      launchOptions: {
+        ignoreDefaultArgs: ['--password-store=basic'],
+      },
+    },
+  };
+  const { client } = await startClient({ config });
 
-test('test sandbox configuration', async ({}) => {
-  expect(await sandboxOption({ browser: 'chromium' })).toBe(process.platform !== 'linux');
-  expect(await sandboxOption({ browser: 'chromium', sandbox: true })).toBe(true);
-  expect(await sandboxOption({ browser: 'chrome', sandbox: false })).toBe(false);
-  expect(await sandboxOption({ browser: 'chrome' })).toBe(true);
-  expect(await sandboxOption({ browser: 'msedge' })).toBe(true);
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: 'chrome://version' },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => document.getElementById("command_line").innerText' },
+  });
+  const commandLine = result.content[0].text;
+
+  // User-specified arg should be removed.
+  expect(commandLine).not.toContain('--password-store=basic');
+  // Persistent mode's built-in --disable-extensions should also be removed.
+  expect(commandLine).not.toContain('--disable-extensions');
+  // Other default args should still be present.
+  expect(commandLine).toContain('--use-mock-keychain');
 });
 
 test('browser_get_config returns merged config from file, env and cli', async ({ startClient }) => {
@@ -155,4 +172,31 @@ test('browser_get_config returns merged config from file, env and cli', async ({
 
   // From CLI arg (--isolated).
   expect(config.browser.isolated).toBe(true);
+});
+
+test.describe('chromiumSandbox', () => {
+  test.skip(({ mcpBrowser }) => mcpBrowser !== 'chrome', 'Channel-agnostic tests.');
+
+  test('config file value is respected', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright-mcp/issues/1716' } }, async ({ startClient }) => {
+    const { client } = await startClient({
+      config: {
+        capabilities: ['config'],
+        browser: { launchOptions: { chromiumSandbox: true } },
+      },
+    });
+    const config = JSON.parse(parseResponse(await client.callTool({ name: 'browser_get_config' })).result);
+    expect(config.browser.launchOptions.chromiumSandbox).toBe(true);
+  });
+
+  test('--no-sandbox overrides config file value', async ({ startClient }) => {
+    const { client } = await startClient({
+      config: {
+        capabilities: ['config'],
+        browser: { launchOptions: { chromiumSandbox: true } },
+      },
+      args: ['--no-sandbox'],
+    });
+    const config = JSON.parse(parseResponse(await client.callTool({ name: 'browser_get_config' })).result);
+    expect(config.browser.launchOptions.chromiumSandbox).toBe(false);
+  });
 });

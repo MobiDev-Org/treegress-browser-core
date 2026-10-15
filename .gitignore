@@ -1,17 +1,18 @@
 node_modules/
 /test-results/
+/coverage/
 /tests/coverage-report
 .local-browsers/
 /.dev_profile*
 .DS_Store
 *.swp
 *.pyc
+DEPS.true
 /.vscode
 .mono
 .idea
 yarn.lock
 /packages/playwright-core/src/generated
-/packages/playwright-ct-core/src/generated
 packages/*/lib/
 drivers/
 .android-sdk/
@@ -20,6 +21,7 @@ nohup.out
 .trace
 .tmp
 .playwright-cli
+.playwright-mcp
 allure*
 blob-report
 playwright-report
@@ -38,3 +40,5 @@ test-results
 .eslintcache
 playwright.env
 /firefox/
+.playwright/
+.npmrc

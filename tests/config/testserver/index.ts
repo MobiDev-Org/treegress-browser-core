@@ -22,9 +22,11 @@ import type net from 'net';
 import path from 'path';
 import util from 'util';
 import type stream from 'stream';
-import ws from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import zlib, { gzip } from 'zlib';
-import { createHttpServer, createHttpsServer } from '../../../packages/playwright-core/lib/server/utils/network';
+import { utils } from '../../../packages/playwright-core/lib/coreBundle';
+
+const { createHttpServer, createHttpsServer } = utils;
 
 const fulfillSymbol = Symbol('fulfil callback');
 const rejectSymbol = Symbol('reject callback');
@@ -36,14 +38,16 @@ type UpgradeActions = {
   socket: stream.Duplex;
 };
 
+type IncomingMessageWithBody = http.IncomingMessage & { postBody: Promise<Buffer> };
+
 export class TestServer {
   private _server: http.Server;
-  private _wsServer: ws.WebSocketServer;
+  private _wsServer: WebSocketServer;
   private _dirPath: string;
   readonly debugServer: any;
   private _startTime: Date;
   private _cachedPathPrefix: string | null;
-  private _routes = new Map<string, (arg0: http.IncomingMessage, arg1: http.ServerResponse) => any>();
+  private _routes = new Map<string, (arg0: IncomingMessageWithBody, arg1: http.ServerResponse) => any>();
   private _auths = new Map<string, { username: string; password: string; }>();
   private _csp = new Map<string, string>();
   private _extraHeaders = new Map<string, object>();
@@ -84,7 +88,7 @@ export class TestServer {
     else
       this._server = createHttpServer(this._onRequest.bind(this));
     this._server.on('connection', socket => this._onSocket(socket));
-    this._wsServer = new ws.WebSocketServer({ noServer: true });
+    this._wsServer = new WebSocketServer({ noServer: true });
     this._server.on('upgrade', async (request, socket, head) => {
       const doUpgrade = () => {
         this._wsServer.handleUpgrade(request, socket, head, ws => {
@@ -178,7 +182,7 @@ export class TestServer {
     });
   }
 
-  setRoute(path: string, handler: (arg0: http.IncomingMessage & { postBody: Promise<Buffer> }, arg1: http.ServerResponse) => any) {
+  setRoute(path: string, handler: (arg0: IncomingMessageWithBody, arg1: http.ServerResponse) => any) {
     this._routes.set(path, handler);
   }
 
@@ -190,17 +194,19 @@ export class TestServer {
     });
   }
 
-  waitForRequest(path: string): Promise<http.IncomingMessage & { postBody: Promise<Buffer> }> {
+  waitForRequest(path: string): Promise<IncomingMessageWithBody> {
     let promise = this._requestSubscribers.get(path);
     if (promise)
       return promise;
-    let fulfill, reject;
+    let fulfill;
+    let reject;
     promise = new Promise((f, r) => {
       fulfill = f;
       reject = r;
     });
     promise[fulfillSymbol] = fulfill;
-    promise[rejectSymbol] = reject;
+    const error = new Error(`Request ${path} was not received before the test finished.`);
+    promise[rejectSymbol] = () => reject(error);
     this._requestSubscribers.set(path, promise);
     return promise;
   }
@@ -214,9 +220,8 @@ export class TestServer {
     this._upgradeCallback = undefined;
     this._wsServer.removeAllListeners('connection');
     this._server.closeAllConnections();
-    const error = new Error('Static Server has been reset');
     for (const subscriber of this._requestSubscribers.values())
-      subscriber[rejectSymbol].call(null, error);
+      subscriber[rejectSymbol].call(null);
     this._requestSubscribers.clear();
   }
 
@@ -256,7 +261,7 @@ export class TestServer {
     }
     const handler = this._routes.get(pathWithSearch);
     if (handler)
-      handler.call(null, request, response);
+      handler.call(null, request as IncomingMessageWithBody, response);
     else
       this.serveFile(request, response);
   }
@@ -321,7 +326,7 @@ export class TestServer {
     }
   }
 
-  onceWebSocketConnection(handler: (socket: ws.WebSocket, request: http.IncomingMessage) => void) {
+  onceWebSocketConnection(handler: (socket: WebSocket, request: http.IncomingMessage) => void) {
     this._wsServer.once('connection', handler);
   }
 
@@ -336,7 +341,7 @@ export class TestServer {
   }
 
   waitForWebSocket() {
-    return new Promise<ws.WebSocket>(fulfill => this._wsServer.once('connection', (ws, req) => fulfill(ws)));
+    return new Promise<WebSocket>(fulfill => this._wsServer.once('connection', (ws, req) => fulfill(ws)));
   }
 
   sendOnWebSocketConnection(data) {

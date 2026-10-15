@@ -383,6 +383,9 @@ class Member {
         arg.type?.properties?.sort((p1, p2) => p1.name.localeCompare(p2.name));
       indexArg(arg);
     }
+    // Also index return type properties so they have enclosingMethod set.
+    if (this.kind === 'method' || this.kind === 'property')
+      indexArg(this);
   }
 
   /**
@@ -480,27 +483,36 @@ class Type {
   /**
    * @param {string} expression
    * @param {!Array<!Member>=} properties
+   * @param {!Object<string, string>=} langAliases
    * @return {Type}
    */
-  static parse(expression, properties = []) {
+  static parse(expression, properties = [], langAliases = {}) {
     expression = expression.replace(/\\\(/g, '(').replace(/\\\)/g, ')');
     const type = Type.fromParsedType(parseTypeExpression(expression));
     type.expression = expression;
     if (type.name === 'number')
       throw new Error('Number types should be either int or float, not number in: ' + expression);
-    if (!properties.length)
+    const hasAliases = Object.keys(langAliases).length > 0;
+    if (!properties.length && !hasAliases)
       return type;
     const types = [];
     type._collectAllTypes(types);
-    let success = false;
+    let assignedToObject = false;
     for (const t of types) {
       if (t.name === 'Object') {
-        t.properties = properties;
-        success = true;
+        if (properties.length)
+          t.properties = properties;
+        if (hasAliases)
+          t.langAliases = { ...langAliases };
+        assignedToObject = true;
       }
     }
-    if (!success)
-      throw new Error('Nested properties given, but there are no objects in type expression: ' + expression);
+    if (!assignedToObject) {
+      if (properties.length)
+        throw new Error('Nested properties given, but there are no objects in type expression: ' + expression);
+      if (hasAliases)
+        type.langAliases = { ...langAliases };
+    }
     return type;
   }
 
@@ -541,6 +553,7 @@ class Type {
         type.templates.push(Type.fromParsedType(t));
       return type;
     }
+
     return new Type(parsedType.name);
   }
 
@@ -562,6 +575,8 @@ class Type {
     this.templates = undefined;
     /** @type {string | undefined} */
     this.expression = undefined;
+    /** @type {Object<string, string> | undefined} */
+    this.langAliases = undefined;
   }
 
   visit(visitor) {
@@ -584,6 +599,8 @@ class Type {
     if (this.templates)
       type.templates = this.templates.map(type => type.clone());
     type.expression = this.expression;
+    if (this.langAliases)
+      type.langAliases = { ...this.langAliases };
     return type;
   }
 
@@ -875,6 +892,9 @@ function csharpOptionOverloadSuffix(option, type) {
     case 'int': return 'Int';
     case 'long': return 'Int64';
     case 'Date': return 'Date';
+    // Object keeps the original option name, e.g. for `Object|Array<Object>` unions.
+    case 'Object': return '';
+    case 'Array': return 'List';
   }
   throw new Error(`CSharp option "${option}" has unsupported type overload "${type}"`);
 }

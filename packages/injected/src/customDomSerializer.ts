@@ -1886,13 +1886,4 @@ function refineWithUniqueChild(element) {
   return null;
 }
 
-try {
-  window.__serializerReady = true;
-  const detail = { ts: Date.now(), href: location.href };
-  document.dispatchEvent(new CustomEvent('serializer:ready', { detail }));
-  console.debug('[SER] domSerializer ready', detail);
-} catch (e) {
-  console.error('[SER] failed to flag readiness', e);
-}
-
 export { serializeDOM, getFlexibleLocators };

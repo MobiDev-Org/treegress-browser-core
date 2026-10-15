@@ -26,7 +26,6 @@ import { filterWithQuery } from './filter';
 import { linkifyText } from '@web/renderUtils';
 import { Dialog } from '@web/shared/dialog';
 import { kThemeOptions, type Theme, useThemeSetting } from '@web/theme';
-import { useSetting } from '@web/uiUtils';
 
 export const HeaderView: React.FC<{
   title: string | undefined,
@@ -129,25 +128,25 @@ const NavLink: React.FC<{
 };
 
 const SettingsButton: React.FC = () => {
-  const settingsRef = React.useRef<HTMLDivElement>(null);
+  const settingsRef = React.useRef<HTMLButtonElement>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [theme, setTheme] = useThemeSetting();
-  const [mergeFiles, setMergeFiles] = useSetting('mergeFiles', false);
 
   return <>
-    <div
-      role='button'
+    <button
+      type='button'
       ref={settingsRef}
-      style={{ cursor: 'pointer' }}
       className='subnav-item'
       title='Settings'
+      aria-haspopup='dialog'
+      aria-expanded={settingsOpen}
       onClick={e => {
         setSettingsOpen(!settingsOpen);
         e.preventDefault();
       }}
       onMouseDown={preventDefault}>
       {icons.settings()}
-    </div>
+    </button>
 
     <Dialog
       open={settingsOpen}
@@ -164,11 +163,6 @@ const SettingsButton: React.FC = () => {
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
-      </label>
-
-      <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
-        <input type='checkbox' checked={mergeFiles} onChange={() => setMergeFiles(!mergeFiles)}></input>
-        Merge files
       </label>
     </Dialog>
   </>;

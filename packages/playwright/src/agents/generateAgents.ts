@@ -17,14 +17,16 @@
 import fs from 'fs';
 import path from 'path';
 
-import { colors, yaml } from 'playwright-core/lib/utilsBundle';
-import { mkdirIfNeeded } from 'playwright-core/lib/utils';
+import colors from 'colors/safe';
+import yaml from 'yaml';
+import { tomlArray, tomlBasicString, tomlMultilineBasicString } from '@isomorphic/stringUtils';
+import { mkdirIfNeeded } from '@utils/fileUtils';
 
-import { FullConfigInternal } from '../common/config';
 import { defaultSeedFile, findSeedFile, seedFileContent, seedProject } from '../mcp/test/seed';
 import { parseAgentSpec } from './agentParser';
 
 import type { AgentSpec } from './agentParser';
+import type { FullConfigInternal } from '../common';
 
 /* eslint-disable no-console */
 
@@ -34,8 +36,8 @@ async function loadAgentSpecs(): Promise<AgentSpec[]> {
 }
 
 export class ClaudeGenerator {
-  static async init(config: FullConfigInternal, projectName: string, prompts: boolean) {
-    await initRepo(config, projectName, {
+  static async init(fullConfig: FullConfigInternal, projectName: string, prompts: boolean) {
+    await initRepo(fullConfig, projectName, {
       promptsFolder: prompts ? '.claude/prompts' : undefined,
     });
 
@@ -89,9 +91,67 @@ export class ClaudeGenerator {
   }
 }
 
+export class CodexGenerator {
+  static async init(fullConfig: FullConfigInternal, projectName: string, prompts: boolean) {
+    await initRepo(fullConfig, projectName, {
+      promptsFolder: prompts ? '.codex/prompts' : undefined,
+    });
+
+    const agents = await loadAgentSpecs();
+
+    await fs.promises.mkdir('.codex/agents', { recursive: true });
+    for (const agent of agents)
+      await writeFile(`.codex/agents/${CodexGenerator.codexName(agent)}.toml`, CodexGenerator.agentSpec(agent), '🤖', 'agent definition');
+
+    initRepoDone();
+  }
+
+  // Codex's subagent registry rejects hyphenated identifiers at spawn time with
+  // `error=unknown agent_type '<name>'`. Codex's own documentation only shows
+  // snake_case names (`pr_explorer`, `reviewer`, `docs_researcher`, ...), see
+  // https://developers.openai.com/codex/subagents. Translate the shared agent
+  // name into snake_case so the filename and the `name` field stay in sync.
+  static codexName(agent: AgentSpec): string {
+    return agent.name.replace(/-/g, '_');
+  }
+
+  static agentSpec(agent: AgentSpec): string {
+    const mcpName = 'playwright-test';
+    const enabledTools: string[] = [];
+    for (const tool of agent.tools) {
+      const [first, second] = tool.split('/');
+      if (second && first === mcpName)
+        enabledTools.push(second);
+    }
+
+    const sandboxMode = agent.tools.includes('edit') ? 'workspace-write' : 'read-only';
+    const mcpServer = process.platform === 'win32'
+      ? { command: 'cmd', args: ['/c', 'npx', 'playwright', 'run-test-mcp-server'] }
+      : { command: 'npx', args: ['playwright', 'run-test-mcp-server'] };
+
+    const examples = agent.examples.length
+      ? ` Examples: ${agent.examples.map(example => `<example>${example}</example>`).join('')}`
+      : '';
+
+    const lines: string[] = [];
+    lines.push(`name = ${tomlBasicString(CodexGenerator.codexName(agent))}`);
+    lines.push(`description = ${tomlBasicString(agent.description + examples)}`);
+    lines.push(`sandbox_mode = ${tomlBasicString(sandboxMode)}`);
+    lines.push(`developer_instructions = ${tomlMultilineBasicString(agent.instructions)}`);
+    lines.push('');
+    lines.push(`[mcp_servers.${mcpName}]`);
+    lines.push(`command = ${tomlBasicString(mcpServer.command)}`);
+    lines.push(`args = ${tomlArray(mcpServer.args)}`);
+    if (enabledTools.length)
+      lines.push(`enabled_tools = ${tomlArray(enabledTools)}`);
+    lines.push('');
+    return lines.join('\n');
+  }
+}
+
 export class OpencodeGenerator {
-  static async init(config: FullConfigInternal, projectName: string, prompts: boolean) {
-    await initRepo(config, projectName, {
+  static async init(fullConfig: FullConfigInternal, projectName: string, prompts: boolean) {
+    await initRepo(fullConfig, projectName, {
       defaultAgentName: 'Build',
       promptsFolder: prompts ? '.opencode/prompts' : undefined
     });
@@ -154,10 +214,11 @@ export class OpencodeGenerator {
     return JSON.stringify(result, null, 2);
   }
 }
-export class CopilotGenerator {
-  static async init(config: FullConfigInternal, projectName: string, prompts: boolean) {
 
-    await initRepo(config, projectName, {
+export class CopilotGenerator {
+  static async init(fullConfig: FullConfigInternal, projectName: string, prompts: boolean) {
+
+    await initRepo(fullConfig, projectName, {
       defaultAgentName: 'agent',
       promptsFolder: prompts ? '.github/prompts' : undefined,
       promptSuffix: 'prompt'
@@ -202,7 +263,7 @@ export class CopilotGenerator {
       'name': agent.name,
       'description': agent.description + examples,
       'tools': agent.tools,
-      'model': 'Claude Sonnet 4',
+      'model': 'Claude Sonnet 4.6',
       'mcp-servers': CopilotGenerator.mcpServers,
     };
     lines.push(`---`);
@@ -227,8 +288,8 @@ export class CopilotGenerator {
 }
 
 export class VSCodeGenerator {
-  static async init(config: FullConfigInternal, projectName: string) {
-    await initRepo(config, projectName, {
+  static async init(fullConfig: FullConfigInternal, projectName: string) {
+    await initRepo(fullConfig, projectName, {
       promptsFolder: undefined
     });
     const agents = await loadAgentSpecs();
@@ -340,8 +401,8 @@ type RepoParams = {
   defaultAgentName?: string;
 };
 
-async function initRepo(config: FullConfigInternal, projectName: string, options: RepoParams) {
-  const project = seedProject(config, projectName);
+async function initRepo(fullConfig: FullConfigInternal, projectName: string, options: RepoParams) {
+  const project = seedProject(fullConfig, projectName);
   console.log(` 🎭 Using project "${project.project.name}" as a primary project`);
 
   if (!fs.existsSync('specs')) {

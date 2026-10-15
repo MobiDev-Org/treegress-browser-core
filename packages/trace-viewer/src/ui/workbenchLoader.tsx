@@ -82,8 +82,11 @@ export const WorkbenchLoader: React.FunctionComponent<{
       processTraceFiles(dataTransfer.files);
     };
     window.addEventListener('message', listener);
+    window.opener?.postMessage({ method: 'ready' }, '*');
+    if (window.parent !== window)
+      window.parent.postMessage({ method: 'ready' }, '*');
     return () => window.removeEventListener('message', listener);
-  });
+  }, [processTraceFiles]);
 
   const handleDropEvent = React.useCallback((event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -192,7 +195,7 @@ export const WorkbenchLoader: React.FunctionComponent<{
     if (event.dataTransfer.types.includes('Files'))
       setDragOver(true);
   }}>
-    <div className='hbox header' {...(showFileUploadDropArea ? { inert: true } : {})}>
+    <div className='hbox workbench-loader-header' {...(showFileUploadDropArea ? { inert: true } : {})}>
       <div className='logo'>
         <img src='playwright-logo.svg' alt='Playwright logo' />
       </div>
@@ -200,7 +203,7 @@ export const WorkbenchLoader: React.FunctionComponent<{
       {model.title && <div className='title'>{model.title}</div>}
       <div className='spacer'></div>
       <DialogToolbarButton icon='settings-gear' title='Settings' dialogDataTestId='settings-toolbar-dialog'>
-        <DefaultSettingsView location='trace-viewer' />
+        <DefaultSettingsView location='trace-viewer' model={model} />
       </DialogToolbarButton>
     </div>
     <Workbench model={model} inert={showFileUploadDropArea} />

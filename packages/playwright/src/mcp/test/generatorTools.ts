@@ -17,7 +17,9 @@
 import fs from 'fs';
 import path from 'path';
 
-import { z } from 'playwright-core/lib/mcpBundle';
+import * as z from 'zod';
+import { isPathInside, resolveWithinRoot } from '@utils/fileUtils';
+
 import { defineTestTool } from './testTool';
 import { GeneratorJournal } from './testContext';
 
@@ -34,10 +36,10 @@ export const setupPage = defineTestTool({
     type: 'readOnly',
   },
 
-  handle: async (context, params) => {
+  handle: async (context, params, signal) => {
     const seed = await context.getOrCreateSeedFile(params.seedFile, params.project);
     context.generatorJournal = new GeneratorJournal(context.rootPath, params.plan, seed);
-    const { output, status } = await context.runSeedTest(seed.file, seed.projectName);
+    const { output, status } = await context.runSeedTest(seed.file, seed.projectName, signal);
     return { content: [{ type: 'text', text: output }], isError: status !== 'paused' };
   },
 });
@@ -83,12 +85,11 @@ export const generatorWriteTest = defineTestTool({
       throw new Error('No test runner found, please setup page and perform actions first.');
     const config = await testRunner.loadConfig();
 
+    const resolvedFile = resolveWithinRoot(context.rootPath, params.fileName);
     const dirs: string[] = [];
     for (const project of config.projects) {
-      const testDir = path.relative(context.rootPath, project.project.testDir).replace(/\\/g, '/');
-      const fileName = params.fileName.replace(/\\/g, '/');
-      if (fileName.startsWith(testDir)) {
-        const resolvedFile = path.resolve(context.rootPath, fileName);
+      const projectTestDir = project.project.testDir;
+      if (resolvedFile && isPathInside(projectTestDir, resolvedFile)) {
         await fs.promises.mkdir(path.dirname(resolvedFile), { recursive: true });
         await fs.promises.writeFile(resolvedFile, params.code);
         return {
@@ -98,7 +99,7 @@ export const generatorWriteTest = defineTestTool({
           }]
         };
       }
-      dirs.push(testDir);
+      dirs.push(path.relative(context.rootPath, projectTestDir).replace(/\\/g, '/'));
     }
     throw new Error(`Test file did not match any of the test dirs: ${dirs.join(', ')}`);
   },

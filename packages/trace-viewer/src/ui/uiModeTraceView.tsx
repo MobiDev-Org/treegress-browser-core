@@ -31,7 +31,8 @@ export const TraceView: React.FC<{
   onOpenExternally?: (location: SourceLocation) => void,
   revealSource?: boolean,
   pathSeparator: string,
-}> = ({ item, rootDir, onOpenExternally, revealSource, pathSeparator }) => {
+  onModelChange?: (model: TraceModel | undefined) => void,
+}> = ({ item, rootDir, onOpenExternally, revealSource, pathSeparator, onModelChange }) => {
   const [model, setModel] = React.useState<{ model: TraceModel, isLive: boolean } | undefined>(undefined);
   const [counter, setCounter] = React.useState(0);
   const pollTimer = React.useRef<NodeJS.Timeout | null>(null);
@@ -88,6 +89,10 @@ export const TraceView: React.FC<{
     };
   }, [outputDir, item, setModel, counter, setCounter, pathSeparator]);
 
+  React.useEffect(() => {
+    onModelChange?.(model?.model);
+  }, [model, onModelChange]);
+
   return <Workbench
     model={model?.model}
     key='workbench'
@@ -96,7 +101,7 @@ export const TraceView: React.FC<{
     fallbackLocation={item.testFile}
     isLive={model?.isLive}
     status={item.treeItem?.status}
-    annotations={item.testCase?.annotations ?? []}
+    defaultAnnotations={item.testCase?.annotations ?? []}
     onOpenExternally={onOpenExternally}
     revealSource={revealSource}
   />;

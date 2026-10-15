@@ -16,7 +16,7 @@
 
 // @ts-check
 const path = require('path');
-const devices = require('../../packages/playwright-core/lib/server/deviceDescriptorsSource.json');
+const devices = require('../../packages/isomorphic/deviceDescriptorsSource.json');
 const md = require('../markdown');
 const docs = require('../doclint/documentation');
 const PROJECT_DIR = path.join(__dirname, '..', '..');
@@ -217,7 +217,7 @@ class TypesGenerator {
       return null;
     if (type.includes('{'))
       return 'data';
-    return (type[0].toLowerCase() + type.slice(1)).replace(/\|/g, 'Or');
+    return type.replace(/^[A-Z]+/, match => match.length === 1 ? match.toLowerCase() : match.slice(0, -1).toLowerCase() + match.slice(-1)).replace(/\|/g, 'Or');
   }
 
   /**
@@ -288,7 +288,7 @@ class TypesGenerator {
         for (const { eventName, params, comment, type } of eventDescriptions) {
           if (comment)
             parts.push(this.writeComment(comment, indent));
-          parts.push(`  ${member.alias}(event: '${eventName}', optionsOrPredicate?: { predicate?: (${params}) => boolean | Promise<boolean>, timeout?: number } | ((${params}) => boolean | Promise<boolean>)): Promise<${type}>;\n`);
+          parts.push(`  ${member.alias}(event: '${eventName}', optionsOrPredicate?: { predicate?: (${params}) => boolean | Promise<boolean>, timeout?: number, signal?: AbortSignal } | ((${params}) => boolean | Promise<boolean>)): Promise<${type}>;\n`);
         }
 
         return parts.join('\n');
@@ -298,14 +298,19 @@ class TypesGenerator {
       let type = this.stringifyComplexType(member.type, 'out', indent, [classDesc.name, member.alias]);
       if (member.async)
         type = `Promise<${type}>`;
+      let typeParams = '';
+      if (type === 'Promise<APIResponse>') {
+        typeParams = '<T = any>';
+        type = 'Promise<APIResponse<T>>';
+      }
       // do this late, because we still want object definitions for overridden types
       if (!this.hasOwnMethod(classDesc, member))
         return '';
       if (exportMembersAsGlobals) {
-        const memberType = member.kind === 'method' ? `${args} => ${type}` : type;
+        const memberType = member.kind === 'method' ? `${typeParams}${args} => ${type}` : type;
         return `${jsdoc}${exportMembersAsGlobals ? 'export const ' : ''}${member.alias}: ${memberType};`
       }
-      return `${jsdoc}${member.alias}${member.required ? '' : '?'}${args}: ${type};`
+      return `${jsdoc}${member.alias}${member.required ? '' : '?'}${typeParams}${args}: ${type};`
     }).filter(x => x).join('\n\n'));
     return parts.join('\n') + '\n';
   }
@@ -497,7 +502,9 @@ class TypesGenerator {
 }
 
 (async function () {
-  const coreDocumentation = parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'api'));
+  const coreDocumentation = parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'api'))
+      .mergeWith(parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'electron-api'), path.join(PROJECT_DIR, 'docs', 'src', 'api', 'params.md')))
+      .mergeWith(parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'mobile-api'), path.join(PROJECT_DIR, 'docs', 'src', 'api', 'params.md')));
   const testDocumentation = parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'test-api'), path.join(PROJECT_DIR, 'docs', 'src', 'api', 'params.md'));
   const reporterDocumentation = parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'test-reporter-api'));
   const assertionClasses = new Set([
@@ -516,7 +523,12 @@ class TypesGenerator {
     const documentation = coreDocumentation.clone();
     const generator = new TypesGenerator({
       documentation,
-      doNotGenerate: assertionClasses,
+      doNotGenerate: new Set([
+        ...assertionClasses,
+      ]),
+      ignoreMissing: new Set([
+        'ConnectOverCDPTransport',
+      ]),
     });
     let types = await generator.generateTypes(path.join(__dirname, 'overrides.d.ts'));
     const namedDevices = Object.keys(devices).map(name => `  ${JSON.stringify(name)}: DeviceDescriptor;`).join('\n');
@@ -574,7 +586,9 @@ class TypesGenerator {
         'Matchers',
         'PlaywrightWorkerArgs.playwright',
         'PlaywrightWorkerOptions.defaultBrowserType',
+        'PlaywrightWorkerOptions.reuseContext',
         'Project',
+        'Stories',
       ]),
       doNotExportClassNames: assertionClasses,
     });

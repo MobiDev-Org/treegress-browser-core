@@ -28,6 +28,9 @@ test('basics should work', async ({ runTSC }) => {
         test('my test', async({}, testInfo) => {
           expect(testInfo.title).toBe('my test');
           testInfo.annotations[0].type;
+          await test.step('step', async stepInfo => {
+            stepInfo.annotations.push({ type: 'expected-result', description: 'step passes' });
+          });
           test.setTimeout(123);
           testInfo.snapshotPath('a', 'b');
           testInfo.snapshotPath();
@@ -103,6 +106,17 @@ test('can return anything from hooks', async ({ runTSC }) => {
       test.afterEach(() => 123);
       test.beforeAll(() => [123]);
       test.afterAll(() => ({ a: 123 }));
+    `
+  });
+  expect(result.exitCode).toBe(0);
+});
+
+test('can return anything from test body', async ({ runTSC }) => {
+  const result = await runTSC({
+    'a.spec.ts': `
+      import { test } from '@playwright/test';
+      test('sync body', () => 123);
+      test('async body', async () => ({ ok: true }));
     `
   });
   expect(result.exitCode).toBe(0);

@@ -21,7 +21,6 @@ const playwright = require('playwright-core');
 const fs = require('fs');
 const path = require('path');
 const { parseApi } = require('./api_parser');
-const missingDocs = require('./missingDocs');
 const md = require('../markdown');
 const docs = require('./documentation');
 const toKebabCase = require('lodash/kebabCase')
@@ -91,7 +90,7 @@ async function run() {
 
   // Update device descriptors
   {
-    const devicesDescriptorsSourceFile = path.join(PROJECT_DIR, 'packages', 'playwright-core', 'src', 'server', 'deviceDescriptorsSource.json')
+    const devicesDescriptorsSourceFile = path.join(PROJECT_DIR, 'packages', 'isomorphic', 'deviceDescriptorsSource.json')
     const devicesDescriptors = require(devicesDescriptorsSourceFile)
     for (const deviceName of Object.keys(devicesDescriptors)) {
       switch (devicesDescriptors[deviceName].defaultBrowserType) {
@@ -133,6 +132,8 @@ async function run() {
     const apiRoot = path.join(documentationRoot, 'api');
     const testApiRoot = path.join(documentationRoot, 'test-api');
     const testReporterApiRoot = path.join(documentationRoot, 'test-reporter-api');
+    const electronApiRoot = path.join(documentationRoot, 'electron-api');
+    const mobileApiRoot = path.join(documentationRoot, 'mobile-api');
     for (const lang of langs) {
       try {
         let documentation = parseApi(apiRoot);
@@ -141,6 +142,10 @@ async function run() {
             parseApi(testApiRoot, path.join(documentationRoot, 'api', 'params.md'))
           ).mergeWith(
             parseApi(testReporterApiRoot)
+          ).mergeWith(
+            parseApi(electronApiRoot, path.join(documentationRoot, 'api', 'params.md'))
+          ).mergeWith(
+            parseApi(mobileApiRoot, path.join(documentationRoot, 'api', 'params.md'))
           );
         }
         documentation.filterForLanguage(lang);
@@ -178,7 +183,7 @@ async function run() {
 
           // Standardise naming and remove the filter in the file name
           // Also, Internally (playwright.dev generator) we merge test-api and test-reporter-api into api.
-          const canonicalName = filePath.replace(/(-(js|python|csharp|java))+/, '').replace(/(\/|\\)(test-api|test-reporter-api)(\/|\\)/, `${path.sep}api${path.sep}`);
+          const canonicalName = filePath.replace(/(-(js|python|csharp|java))+/, '').replace(/(\/|\\)(test-api|test-reporter-api|electron-api|mobile-api)(\/|\\)/, `${path.sep}api${path.sep}`);
           mdSections.add(canonicalName);
 
           const data = fs.readFileSync(filePath, 'utf-8');
@@ -186,7 +191,7 @@ async function run() {
           // Validates code snippet groups.
           rootNode = docs.processCodeGroups(rootNode, lang, tabs => tabs.map(tab => tab.spec));
           // Renders links.
-          if (!filePath.startsWith(apiRoot) && !filePath.startsWith(testApiRoot) && !filePath.startsWith(testReporterApiRoot))
+          if (!filePath.startsWith(apiRoot) && !filePath.startsWith(testApiRoot) && !filePath.startsWith(testReporterApiRoot) && !filePath.startsWith(electronApiRoot) && !filePath.startsWith(mobileApiRoot))
             documentation.renderLinksInNodes(rootNode);
           // Validate links.
           {
@@ -198,6 +203,7 @@ async function run() {
                   'css',
                   'js',
                   'markdown',
+                  'mermaid',
                   'ts',
                   'python',
                   'py',
@@ -263,23 +269,12 @@ async function run() {
     }
   }
 
-  // Check for missing docs
-  {
-    const apiDocumentation = parseApi(path.join(PROJECT_DIR, 'docs', 'src', 'api'));
-    apiDocumentation.filterForLanguage('js');
-    const srcClient = path.join(PROJECT_DIR, 'packages', 'playwright-core', 'src', 'client');
-    const sources = fs.readdirSync(srcClient).map(n => path.join(srcClient, n));
-    const errors = missingDocs(apiDocumentation, sources, path.join(srcClient, 'api.ts'));
-    if (errors.length) {
-      console.log('============================');
-      console.log('ERROR: missing documentation:');
-      errors.forEach(e => console.log(e));
-      console.log('============================')
-      process.exit(1);
-    }
-  }
-
   if (dirtyFiles.size) {
+    if (process.argv.includes('--allow-dirty')) {
+      console.log('Regenerated files:');
+      [...dirtyFiles].forEach(f => console.log(f));
+      process.exit(0);
+    }
     console.log('============================')
     console.log('ERROR: generated files have changed, this is only error if happens in CI:');
     [...dirtyFiles].forEach(f => console.log(f));

@@ -399,66 +399,74 @@ it.describe('setFixedTime', () => {
 it.describe('while running', () => {
   it('should progress time', async ({ page }) => {
     await page.clock.install({ time: 0 });
+    const startRealTime = Date.now();
     await page.goto('data:text/html,');
     await page.waitForTimeout(1000);
     const now = await page.evaluate(() => Date.now());
+    const realElapsed = Date.now() - startRealTime;
     expect(now).toBeGreaterThanOrEqual(1000);
-    expect(now).toBeLessThanOrEqual(2000);
+    expect(now).toBeLessThanOrEqual(realElapsed + 1000);
   });
 
   it('should runFor', async ({ page }) => {
     await page.clock.install({ time: 0 });
+    const startRealTime = Date.now();
     await page.goto('data:text/html,');
     await page.clock.runFor(10000);
     const now = await page.evaluate(() => Date.now());
+    const realElapsed = Date.now() - startRealTime;
     expect(now).toBeGreaterThanOrEqual(10000);
-    expect(now).toBeLessThanOrEqual(11000);
+    expect(now).toBeLessThanOrEqual(10000 + realElapsed + 1000);
   });
 
   it('should fastForward', async ({ page }) => {
     await page.clock.install({ time: 0 });
+    const startRealTime = Date.now();
     await page.goto('data:text/html,');
     await page.clock.fastForward(10000);
     const now = await page.evaluate(() => Date.now());
+    const realElapsed = Date.now() - startRealTime;
     expect(now).toBeGreaterThanOrEqual(10000);
-    expect(now).toBeLessThanOrEqual(11000);
-  });
-
-  it('should fastForwardTo', async ({ page }) => {
-    await page.clock.install({ time: 0 });
-    await page.goto('data:text/html,');
-    await page.clock.fastForward(10000);
-    const now = await page.evaluate(() => Date.now());
-    expect(now).toBeGreaterThanOrEqual(10000);
-    expect(now).toBeLessThanOrEqual(11000);
+    expect(now).toBeLessThanOrEqual(10000 + realElapsed + 1000);
   });
 
   it('should pause', async ({ page }) => {
     await page.clock.install({ time: 0 });
     await page.goto('data:text/html,');
-    await page.clock.pauseAt(1000);
+    await page.clock.pauseAt(60000);
     // Internally wait to make sure the clock is paused and not running.
     await page.waitForTimeout(1111);
     const now = await page.evaluate(() => Date.now());
-    expect(now).toBeGreaterThanOrEqual(0);
-    expect(now).toBeLessThanOrEqual(1000);
+    expect(now).toBe(60000);
+  });
+
+  it('should reject an invalid target time with an active requestAnimationFrame loop', {
+    annotation: {
+      type: 'issue',
+      description: 'https://github.com/microsoft/playwright-python/issues/3137',
+    }
+  }, async ({ page }) => {
+    await page.clock.install();
+    await page.setContent(`<script>function tick() { requestAnimationFrame(tick); } requestAnimationFrame(tick);</script>`);
+    const invalidTime = await page.evaluate(() => Date.now()) * 1_000_000;
+    await expect(page.clock.pauseAt(invalidTime)).rejects.toThrow(`clock.pauseAt: Invalid date: ${invalidTime}`);
   });
 
   it('should pause and fastForward', async ({ page }) => {
     await page.clock.install({ time: 0 });
     await page.goto('data:text/html,');
-    await page.clock.pauseAt(1000);
+    await page.clock.pauseAt(60000);
     await page.clock.fastForward(1000);
     const now = await page.evaluate(() => Date.now());
-    expect(now).toBe(2000);
+    expect(now).toBe(61000);
   });
 
   it('should set system time on pause', async ({ page }) => {
     await page.clock.install({ time: 0 });
     await page.goto('data:text/html,');
-    await page.clock.pauseAt(1000);
+    await page.clock.pauseAt(60000);
     const now = await page.evaluate(() => Date.now());
-    expect(now).toBe(1000);
+    expect(now).toBe(60000);
   });
 });
 
@@ -531,6 +539,80 @@ it.describe('Date.now', () => {
     await page.clock.runFor(0.5);
     const dateValue = await page.evaluate('Date.now()');
     expect(dateValue).toBe(1001);
+  });
+});
+
+it.describe('Temporal.Now', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42830' } }, () => {
+  it.beforeEach(async ({ page }) => {
+    it.skip(!await page.evaluate(() => 'Temporal' in globalThis), 'Temporal is not supported');
+  });
+
+  it('should follow fixed time', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2020-01-01T00:00:00Z'));
+    await page.goto('data:text/html,');
+    expect(await page.evaluate(() => {
+      const Temporal = (globalThis as any).Temporal;
+      return {
+        instant: Temporal.Now.instant().toString(),
+        zonedDateTime: Temporal.Now.zonedDateTimeISO('UTC').toString(),
+        plainDateTime: Temporal.Now.plainDateTimeISO('UTC').toString(),
+        plainDate: Temporal.Now.plainDateISO('UTC').toString(),
+        plainTime: Temporal.Now.plainTimeISO('UTC').toString(),
+      };
+    })).toEqual({
+      instant: '2020-01-01T00:00:00Z',
+      zonedDateTime: '2020-01-01T00:00:00+00:00[UTC]',
+      plainDateTime: '2020-01-01T00:00:00',
+      plainDate: '2020-01-01',
+      plainTime: '00:00:00',
+    });
+  });
+
+  it('should advance with the clock', async ({ page }) => {
+    await page.clock.install({ time: 0 });
+    await page.goto('data:text/html,');
+    await page.clock.pauseAt(1000);
+    await page.clock.runFor(2000);
+    expect(await page.evaluate(() => (globalThis as any).Temporal.Now.instant().epochMilliseconds)).toBe(3000);
+  });
+
+  it('should use the system time zone by default', async ({ browser }) => {
+    const context = await browser.newContext({ timezoneId: 'America/Los_Angeles' });
+    const page = await context.newPage();
+    await page.clock.setFixedTime(new Date('2020-01-01T00:00:00Z'));
+    await page.goto('data:text/html,');
+    expect(await page.evaluate(() => {
+      const Temporal = (globalThis as any).Temporal;
+      return {
+        timeZoneId: Temporal.Now.timeZoneId(),
+        zonedDateTime: Temporal.Now.zonedDateTimeISO().toString(),
+        plainDateTime: Temporal.Now.plainDateTimeISO().toString(),
+      };
+    })).toEqual({
+      timeZoneId: 'America/Los_Angeles',
+      zonedDateTime: '2019-12-31T16:00:00-08:00[America/Los_Angeles]',
+      plainDateTime: '2019-12-31T16:00:00',
+    });
+    await context.close();
+  });
+
+  it('should keep the rest of Temporal intact', async ({ page }) => {
+    await page.clock.install({ time: 0 });
+    await page.goto('data:text/html,');
+    expect(await page.evaluate(() => {
+      const Temporal = (globalThis as any).Temporal;
+      return {
+        tag: Object.prototype.toString.call(Temporal.Now),
+        enumerable: Object.keys(Temporal).concat(Object.keys(Temporal.Now)),
+        isInstant: Temporal.Now.instant() instanceof Temporal.Instant,
+        duration: Temporal.Duration.from({ hours: 1 }).toString(),
+      };
+    })).toEqual({
+      tag: '[object Temporal.Now]',
+      enumerable: [],
+      isInstant: true,
+      duration: 'PT1H',
+    });
   });
 });
 

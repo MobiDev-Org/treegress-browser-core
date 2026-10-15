@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-import { assert } from '../../utils/isomorphic/assert';
-import { rewriteErrorMessage } from '../../utils/isomorphic/stackTrace';
-import { parseEvaluationResultValue } from '../../utils/isomorphic/utilityScriptSerializers';
+import { assert } from '@isomorphic/assert';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { parseEvaluationResultValue } from '@isomorphic/utilityScriptSerializers';
 import * as js from '../javascript';
 import * as dom from '../dom';
 import { isSessionClosedError } from '../protocolError';
@@ -89,6 +89,10 @@ export class FFExecutionContext implements js.ExecutionContextDelegate {
       executionContextId: this._executionContextId,
       objectId: handle._objectId,
     });
+  }
+
+  shouldPrependErrorPrefix(): boolean {
+    return true;
   }
 }
 

@@ -14,20 +14,20 @@
  * limitations under the License.
  */
 
-import type { SerializedValue } from '@protocol/channels';
-import type { ActionTraceEvent } from '@trace/trace';
-import { clsx, msToString } from '@web/uiUtils';
+import type { ActionTraceEvent, SerializedValue } from '@isomorphic/trace/trace';
+import { clsx } from '@web/uiUtils';
+import { msToString } from '@isomorphic/formatUtils';
 import * as React from 'react';
 import './callTab.css';
 import { CopyToClipboard } from './copyToClipboard';
 import { asLocator } from '@isomorphic/locatorGenerators';
 import type { Language } from '@isomorphic/locatorGenerators';
 import { PlaceholderPanel } from './placeholderPanel';
-import type { ActionTraceEventInContext } from '@isomorphic/trace/traceModel';
+import type { ActionEntry } from '@isomorphic/trace/entries';
 import { renderTitleForCall } from './actionList';
 
 export const CallTab: React.FunctionComponent<{
-  action: ActionTraceEventInContext | undefined,
+  action: ActionEntry | undefined,
   startTimeOffset: number,
   sdkLanguage: Language | undefined,
 }> = ({ action, startTimeOffset, sdkLanguage }) => {
@@ -41,11 +41,11 @@ export const CallTab: React.FunctionComponent<{
   const startTimeMillis = action.startTime - startTimeOffset;
   const startTime = msToString(startTimeMillis);
 
-  const { title } = renderTitleForCall(action);
+  const { title, subtitle } = renderTitleForCall(action, sdkLanguage);
 
   return (
     <div className='call-tab'>
-      <div className='call-line'>{title}</div>
+      <div className='call-line'>{subtitle ? `${title} ${subtitle}` : title}</div>
       <div className='call-section'>Time</div>
       {renderProperty({ name: 'start', type: 'literal', text: startTime })}
       {renderProperty({ name: 'duration', type: 'literal', text: renderDuration(action) })}
@@ -73,7 +73,7 @@ type Property = {
   text: string;
 };
 
-function renderDuration(action: ActionTraceEventInContext): string {
+function renderDuration(action: ActionEntry): string {
   if (action.endTime)
     return msToString(action.endTime - action.startTime);
   else if (!!action.error)
@@ -83,12 +83,15 @@ function renderDuration(action: ActionTraceEventInContext): string {
 }
 
 function renderProperty(property: Property) {
-  let text = property.text.replace(/\n/g, '↵');
+  let text = property.text;
+  if (text.length > 1000)
+    text = text.slice(0, 1000) + '…';
+  text = text.replace(/\n/g, '↵');
   if (property.type === 'string')
     text = `"${text}"`;
   return (
     <div key={property.name} className='call-line'>
-      {property.name}:<span className={clsx('call-value', property.type)} title={property.text}>{text}</span>
+      {property.name}:<span className={clsx('call-value', property.type)} title={text}>{text}</span>
       { ['literal', 'string', 'number', 'object', 'locator'].includes(property.type) &&
         <CopyToClipboard value={property.text} />
       }
@@ -102,8 +105,17 @@ function propertyToString(event: ActionTraceEvent, name: string, value: any, sdk
     return { text: '<files>', type: 'string', name };
   if (name === 'eventInit' || name === 'expectedValue' || (name === 'arg' && isEval))
     value = parseSerializedValue(value.value, new Array(10).fill({ handle: '<handle>' }));
-  if ((name === 'value' && isEval) || (name === 'received' && event.method === 'expect'))
+  if (name === 'value' && isEval)
     value = parseSerializedValue(value, new Array(10).fill({ handle: '<handle>' }));
+  if (name === 'received' && event.method === 'expect') {
+    // Older traces store received as a raw SerializedValue; newer traces wrap it
+    // as { value?: SerializedValue, ariaSnapshot?: string }. Support both.
+    const wrapped = value && typeof value === 'object' && ('value' in value || 'ariaSnapshot' in value);
+    const serialized = wrapped ? value.value : value;
+    value = serialized !== undefined
+      ? parseSerializedValue(serialized, new Array(10).fill({ handle: '<handle>' }))
+      : undefined;
+  }
   if (name === 'selector')
     return { text: asLocator(sdkLanguage || 'javascript', event.params.selector), type: 'locator', name: 'locator' };
   const type = typeof value;
@@ -111,7 +123,7 @@ function propertyToString(event: ActionTraceEvent, name: string, value: any, sdk
     return { text: String(value), type, name };
   if (value.guid)
     return { text: '<handle>', type: 'handle', name };
-  return { text: JSON.stringify(value).slice(0, 1000), type: 'object', name };
+  return { text: JSON.stringify(value), type: 'object', name };
 }
 
 function parseSerializedValue(value: SerializedValue, handles: any[] | undefined): any {

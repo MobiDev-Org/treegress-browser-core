@@ -69,6 +69,24 @@ it('should send a character with insertText', async ({ page, server }) => {
   expect(await page.evaluate(() => document.querySelector('textarea').value)).toBe('嗨a');
 });
 
+it('should not type text with Alt modifier', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42928' },
+}, async ({ page }) => {
+  await page.setContent(`<input><textarea></textarea><div contenteditable></div>`);
+  for (const locator of [page.locator('input'), page.locator('textarea'), page.locator('div')]) {
+    await locator.press('Alt+KeyA');
+    await locator.press('Alt+Digit1');
+    await locator.press('Alt+Shift+KeyA');
+    await page.keyboard.down('Alt');
+    await page.keyboard.press('b');
+    await page.keyboard.up('Alt');
+    await locator.press('c');
+  }
+  await expect(page.locator('input')).toHaveValue('c');
+  await expect(page.locator('textarea')).toHaveValue('c');
+  await expect(page.locator('div')).toHaveText('c');
+});
+
 it('insertText should only emit input event', async ({ page, server }) => {
   await page.goto(server.PREFIX + '/input/textarea.html');
   await page.focus('textarea');
@@ -85,9 +103,37 @@ it('insertText should only emit input event', async ({ page, server }) => {
   expect(await events.jsonValue()).toEqual(['input']);
 });
 
-it('should report shiftKey', async ({ page, server, browserName, platform }) => {
-  it.fail(browserName === 'firefox' && platform === 'darwin');
+it('should emit keydown, keypress, textInput and input when typing a character', async ({ page }) => {
+  await page.setContent(`<input>`);
+  const events = await page.evaluateHandle(() => {
+    const events: string[] = [];
+    for (const type of ['keydown', 'keypress', 'textInput', 'input', 'keyup'])
+      document.querySelector('input').addEventListener(type, () => events.push(type));
+    return events;
+  });
+  await page.focus('input');
+  await page.keyboard.press('f');
+  expect(await events.jsonValue()).toEqual(['keydown', 'keypress', 'textInput', 'input', 'keyup']);
+});
 
+it('should dispatch key events in separate tasks', async ({ page, browserName, isBidi }) => {
+  it.skip(browserName === 'firefox' && !isBidi, 'Firefox/Juggler dispatches keydown and keypress in the same task');
+  await page.setContent(`<input>`);
+  const log = await page.evaluateHandle(() => {
+    const log: string[] = [];
+    const input = document.querySelector('input');
+    for (const type of ['keydown', 'keypress'])
+      input.addEventListener(type, () => { log.push(type); queueMicrotask(() => log.push('microtask-' + type)); });
+    input.focus();
+    return log;
+  });
+  await page.keyboard.press('a');
+  // A microtask scheduled in the keydown handler must run before keypress,
+  // proving each event is delivered in its own task rather than synchronously.
+  expect(await log.jsonValue()).toEqual(['keydown', 'microtask-keydown', 'keypress', 'microtask-keypress']);
+});
+
+it('should report shiftKey', async ({ page, server }) => {
   await page.goto(server.PREFIX + '/input/keyboard.html');
   const keyboard = page.keyboard;
   const codeForKey = { 'Shift': 16, 'Alt': 18, 'Control': 17 };
@@ -276,6 +322,36 @@ it('should specify location', async ({ page, server }) => {
   expect.soft(await lastEvent.evaluate(e => e.code)).toBe('NumpadSubtract');
 });
 
+it('should specify numpad location on keyup', async ({ page, server }) => {
+  await page.goto(server.PREFIX + '/input/keyboard.html');
+  await page.keyboard.press('NumpadSubtract');
+  expect(await page.evaluate('getResult()')).toBe(
+      ['Keydown: - NumpadSubtract NUMPAD []',
+        'Keypress: - NumpadSubtract NUMPAD 45 []',
+        'Keyup: - NumpadSubtract NUMPAD []'].join('\n'));
+});
+
+it('should press NumpadDecimal as Delete', async ({ page }) => {
+  await page.setContent('<textarea></textarea>');
+  const lastEvent = await captureLastKeydown(page);
+  const textarea = page.locator('textarea');
+
+  await textarea.press('NumpadDecimal');
+  expect(await lastEvent.evaluate(e => e.key)).toBe('Delete');
+  expect(await lastEvent.evaluate(e => e.code)).toBe('NumpadDecimal');
+  expect(await lastEvent.evaluate(e => e.location)).toBe(3);
+  await expect(textarea).toHaveValue('');
+});
+
+it('should type numpad digits with Shift', async ({ page }) => {
+  await page.setContent('<textarea></textarea>');
+  const textarea = page.locator('textarea');
+  await textarea.press('Shift+Numpad1');
+  await textarea.press('Shift+NumpadDecimal');
+  await textarea.press('Shift+Numpad9');
+  await expect(textarea).toHaveValue('1.9');
+});
+
 it('should press Enter', async ({ page, server }) => {
   await page.setContent('<textarea></textarea>');
   await page.focus('textarea');
@@ -293,6 +369,27 @@ it('should press Enter', async ({ page, server }) => {
     const value = await page.$eval('textarea', t => t.value);
     expect(value).toBe('\n'); // failed to create a newline
     await page.$eval('textarea', t => t.value = '');
+  }
+});
+
+it('should press audio and media control keys', async ({ page, browserName }) => {
+  await page.setContent('<input autofocus>');
+  await page.focus('input');
+  const lastEvent = await captureLastKeydown(page);
+  const mediaKeys = [
+    { key: 'AudioVolumeMute', code: browserName === 'firefox' ? 'VolumeMute' : 'AudioVolumeMute' },
+    { key: 'AudioVolumeDown', code: browserName === 'firefox' ? 'VolumeDown' : 'AudioVolumeDown' },
+    { key: 'AudioVolumeUp', code: browserName === 'firefox' ? 'VolumeUp' : 'AudioVolumeUp' },
+    { key: 'MediaTrackNext', code: 'MediaTrackNext' },
+    { key: 'MediaTrackPrevious', code: 'MediaTrackPrevious' },
+    { key: 'MediaPlayPause', code: 'MediaPlayPause' },
+  ];
+
+  for (const mediaKey of mediaKeys) {
+    await page.keyboard.press(mediaKey.key);
+    expect.soft(await lastEvent.evaluate(e => e.key)).toBe(mediaKey.key);
+    expect.soft(await lastEvent.evaluate(e => e.code)).toBe(mediaKey.code);
+    expect.soft(await lastEvent.evaluate(e => e.location)).toBe(0);
   }
 });
 

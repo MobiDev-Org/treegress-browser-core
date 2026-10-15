@@ -9,6 +9,10 @@ on:
     paths-ignore:
       - 'browser_patches/**'
       - 'docs/**'
+      - 'packages/extension/**'
+      - 'packages/playwright-core/src/server/bidi/**'
+      - 'tests/bidi/**'
+      - 'tests/extension/**'
     branches:
       - main
       - release-*
@@ -22,32 +26,34 @@ concurrency:
 env:
   # Force terminal colors. @see https://www.npmjs.com/package/colors
   FORCE_COLOR: 1
-  ELECTRON_SKIP_BINARY_DOWNLOAD: 1
   DEBUG: pw:mcp:error
 
 jobs:
   test_mcp:
-    name: ${{ matrix.os }} - ${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
-    # Used for authentication of flakiness upload
-    environment: ${{ github.event_name == 'push' && 'allow-uploading-flakiness-results' || null }}
+    name: ${{ matrix.os }} - ${{ matrix.project }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
-        shardIndex: [1, 2]
-        shardTotal: [2]
+        os: [ubuntu-latest, macos-latest]
+        project: [chrome, chromium, firefox, webkit]
+        include:
+          - os: windows-latest
+            project: chrome
+          - os: windows-latest
+            project: chromium
+          - os: windows-latest
+            project: firefox
+          - os: windows-latest
+            project: webkit
+          - os: windows-latest
+            project: msedge
     runs-on: ${{ matrix.os }}
     permissions:
-      id-token: write   # This is required for OIDC login (azure/login) to succeed
       contents: read    # This is required for actions/checkout to succeed
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - uses: ./.github/actions/run-test
       with:
         node-version: "22"
-        command: npm run test-mcp -- --shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
-        bot-name: "mcp-${{ matrix.os }}"
-        shard-index: ${{ matrix.shardIndex }}
-        flakiness-client-id: ${{ secrets.AZURE_FLAKINESS_DASHBOARD_CLIENT_ID }}
-        flakiness-tenant-id: ${{ secrets.AZURE_FLAKINESS_DASHBOARD_TENANT_ID }}
-        flakiness-subscription-id: ${{ secrets.AZURE_FLAKINESS_DASHBOARD_SUBSCRIPTION_ID }}
+        command: npm run test-mcp -- --project=${{ matrix.project }}
+        bot-name: "mcp-${{ matrix.os }}-${{ matrix.project }}"

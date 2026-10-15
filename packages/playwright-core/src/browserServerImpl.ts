@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -14,21 +14,21 @@
  * limitations under the License.
  */
 
+import EventEmitter from 'events';
+
+import { createGuid } from '@utils/crypto';
+import { isUnderTest } from '@utils/debug';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT } from '@isomorphic/time';
+import * as validatorPrimitives from '@protocol/validatorPrimitives';
 import { PlaywrightServer } from './remote/playwrightServer';
 import { helper } from './server/helper';
 import { createPlaywright } from './server/playwright';
-import { createGuid } from './server/utils/crypto';
-import { isUnderTest } from './server/utils/debug';
-import { rewriteErrorMessage } from './utils/isomorphic/stackTrace';
-import { DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT } from './utils/isomorphic/time';
-import { ws } from './utilsBundle';
-import * as validatorPrimitives from './protocol/validatorPrimitives';
 import { ProgressController } from './server/progress';
 
 import type { BrowserServer, BrowserServerLauncher } from './client/browserType';
 import type { LaunchServerOptions, Logger } from './client/types';
 import type { ProtocolLogger } from './server/types';
-import type { WebSocketEventEmitter } from './utilsBundle';
 import type { Browser } from './server/browser';
 
 export class BrowserServerLauncherImpl implements BrowserServerLauncher {
@@ -85,7 +85,7 @@ export class BrowserServerLauncherImpl implements BrowserServerLauncher {
     const wsEndpoint = await server.listen(options.port, options.host);
 
     // 3. Return the BrowserServer interface
-    const browserServer = new ws.EventEmitter() as (BrowserServer & WebSocketEventEmitter);
+    const browserServer = new EventEmitter() as (BrowserServer & EventEmitter);
     browserServer.process = () => browser.options.browserProcess.process!;
     browserServer.wsEndpoint = () => wsEndpoint;
     browserServer.close = () => browser.options.browserProcess.close();

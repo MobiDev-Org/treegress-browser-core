@@ -23,7 +23,7 @@ import { TimeoutError } from './errors';
 import { APIRequest } from './fetch';
 import { Selectors } from './selectors';
 
-import type * as channels from '@protocol/channels';
+import type * as channels from './channels';
 import type { LaunchOptions } from 'playwright-core';
 
 export class Playwright extends ChannelOwner<channels.PlaywrightChannel> {
@@ -56,7 +56,7 @@ export class Playwright extends ChannelOwner<channels.PlaywrightChannel> {
     this._electron = Electron.from(initializer.electron);
     this._electron._playwright = this;
     this.devices = this._connection.localUtils()?.devices ?? {};
-    this.selectors = new Selectors(this._connection._platform);
+    this.selectors = new Selectors();
     this.errors = { TimeoutError };
   }
 

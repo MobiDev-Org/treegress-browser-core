@@ -110,7 +110,9 @@ export const CodeMirrorWrapper: React.FC<SourceProps> = ({
         autoCloseBrackets: true,
         extraKeys: {
           'Ctrl-F': 'findPersistent',
-          'Cmd-F': 'findPersistent'
+          'Cmd-F': 'findPersistent',
+          'Tab': false,
+          'Shift-Tab': false,
         }
       });
       codemirrorRef.current = { cm };
@@ -170,7 +172,7 @@ export const CodeMirrorWrapper: React.FC<SourceProps> = ({
 
         if (h.type === 'error') {
           const errorWidgetElement = document.createElement('div');
-          errorWidgetElement.innerHTML = ansi2html(h.message || '');
+          errorWidgetElement.innerHTML = ansi2html(h.message || '', { bg: 'var(--vscode-inputValidation-errorBackground)', fg: 'var(--vscode-editor-foreground)' });
           errorWidgetElement.className = 'source-line-error-widget';
           widgets.push(codemirror.addLineWidget(h.line, errorWidgetElement, { above: true, coverGutter: false }));
         }

@@ -15,7 +15,7 @@
  */
 
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: path.join(__dirname, '..', '..', '.env') });
+loadEnv({ path: path.join(__dirname, '..', '..', '.env'), quiet: true });
 process.env.PWTEST_UNDER_TEST = '1';
 
 import type { Config, PlaywrightTestOptions, PlaywrightWorkerOptions } from '@playwright/test';
@@ -32,15 +32,15 @@ const config: Config<PlaywrightWorkerOptions & PlaywrightTestOptions> = {
     timeout: 10000,
   },
   timeout: 30000,
-  globalTimeout: 5400000,
+  globalTimeout: 7200000,
   workers: process.env.CI ? 1 : undefined,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 3 : 0,
   reporter: process.env.CI ? [
     ['dot'],
-    ['json', { outputFile: path.join(outputDir, 'report.json') }],
     // Needed since tests/electron/package.json exists which would otherwise be picked up as tests/electron/ (outputDir)
     ['blob', { outputDir: path.resolve(__dirname, '../../blob-report') }],
+    ['../config/parquetReporter.ts'],
   ] : 'line',
   tag: process.env.PW_TAG,
   projects: [],

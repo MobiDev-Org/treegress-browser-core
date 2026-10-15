@@ -22,6 +22,12 @@ Error message. Set when [Error] (or its subclass) has been thrown.
 
 Error stack. Set when [Error] (or its subclass) has been thrown.
 
+## property: TestInfoError.errorContext
+* since: v1.60
+- type: ?<[string]>
+
+Additional context for the error, such as the aria snapshot of the receiver at the time of an `expect(...)` matcher failure.
+
 ## property: TestInfoError.value
 * since: v1.10
 - type: ?<[string]>

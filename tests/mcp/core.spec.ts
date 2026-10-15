@@ -26,9 +26,34 @@ test('browser_navigate', async ({ client, server }) => {
     code: `await page.goto('${server.HELLO_WORLD}');`,
     page: `- Page URL: ${server.HELLO_WORLD}
 - Page Title: Title`,
-    snapshot: `\`\`\`yaml
-- generic [active] [ref=e1]: Hello, world!
-\`\`\``,
+    snapshot: `- generic [active] [ref=e1]: Hello, world!`,
+  });
+});
+
+test('browser_navigate surfaces non-2xx HTTP status', async ({ client, server }) => {
+  server.setRoute('/locked', (req, res) => {
+    res.writeHead(402, { 'Content-Type': 'text/html' });
+    res.end('<title>Payment Required</title><body>Pay up</body>');
+  });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX + '/locked' },
+  })).toHaveResponse({
+    page: expect.stringContaining(`- HTTP status: 402 Payment Required`),
+  });
+
+  // A redirect to a 2xx page must not carry a status line: the intermediate
+  // 302 hop must not leak, and the final 2xx landing renders nothing.
+  server.setRoute('/redirect', (req, res) => {
+    res.writeHead(302, { location: server.HELLO_WORLD });
+    res.end();
+  });
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX + '/redirect' },
+  })).not.toHaveResponse({
+    page: expect.stringContaining('HTTP status'),
   });
 });
 
@@ -37,7 +62,7 @@ test('browser_navigate blocks file:// URLs by default', async ({ client }) => {
     name: 'browser_navigate',
     arguments: { url: 'file:///etc/passwd' },
   })).toHaveResponse({
-    error: expect.stringContaining('Error: Access to "file:" URL is blocked. Allowed protocols: http:, https:, about:, data:. Attempted URL: file:///etc/passwd'),
+    error: expect.stringContaining('Error: Access to "file:" protocol is blocked. Attempted URL: "file:///etc/passwd"'),
     isError: true,
   });
 });
@@ -49,9 +74,7 @@ test('browser_navigate allows about:, data: and javascript: protocols', async ({
   })).toHaveResponse({
     code: `await page.goto('about:blank');`,
     page: `- Page URL: about:blank`,
-    snapshot: `\`\`\`yaml
-
-\`\`\``,
+    snapshot: ``,
   });
 
   expect(await client.callTool({
@@ -60,9 +83,7 @@ test('browser_navigate allows about:, data: and javascript: protocols', async ({
   })).toHaveResponse({
     code: `await page.goto('data:text/html,<h1>Hello</h1>');`,
     page: expect.stringContaining(`- Page URL: data:text/html,<h1>Hello</h1>`),
-    snapshot: `\`\`\`yaml
-- heading \"Hello\" [level=1] [ref=e2]
-\`\`\``,
+    snapshot: `- heading \"Hello\" [level=1] [ref=e2]`,
   });
 });
 
@@ -87,10 +108,34 @@ test('browser_navigate can navigate to file:// URLs allowUnrestrictedFileAccess 
     name: 'browser_navigate',
     arguments: { url },
   })).toHaveResponse({
-    page: `- Page URL: ${url}`,
-    snapshot: `\`\`\`yaml
-- generic [ref=e2]: Test file content
-\`\`\``,
+    page: expect.stringContaining(`- Page URL: ${url}`),
+    snapshot: `- generic [active] [ref=e1]: Test file content`,
+  });
+});
+
+test('browser_navigate_back does not time out when load never fires', async ({ client, server }) => {
+  // https://github.com/microsoft/playwright-mcp/issues/1635
+  // Page A never fires the `load` event because the image request hangs forever.
+  // Going back to it should still succeed because we wait for `commit`, not `load`.
+  server.setRoute('/hang', () => {});
+  server.setContent('/page-a', `<title>Page A</title><body>Page A<img src="/hang"></body>`, 'text/html');
+  server.setContent('/page-b', `<title>Page B</title><body>Page B</body>`, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: `${server.PREFIX}/page-a` },
+  });
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: `${server.PREFIX}/page-b` },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_navigate_back',
+    arguments: {},
+  })).toHaveResponse({
+    code: `await page.goBack();`,
+    page: expect.stringContaining(`- Page URL: ${server.PREFIX}/page-a`),
   });
 });
 
@@ -112,15 +157,13 @@ test('browser_select_option', async ({ client, server }) => {
     name: 'browser_select_option',
     arguments: {
       element: 'Select',
-      ref: 'e2',
+      target: 'e2',
       values: ['bar'],
     },
   })).toHaveResponse({
-    snapshot: `\`\`\`yaml
-- <changed> combobox [ref=e2]:
+    snapshot: `- combobox [ref=e2]:
   - option "Foo"
-  - option "Bar" [selected]
-\`\`\``,
+  - option "Bar" [selected]`,
   });
 });
 
@@ -143,15 +186,15 @@ test('browser_select_option (multiple)', async ({ client, server }) => {
     name: 'browser_select_option',
     arguments: {
       element: 'Select',
-      ref: 'e2',
+      target: 'e2',
       values: ['bar', 'baz'],
     },
   })).toHaveResponse({
     code: `await page.getByRole('listbox').selectOption(['bar', 'baz']);`,
-    snapshot: `\`\`\`yaml
-- <changed> option "Bar" [selected] [ref=e4]
-- <changed> option "Baz" [selected] [ref=e5]
-\`\`\``,
+    snapshot: `- listbox [ref=e2]:
+  - option "Foo" [ref=e3]
+  - option "Bar" [selected] [ref=e4]
+  - option "Baz" [selected] [ref=e5]`,
   });
 });
 
@@ -180,7 +223,7 @@ test('browser_resize', async ({ client, server }) => {
     code: `await page.setViewportSize({ width: 390, height: 780 });`,
   });
   await expect.poll(() => client.callTool({ name: 'browser_snapshot' })).toHaveResponse({
-    snapshot: expect.stringContaining(`Window size: 390x780`),
+    inlineSnapshot: expect.stringContaining(`Window size: 390x780`),
   });
 });
 
@@ -210,7 +253,7 @@ test('old locator error message', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button 1',
-      ref: 'e2',
+      target: 'e2',
     },
   });
 
@@ -218,7 +261,7 @@ test('old locator error message', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button 2',
-      ref: 'e3',
+      target: 'e3',
     },
   })).toHaveResponse({
     error: expect.stringContaining(`Ref e3 not found in the current page snapshot. Try capturing new snapshot.`),
@@ -243,6 +286,108 @@ test('visibility: hidden > visible should be shown', { annotation: { type: 'issu
   expect(await client.callTool({
     name: 'browser_snapshot'
   })).toHaveResponse({
-    snapshot: expect.stringContaining(`- button "Button"`),
+    inlineSnapshot: expect.stringContaining(`- button "Button"`),
+  });
+});
+
+test('snapshot depth', async ({ client, server }) => {
+  server.setContent('/', `
+    <ul>
+      <li>text</li>
+      <li>
+        <button>Button</button>
+      </li>
+    </ul>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+    arguments: {
+      depth: 1,
+    }
+  })).toHaveResponse({
+    inlineSnapshot: `- list [ref=e2]:
+  - listitem [ref=e3]: text
+  - listitem [ref=e4]`,
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+    arguments: {
+      depth: 2,
+    }
+  })).toHaveResponse({
+    inlineSnapshot: `- list [ref=e2]:
+  - listitem [ref=e3]: text
+  - listitem [ref=e4]:
+    - button "Button" [ref=e5]`,
+  });
+});
+
+test('snapshot with boxes', async ({ client, server }) => {
+  server.setContent('/', `
+    <style>body { margin: 0; }</style>
+    <button style="position:absolute;left:100px;top:50px;width:80px;height:40px;margin:0;padding:0;border:0;">click</button>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+    arguments: { boxes: true },
+  })).toHaveResponse({
+    inlineSnapshot: expect.stringContaining(`- button "click" [ref=e1] [box=100,50,80,40]`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+  })).toHaveResponse({
+    inlineSnapshot: expect.not.stringMatching(/\[box=/),
+  });
+});
+
+test('snapshot by ref', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright-cli/issues/347' } }, async ({ client, server }) => {
+  server.setContent('/', `
+    <ul>
+      <li>text</li>
+      <li>
+        <button>Button</button>
+      </li>
+    </ul>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+    arguments: {
+      target: 'e2',
+    }
+  })).toHaveResponse({
+    inlineSnapshot: `- list [ref=e2]:
+  - listitem [ref=e3]: text
+  - listitem [ref=e4]:
+    - button "Button" [ref=e5]`,
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+    arguments: {
+      target: 'e999',
+    }
+  })).toHaveResponse({
+    error: expect.stringContaining(`Ref e999 not found in the current page snapshot. Try capturing new snapshot.`),
+    isError: true,
   });
 });

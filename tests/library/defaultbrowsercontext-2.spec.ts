@@ -28,8 +28,6 @@ it('should support hasTouch option', async ({ server, launchPersistent }) => {
 });
 
 it('should work in persistent context', async ({ server, launchPersistent, browserName }) => {
-  it.skip(browserName === 'firefox', 'Firefox does not support mobile');
-
   const { page } = await launchPersistent({ viewport: { width: 320, height: 480 }, isMobile: true });
   await page.goto(server.PREFIX + '/empty.html');
   expect(await page.evaluate(() => window.innerWidth)).toBe(980);
@@ -110,8 +108,9 @@ it('should accept relative userDataDir', async ({ createUserDataDir, browserType
   await context.close();
 });
 
-it('should restore state from userDataDir', async ({ browserType, server, createUserDataDir }) => {
+it('should restore state from userDataDir', async ({ browserType, server, createUserDataDir, channel }) => {
   it.slow();
+  it.fixme(channel === 'webkit-wsl', 'Pending local storage writes are lost on close, see https://github.com/microsoft/playwright-browsers/issues/2275');
 
   const userDataDir = await createUserDataDir();
   const browserContext = await browserType.launchPersistentContext(userDataDir);
@@ -142,6 +141,25 @@ it('should create userDataDir if it does not exist', async ({ createUserDataDir,
   const context = await browserType.launchPersistentContext(userDataDir);
   await context.close();
   expect(fs.readdirSync(userDataDir).length).toBeGreaterThan(0);
+});
+
+it('should goto about:blank on relaunched persistent context', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41216' },
+}, async ({ browserType, createUserDataDir, browserName, isBidi }) => {
+  it.fixme(browserName === 'firefox' && !isBidi);
+
+  const userDataDir = await createUserDataDir();
+
+  const context1 = await browserType.launchPersistentContext(userDataDir);
+  await context1.pages()[0].goto('about:blank');
+  await context1.close();
+
+  // When relaunching with an existing profile, Firefox session restore can race with the user's goto and cause "interrupted by another navigation".
+  // This issue is timing-sensitive and might not fire on every run, so rely on CI's --repeat-each matrix for coverage.
+  const context2 = await browserType.launchPersistentContext(userDataDir);
+  await context2.pages()[0].goto('about:blank');
+  expect(context2.pages()[0].url()).toBe('about:blank');
+  await context2.close();
 });
 
 it('should have default URL when launching browser', async ({ launchPersistent }) => {
@@ -264,6 +282,27 @@ it('dialog.accept should work', {
   await context.close();
 });
 
+it('CacheStorage entry should survive page.reload()', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41618' }
+}, async ({ launchPersistent, server }) => {
+  const { context, page } = await launchPersistent();
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(async () => {
+    const cache = await caches.open('repro-cache');
+    await cache.put('/meta', new Response('payload'));
+  });
+
+  await page.reload();
+
+  const after = await page.evaluate(async () => {
+    const cache = await caches.open('repro-cache');
+    const resp = await cache.match('/meta');
+    return resp ? await resp.text() : null;
+  });
+  expect(after).toBe('payload');
+  await context.close();
+});
+
 it('exposes browser', async ({ launchPersistent }) => {
   const { context } = await launchPersistent();
   const browser = context.browser();
@@ -274,5 +313,19 @@ it('exposes browser', async ({ launchPersistent }) => {
   await browser.close();
   expect(context.pages().length).toBe(0);
   // Next line should not throw.
+  await context.close();
+});
+
+it('should support storage.getDirectory()', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/18235' }
+}, async ({ launchPersistent, server }) => {
+  const { context } = await launchPersistent();
+  const page = await context.newPage();
+  await page.goto(server.EMPTY_PAGE);
+  const name = await page.evaluate(async () => {
+    const dir = await navigator.storage.getDirectory();
+    return dir.name;
+  }).catch(e => e);
+  expect(name).toBe('');
   await context.close();
 });

@@ -22,20 +22,24 @@ test('test snapshot tool list', async ({ client }) => {
     'browser_click',
     'browser_console_messages',
     'browser_drag',
+    'browser_drop',
     'browser_evaluate',
     'browser_file_upload',
     'browser_fill_form',
+    'browser_find',
     'browser_handle_dialog',
     'browser_hover',
     'browser_select_option',
     'browser_type',
     'browser_close',
+    'browser_emulate_media',
     'browser_navigate_back',
     'browser_navigate',
+    'browser_network_request',
     'browser_network_requests',
     'browser_press_key',
     'browser_resize',
-    'browser_run_code',
+    'browser_run_code_unsafe',
     'browser_snapshot',
     'browser_tabs',
     'browser_take_screenshot',
@@ -72,4 +76,14 @@ test('support for legacy --vision option', async ({ startClient }) => {
   expect(toolNames).toContain('browser_mouse_move_xy');
   expect(toolNames).toContain('browser_mouse_click_xy');
   expect(toolNames).toContain('browser_mouse_drag_xy');
+});
+
+test('legacy --vision option combined with --caps', async ({ startClient }) => {
+  const { client } = await startClient({
+    args: ['--vision', '--caps=pdf'],
+  });
+  const { tools } = await client.listTools();
+  const toolNames = tools.map(t => t.name);
+  expect(toolNames).toContain('browser_mouse_move_xy');
+  expect(toolNames).toContain('browser_pdf_save');
 });

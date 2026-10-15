@@ -16,8 +16,9 @@
 
 import { ChannelOwner } from './channelOwner';
 import { isTargetClosedError } from './errors';
+import { kNoTimeout } from './timeoutSettings';
 
-import type * as channels from '@protocol/channels';
+import type * as channels from './channels';
 
 export interface Disposable {
   dispose: () => Promise<void>;
@@ -34,7 +35,7 @@ export class DisposableObject<T extends channels.DisposableChannel = channels.Di
 
   async dispose() {
     try {
-      await this._channel.dispose();
+      await this._channel.dispose({}, kNoTimeout);
     } catch (e) {
       if (isTargetClosedError(e))
         return;

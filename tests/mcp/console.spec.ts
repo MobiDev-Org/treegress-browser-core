@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { test, expect, parseResponse } from './fixtures';
+import { test, expect, parseResponse, consoleEntries } from './fixtures';
 
 test('browser_console_messages', async ({ client, server }) => {
   server.setContent('/', `
@@ -78,7 +78,7 @@ test('browser_console_messages (page error)', async ({ client, server }) => {
   });
 });
 
-test('recent console messages', async ({ client, server }) => {
+test('recent console messages', async ({ client, server }, testInfo) => {
   server.setContent('/', `
     <!DOCTYPE html>
     <html>
@@ -93,20 +93,19 @@ test('recent console messages', async ({ client, server }) => {
     },
   });
 
-  const response = await client.callTool({
+  const response = parseResponse(await client.callTool({
     name: 'browser_click',
     arguments: {
       element: 'Click me',
-      ref: 'e2',
+      target: 'e2',
     },
-  });
+  }));
 
-  expect(response).toHaveResponse({
-    events: expect.stringContaining(`- [LOG] Hello, world! @`),
-  });
+  const content = await consoleEntries(response);
+  expect(content).toContain('Hello, world!');
 });
 
-test('recent console messages filter', async ({ startClient, server }) => {
+test('recent console messages filter', async ({ startClient, server }, testInfo) => {
   server.setContent('/', `
     <!DOCTYPE html>
     <html>
@@ -128,8 +127,9 @@ test('recent console messages filter', async ({ startClient, server }) => {
     },
   }));
 
-  expect(response.events).toContain('console.error');
-  expect(response.events).not.toContain('console.log');
+  const content = await consoleEntries(response);
+  expect(content).toContain('console.error');
+  expect(content).not.toContain('console.log');
 });
 
 test('browser_console_messages default level', async ({ client, server }) => {
@@ -149,7 +149,8 @@ test('browser_console_messages default level', async ({ client, server }) => {
         console.warn("console.warn");
         console.error("console.error");
         setTimeout(() => { throw new Error("unhandled"); }, 0);
-        await fetch('/missing');
+        const response = await fetch('${server.PREFIX}/missing');
+        console.log("fetch status: " + response.status);
       }`,
     },
   });
@@ -182,7 +183,8 @@ test('browser_console_messages errors only', async ({ client, server }) => {
         console.warn("console.warn");
         console.error("console.error");
         setTimeout(() => { throw new Error("unhandled"); }, 0);
-        await fetch('/missing');
+        const response = await fetch('${server.PREFIX}/missing');
+        console.error("fetch status: " + response.status);
       }`,
     },
   });
@@ -205,7 +207,7 @@ test('browser_console_messages errors only', async ({ client, server }) => {
 test('console log file is created on snapshot', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   server.setContent('/', `
@@ -241,7 +243,7 @@ test('console log file is created on snapshot', async ({ startClient, server }, 
 test('console log file shows correct entry count', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   server.setContent('/', `
@@ -266,7 +268,7 @@ test('console log file shows correct entry count', async ({ startClient, server 
 test('console log file shows singular entry', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   server.setContent('/', `
@@ -289,7 +291,7 @@ test('console log file shows singular entry', async ({ startClient, server }, te
 test('new console log file after navigation', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   server.setContent('/page1', `
@@ -335,7 +337,7 @@ test('new console log file after navigation', async ({ startClient, server }, te
 test('console log file appends on multiple snapshots', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   server.setContent('/', `
@@ -353,13 +355,13 @@ test('console log file appends on multiple snapshots', async ({ startClient, ser
   // Click button to generate console message
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'Click me', ref: 'e2' },
+    arguments: { element: 'Click me', target: 'e2' },
   });
 
   // Click again
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'Click me', ref: 'e2' },
+    arguments: { element: 'Click me', target: 'e2' },
   });
 
   // Verify only one log file exists (same page, appended)
@@ -376,7 +378,7 @@ test('console log file appends on multiple snapshots', async ({ startClient, ser
 test('console log file stores message type and content', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   server.setContent('/', `
@@ -406,10 +408,53 @@ test('console log file stores message type and content', async ({ startClient, s
   expect(logContent).toMatch(/@ http:\/\/localhost:\d+\/:\d/);
 });
 
+test('browser_console_messages all option', async ({ client, server }) => {
+  server.setContent('/page1', `
+    <html><script>console.log("page1 message");</script></html>
+  `, 'text/html');
+
+  server.setContent('/page2', `
+    <html><script>console.log("page2 message");</script></html>
+  `, 'text/html');
+
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/page1' } });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/page2' } });
+
+  const defaultResponse = parseResponse(await client.callTool({ name: 'browser_console_messages' }));
+  expect(defaultResponse.result).toContain('page2 message');
+  expect(defaultResponse.result).not.toContain('page1 message');
+
+  const allResponse = parseResponse(await client.callTool({
+    name: 'browser_console_messages',
+    arguments: { all: true },
+  }));
+  expect(allResponse.result).toContain('page1 message');
+  expect(allResponse.result).toContain('page2 message');
+});
+
+test('browser_console_messages all option for page errors', async ({ client, server }) => {
+  server.setContent('/page1', `<html><script>throw new Error('page1 error');</script></html>`, 'text/html');
+  server.setContent('/page2', `<html><script>throw new Error('page2 error');</script></html>`, 'text/html');
+
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/page1' } });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/page2' } });
+
+  const defaultResponse = parseResponse(await client.callTool({ name: 'browser_console_messages' }));
+  expect(defaultResponse.result).toContain('page2 error');
+  expect(defaultResponse.result).not.toContain('page1 error');
+
+  const allResponse = parseResponse(await client.callTool({
+    name: 'browser_console_messages',
+    arguments: { all: true },
+  }));
+  expect(allResponse.result).toContain('page1 error');
+  expect(allResponse.result).toContain('page2 error');
+});
+
 test('console log is updated without taking snapshots', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
-    config: { outputDir, outputMode: 'file' },
+    config: { outputDir },
   });
 
   // Navigate to the page (this takes a snapshot)

@@ -16,11 +16,11 @@
 
 import * as fs from 'fs';
 
-import { monotonicTime, spawnAsync } from 'playwright-core/lib/utils';
+import { spawnAsync } from '@utils/processLauncher';
 
 import type { TestRunnerPlugin } from './';
 import type { FullConfig } from '../../types/testReporter';
-import type { FullConfigInternal } from '../common/config';
+import type { FullConfigInternal } from '../common';
 import type { GitCommitInfo, CIInfo, MetadataWithCommitInfo } from '../isomorphic/types';
 
 const GIT_OPERATIONS_TIMEOUT_MS = 3000;
@@ -123,12 +123,12 @@ async function gitCommitInfo(gitDir: string): Promise<GitCommitInfo | undefined>
     '%cn', // committer name
     '%ce', // committer email
     '%ct', // committer date, UNIX timestamp
-    '',    // branch
   ];
-  const output = await runGit(`git log -1 --pretty=format:"${tokens.join(separator)}" && git rev-parse --abbrev-ref HEAD`, gitDir);
-  if (!output)
+  const logOutput = await runGit(['log', '-1', `--pretty=format:${tokens.join(separator)}`], gitDir);
+  if (!logOutput)
     return undefined;
-  const [hash, shortHash, subject, body, authorName, authorEmail, authorTime, committerName, committerEmail, committerTime, branch] = output.split(separator);
+  const branchOutput = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], gitDir);
+  const [hash, shortHash, subject, body, authorName, authorEmail, authorTime, committerName, committerEmail, committerTime] = logOutput.split(separator);
 
   return {
     shortHash,
@@ -145,16 +145,31 @@ async function gitCommitInfo(gitDir: string): Promise<GitCommitInfo | undefined>
       email: committerEmail,
       time: +committerTime * 1000,
     },
-    branch: branch.trim(),
+    branch: branchOutput?.trim() ?? '',
   };
 }
 
 async function gitDiff(gitDir: string, ci?: CIInfo): Promise<string | undefined> {
   const diffLimit = 100_000;
   if (ci?.prBaseHash) {
-    // https://git-scm.com/docs/git-fetch
-    await runGit(`git fetch origin ${ci.prBaseHash} --depth=1 --no-auto-maintenance --no-auto-gc --no-tags --no-recurse-submodules`, gitDir);
-    const diff = await runGit(`git diff ${ci.prBaseHash} HEAD`, gitDir);
+    // Diff against the PR base commit. Whether it is present locally depends on the checkout:
+    // - fetch-depth: 0 (complete clone): the base is reachable from the base branch, no fetch
+    //   is needed. Fetching with `--depth=1` here would write `.git/shallow` and turn the
+    //   user's complete clone shallow for the rest of the CI job.
+    // - fetch-depth: 1 (default on GHA): only the PR merge commit exists, the base must be
+    //   fetched, and `--depth=1` keeps that fetch minimal in the already-shallow clone.
+    // - fetch-depth: N: the base is present iff it is within N commits of the merge commit.
+    // - Base branch force-pushed after the PR was created: the base may be missing even from
+    //   a complete clone; fetch without `--depth` so that the clone stays complete.
+    const hasBaseCommit = await runGit(['cat-file', '-e', `${ci.prBaseHash}^{commit}`], gitDir) !== undefined;
+    if (!hasBaseCommit) {
+      const isShallow = await runGit(['rev-parse', '--is-shallow-repository'], gitDir) === 'true';
+      const fetchArgs = ['fetch', 'origin', ci.prBaseHash, '--no-auto-maintenance', '--no-auto-gc', '--no-tags', '--no-recurse-submodules'];
+      if (isShallow)
+        fetchArgs.push('--depth=1');
+      await runGit(fetchArgs, gitDir);
+    }
+    const diff = await runGit(['diff', ci.prBaseHash, 'HEAD'], gitDir);
     if (diff)
       return diff.substring(0, diffLimit);
   }
@@ -164,7 +179,7 @@ async function gitDiff(gitDir: string, ci?: CIInfo): Promise<string | undefined>
     return;
 
   // Check dirty state first.
-  const uncommitted = await runGit('git diff', gitDir);
+  const uncommitted = await runGit(['diff'], gitDir);
   if (uncommitted === undefined) {
     // Failed to run git diff.
     return;
@@ -173,20 +188,21 @@ async function gitDiff(gitDir: string, ci?: CIInfo): Promise<string | undefined>
     return uncommitted.substring(0, diffLimit);
 
   // Assume non-shallow checkout on local.
-  const diff = await runGit('git diff HEAD~1', gitDir);
+  const diff = await runGit(['diff', 'HEAD~1'], gitDir);
   return diff?.substring(0, diffLimit);
 }
 
-async function runGit(command: string, cwd: string): Promise<string | undefined> {
-  debug(`running "${command}"`);
-  const start = monotonicTime();
-  const result = await spawnAsync(
-      command,
-      [],
-      { stdio: 'pipe', cwd, timeout: GIT_OPERATIONS_TIMEOUT_MS, shell: true }
-  );
-  if (monotonicTime() - start > GIT_OPERATIONS_TIMEOUT_MS) {
-    print(`timeout of ${GIT_OPERATIONS_TIMEOUT_MS}ms exceeded while running "${command}"`);
+async function runGit(args: string[], cwd: string): Promise<string | undefined> {
+  debug(`running "git ${args.join(' ')}"`);
+  // Fail fast instead of blocking in a credential prompt that nobody can answer on CI.
+  const result = await spawnAsync('git', ['-c', 'credential.interactive=false', ...args], {
+    stdio: 'pipe',
+    cwd,
+    timeout: GIT_OPERATIONS_TIMEOUT_MS,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  if (result.timedOut) {
+    print(`timeout of ${GIT_OPERATIONS_TIMEOUT_MS}ms exceeded while running "git ${args.join(' ')}"`);
     return;
   }
   if (result.code)

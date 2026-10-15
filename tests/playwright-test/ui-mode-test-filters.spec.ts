@@ -72,6 +72,25 @@ test('should display native tags and filter by them on click', async ({ runUITes
   `);
 });
 
+test('should toggle filters from the keyboard', async ({ runUITest }) => {
+  const { page } = await runUITest(basicTestTree);
+  const summary = page.locator('.filter-summary');
+
+  await expect(summary).toHaveRole('button');
+  await expect(summary).toHaveAttribute('aria-expanded', 'false');
+
+  await summary.focus();
+  await expect(summary).toBeFocused();
+
+  await summary.press('Enter');
+  await expect(page.getByTestId('status-filters')).toBeVisible();
+  await expect(summary).toHaveAttribute('aria-expanded', 'true');
+
+  await summary.press('Space');
+  await expect(page.getByTestId('status-filters')).toBeHidden();
+  await expect(summary).toHaveAttribute('aria-expanded', 'false');
+});
+
 test('should filter by status', async ({ runUITest }) => {
   const { page } = await runUITest(basicTestTree);
 
@@ -173,6 +192,32 @@ test('should filter by project', async ({ runUITest }) => {
   `);
 
   await expect(page.getByText('Projects: foo bar')).toBeVisible();
+});
+
+test('should list projects in config order', async ({ runUITest }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41779' });
+  const { page } = await runUITest({
+    ...basicTestTree,
+    'playwright.config.ts': `
+      import { defineConfig } from '@playwright/test';
+      export default defineConfig({
+        projects: [
+          { name: 'dev-setup', testMatch: /a.test.ts/ },
+          { name: 'dev', dependencies: ['dev-setup'] },
+          { name: 'staging-setup', testMatch: /a.test.ts/ },
+          { name: 'staging', dependencies: ['staging-setup'] },
+        ],
+      });
+    `
+  });
+
+  await page.getByText('Status:').click();
+  await expect(page.getByTestId('project-filters').locator('.filter-entry')).toHaveText([
+    'dev-setup',
+    'dev',
+    'staging-setup',
+    'staging',
+  ]);
 });
 
 test('should not hide filtered while running', async ({ runUITest, createLatch }) => {

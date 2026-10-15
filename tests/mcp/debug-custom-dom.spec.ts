@@ -22,7 +22,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 test.describe('debug custom-dom snapshot + ref flow', () => {
   test.skip(({ mcpBrowser }) => mcpBrowser !== 'chromium', 'Debug this on Chromium first.');
-  test.use({ mcpCaps: ['testing'] });
+  test.use({ mcpCaps: ['testing'], mcpSnapshotEngine: 'dom' });
 
   test('capture snapshot, save files, generate locators, click through refs', async ({ client, server }, testInfo) => {
     server.setContent('/', `
@@ -89,7 +89,7 @@ test.describe('debug custom-dom snapshot + ref flow', () => {
 
     const gearLocatorResponse = await client.callTool({
       name: 'browser_generate_locator',
-      arguments: { element: 'Gear control', ref: gearRef },
+      arguments: { element: 'Gear control', target: gearRef },
     });
     console.log('RAW gear locator response:', JSON.stringify(gearLocatorResponse, null, 2));
     console.log('PARSED gear locator response:', parseResponse(gearLocatorResponse));
@@ -99,7 +99,7 @@ test.describe('debug custom-dom snapshot + ref flow', () => {
 
     const secondOpenResponse = await client.callTool({
       name: 'browser_generate_locator',
-      arguments: { element: 'Second Open button', ref: secondOpenRef },
+      arguments: { element: 'Second Open button', target: secondOpenRef },
     });
     console.log('RAW gear locator response:', JSON.stringify(secondOpenResponse, null, 2));
     console.log('PARSED gear locator response:', parseResponse(secondOpenResponse));
@@ -109,23 +109,23 @@ test.describe('debug custom-dom snapshot + ref flow', () => {
 
     const shadowLocator = parseResponse(await client.callTool({
       name: 'browser_generate_locator',
-      arguments: { element: 'Shadow Action', ref: shadowRef },
+      arguments: { element: 'Shadow Action', target: shadowRef },
     })).result;
 
     // 4) Click through refs.
     await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Gear control', ref: gearRef },
+      arguments: { element: 'Gear control', target: gearRef },
     });
 
     await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Second Open button', ref: secondOpenRef },
+      arguments: { element: 'Second Open button', target: secondOpenRef },
     });
 
     await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Shadow Action', ref: shadowRef },
+      arguments: { element: 'Shadow Action', target: shadowRef },
     });
 
     // 5) Verify page state changed exactly as expected.
@@ -180,7 +180,8 @@ test.describe('debug custom-dom snapshot + ref flow', () => {
 });
 
 function snapshotText(response: Awaited<ReturnType<Client['callTool']>>): string {
-  const snapshot = parseResponse(response).snapshot;
+  const parsed = parseResponse(response, test.info().outputPath());
+  const snapshot = parsed?.snapshot ?? parsed?.inlineSnapshot;
   if (!snapshot)
     throw new Error(`Snapshot section not found in response:\n${parseResponse(response).text}`);
   return snapshot.replace(/^```yaml\n/, '').replace(/\n```$/, '');

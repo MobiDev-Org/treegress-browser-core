@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
+// @ts-nocheck
+
 import { test as baseTest, expect } from './ui-mode-fixtures';
-import { TestServerConnection } from '../../packages/playwright/lib/isomorphic/testServerConnection';
-import { playwrightCtConfigText } from './playwright-test-fixtures';
+import { TestServerConnection } from '../../packages/playwright/lib/isomorphic';
 import ws from 'ws';
 import type { TestChildProcess } from '../config/commonFixtures';
 
@@ -78,20 +79,16 @@ const test = baseTest.extend<{ startTestServer: (options?: { env?: NodeJS.Proces
   }
 });
 
-const ctFiles = {
-  'playwright.config.ts': playwrightCtConfigText,
-  'playwright/index.html': `<script type="module" src="./index.ts"></script>`,
-  'playwright/index.ts': ``,
-  'src/button.tsx': `
-    export const Button = () => <button>Button</button>;
+const filesWithDependency = {
+  'src/button.ts': `
+    export const label = 'Button';
   `,
-  'src/button.test.tsx': `
-    import { test, expect } from '@playwright/experimental-ct-react';
-    import { Button } from './button';
+  'src/button.test.ts': `
+    import { test, expect } from '@playwright/test';
+    import { label } from './button';
 
-    test('pass', async ({ mount }) => {
-      const component = await mount(<Button></Button>);
-      await expect(component).toHaveText('Button', { timeout: 1 });
+    test('pass', async () => {
+      expect(label).toBe('Button');
     });
   `,
 };
@@ -153,6 +150,28 @@ test('should list tests with testIdAttribute', async ({ startTestServer, writeFi
   expect(onProject.use.testIdAttribute).toBe('testId');
 });
 
+test('should list non-default projects', async ({ startTestServer, writeFiles }) => {
+  await writeFiles({
+    'a.test.ts': `
+      import { test } from '@playwright/test';
+      test('foo', () => {});
+      `,
+    'playwright.config.ts': `
+      module.exports = {
+        projects: [
+          { name: 'default' },
+          { name: 'non-default', default: false },
+        ]
+      };
+      `,
+  });
+
+  const testServerConnection = await startTestServer();
+  const events = await testServerConnection.listTests({});
+  const projectNames = events.report.filter(e => e.method === 'onProject').map(e => e.params.project.name);
+  expect(projectNames).toEqual(['default', 'non-default']);
+});
+
 test('stdio interception', async ({ startTestServer, writeFiles }) => {
   const testServerConnection = await startTestServer();
   await testServerConnection.initialize({ interceptStdio: true });
@@ -173,23 +192,6 @@ test('stdio interception', async ({ startTestServer, writeFiles }) => {
     ['stdio', { type: 'stderr', text: 'this goes to stderr\n' }],
     ['stdio', { type: 'stdout', text: 'this goes to stdout\n' }]
   ]));
-});
-
-test('start dev server', async ({ startTestServer, writeFiles, runInlineTest }) => {
-  await writeFiles(ctFiles);
-
-  const testServerConnection = await startTestServer();
-  await testServerConnection.initialize({ interceptStdio: true });
-  expect((await testServerConnection.runGlobalSetup({})).status).toBe('passed');
-  expect((await testServerConnection.startDevServer({})).status).toBe('passed');
-
-  const result = await runInlineTest({}, { workers: 1 });
-  expect(result.exitCode).toBe(0);
-  expect(result.passed).toBe(1);
-  expect(result.output).toContain('Dev Server is already running at');
-
-  expect((await testServerConnection.stopDevServer({})).status).toBe('passed');
-  expect((await testServerConnection.runGlobalTeardown({})).status).toBe('passed');
 });
 
 test('find related test files errors', async ({ startTestServer, writeFiles }) => {
@@ -214,21 +216,21 @@ test('find related test files errors', async ({ startTestServer, writeFiles }) =
 });
 
 test('find related test files', async ({ startTestServer, writeFiles }) => {
-  await writeFiles(ctFiles);
+  await writeFiles(filesWithDependency);
   const testServerConnection = await startTestServer();
   await testServerConnection.initialize({ interceptStdio: true });
   expect((await testServerConnection.runGlobalSetup({})).status).toBe('passed');
 
-  const buttonTsx = test.info().outputPath('src/button.tsx');
-  const buttonTestTsx = test.info().outputPath('src/button.test.tsx');
-  const result = await testServerConnection.findRelatedTestFiles({ files: [buttonTsx] });
-  expect(result).toEqual({ testFiles: [buttonTestTsx] });
+  const buttonTs = test.info().outputPath('src/button.ts');
+  const buttonTestTs = test.info().outputPath('src/button.test.ts');
+  const result = await testServerConnection.findRelatedTestFiles({ files: [buttonTs] });
+  expect(result).toEqual({ testFiles: [buttonTestTs] });
 
   expect((await testServerConnection.runGlobalTeardown({})).status).toBe('passed');
 });
 
 test('clear cache', async ({ startTestServer, writeFiles }) => {
-  await writeFiles(ctFiles);
+  await writeFiles(filesWithDependency);
   const testServerConnection = await startTestServer();
   await testServerConnection.initialize({ interceptStdio: true });
   expect((await testServerConnection.runGlobalSetup({})).status).toBe('passed');

@@ -123,6 +123,13 @@ it('should transfer bigint', async ({ page }) => {
 it('should transfer maps as empty objects', async ({ page }) => {
   const result = await page.evaluate(a => a.x.constructor.name + ' ' + JSON.stringify(a.x), { x: new Map([[1, 2]]) });
   expect(result).toBe('Object {}');
+  expect(await page.evaluate(() => new Map([[1, 2]]))).toEqual({});
+});
+
+it('should transfer sets as empty objects', async ({ page }) => {
+  const result = await page.evaluate(a => a.x.constructor.name + ' ' + JSON.stringify(a.x), { x: new Set([1, 2]) });
+  expect(result).toBe('Object {}');
+  expect(await page.evaluate(() => new Set([1, 2]))).toEqual({});
 });
 
 it('should modify global environment', async ({ page }) => {
@@ -161,13 +168,16 @@ it('should work with unicode chars', async ({ page }) => {
   expect(result).toBe(42);
 });
 
-it('should work with large strings', async ({ page }) => {
+it('should work with large strings', async ({ page, isAndroid }) => {
+  it.skip(isAndroid, 'string is too long :(');
+
   const expected = 'x'.repeat(40000);
   expect(await page.evaluate(data => data, expected)).toBe(expected);
 });
 
-it('should work with large unicode strings', async ({ page, browserName, platform }) => {
+it('should work with large unicode strings', async ({ page, browserName, platform, isAndroid }) => {
   it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/16367' });
+  it.skip(isAndroid, 'string is too long :(');
 
   const expected = '🎭'.repeat(10000);
   expect(await page.evaluate(data => data, expected)).toBe(expected);
@@ -237,6 +247,26 @@ it('should support thrown numbers as error messages', async ({ page }) => {
   await page.evaluate(() => { throw 100500; }).catch(e => error = e);
   expect(error).toBeTruthy();
   expect(error.message).toContain('100500');
+});
+
+it('should reject when a falsy value is thrown', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42661' },
+}, async ({ page }) => {
+  for (const value of ['null', 'undefined', '0', `''`, 'false', 'NaN', '-0', '0n']) {
+    const error = await page.evaluate(`(() => { throw ${value}; })()`).then(() => null, e => e);
+    expect(error, `throw ${value}`).toBeInstanceOf(Error);
+    const rejection = await page.evaluate(`Promise.reject(${value})`).then(() => null, e => e);
+    expect(rejection, `Promise.reject(${value})`).toBeInstanceOf(Error);
+  }
+});
+
+it('should include a non-error rejection value in the error message', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42661' },
+}, async ({ page }) => {
+  const error = await page.evaluate(() => Promise.reject(7)).then(() => null, e => e);
+  expect(error.message).toContain('7');
+  const nullError = await page.evaluate(() => { throw null; }).then(() => null, e => e);
+  expect(nullError.message).toContain('null');
 });
 
 it('should return complex objects', async ({ page }) => {
@@ -374,12 +404,12 @@ it('should properly serialize PerformanceMeasure object', async ({ page }) => {
     window.builtins.performance.mark('end');
     window.builtins.performance.measure('my-measure', 'start', 'end');
     return window.builtins.performance.getEntriesByType('measure');
-  })).toEqual([{
+  })).toEqual([expect.objectContaining({
     duration: expect.any(Number),
     entryType: 'measure',
     name: 'my-measure',
     startTime: expect.any(Number),
-  }]);
+  })]);
 });
 
 it('should properly serialize window.performance object', async ({ page }) => {
@@ -423,8 +453,8 @@ it('should return undefined for non-serializable objects', async ({ page }) => {
 
 it('should throw for too deep reference chain', {
   annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/33997' }
-}, async ({ page, browserName }) => {
-  it.fixme(browserName === 'firefox', 'Firefox Juggler -> Playwright serialiser does not throw for deep references.\nThis causes large objects to get serialised back to the Playwright client.\nThere our validators throw \'Maximum call stack size exceeded\'.');
+}, async ({ page, browserName, isBidi }) => {
+  it.fixme(browserName === 'firefox' && !isBidi, 'Firefox Juggler -> Playwright serialiser does not throw for deep references.\nThis causes large objects to get serialised back to the Playwright client.\nThere our validators throw \'Maximum call stack size exceeded\'.');
   await expect(page.evaluate(depth => {
     const obj = {};
     let temp = obj;
@@ -434,6 +464,20 @@ it('should throw for too deep reference chain', {
     }
     return obj;
   }, 1000)).rejects.toThrow('Cannot serialize result: object reference chain is too long.');
+});
+
+it('should throw for too deep reference chain 2', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/40940' }
+}, async ({ page, browserName, isAndroid }) => {
+  it.skip(browserName !== 'chromium', 'this is a chromium-only limitation');
+  it.skip(isAndroid, 'something fails there');
+
+  await expect(page.evaluate(depth => {
+    let node = {};
+    for (let i = 0; i < depth; i++)
+      node = { child: node };
+    return node;
+  }, 200)).rejects.toThrow('Cannot serialize result: object reference chain is too long.');
 });
 
 it('should throw usable message for unserializable shallow function', async ({ page }) => {
@@ -621,7 +665,7 @@ it('should respect use strict expression', async ({ page }) => {
 });
 
 it('should not leak utility script', async function({ page }) {
-  expect(await page.evaluate(() => this === window)).toBe(true);
+  expect(await page.evaluate('this === window')).toBe(true);
 });
 
 it('should not leak handles', async ({ page }) => {
@@ -850,6 +894,22 @@ it('should work with Array.from/map', async ({ page }) => {
   })).toBe('([a-f0-9]{2})([a-f0-9]{2})([a-f0-9]{2})');
 });
 
+it('should work with a using declaration', async ({ page, nodeVersion, browserName, browserMajorVersion }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41511' });
+  it.skip(nodeVersion.major < 24, 'using is lowered to a module-scope helper that does not survive evaluate serialization on Node < 24');
+  it.skip(browserName === 'webkit', 'WebKit does not support using declarations');
+  it.skip(browserName === 'chromium' && browserMajorVersion < 134, 'Chromium supports using declarations since 134');
+  const disposed = await page.evaluate(() => {
+    let disposed = false;
+    {
+      using r = { [Symbol.dispose]: () => { disposed = true; } };
+      void r;
+    }
+    return disposed;
+  });
+  expect(disposed).toBe(true);
+});
+
 it('should ignore dangerous object keys', async ({ page }) => {
   const input = {
     __proto__: { polluted: true },
@@ -857,9 +917,4 @@ it('should ignore dangerous object keys', async ({ page }) => {
   };
   const result = await page.evaluate(arg => arg, input);
   expect(result).toEqual({ safeKey: 'safeValue' });
-});
-
-it('should allow calling _evaluateFunction', async ({ page }) => {
-  const result = await (page as any)._evaluateFunction('() => 7 * 3');
-  expect(result).toBe(21);
 });

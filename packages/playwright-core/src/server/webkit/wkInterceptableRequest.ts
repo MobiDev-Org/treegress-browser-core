@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-import { assert, headersArrayToObject, headersObjectToArray } from '../../utils';
+import { assert } from '@isomorphic/assert';
+import { headersArrayToObject, headersObjectToArray } from '@isomorphic/headers';
 import * as network from '../network';
 
 import type * as frames from '../frames';
@@ -41,6 +42,8 @@ const errorReasons: { [reason: string]: Protocol.Network.ResourceErrorType } = {
   'failed': 'General',
 };
 
+export const wkSetCookieSeparator = process.platform === 'darwin' ? ',' : 'playwright-set-cookie-separator';
+
 export class WKInterceptableRequest {
   private _session: WKSession;
   private _requestId: string;
@@ -58,7 +61,7 @@ export class WKInterceptableRequest {
     if (event.request.postData)
       postDataBuffer = Buffer.from(event.request.postData, 'base64');
     this.request = new network.Request(frame._page.browserContext, frame, null, redirectedFrom?.request || null, documentId, event.request.url,
-        resourceType, event.request.method, postDataBuffer, headersObjectToArray(event.request.headers));
+        resourceType, event.request.method, postDataBuffer, headersObjectToArray(event.request.headers), this._wallTime);
   }
 
   adoptRequestFromNewProcess(newSession: WKSession, requestId: string) {
@@ -82,8 +85,7 @@ export class WKInterceptableRequest {
       requestStart: timingPayload ? wkMillisToRoundishMillis(timingPayload.requestStart) : -1,
       responseStart: timingPayload ? wkMillisToRoundishMillis(timingPayload.responseStart) : -1,
     };
-    const setCookieSeparator = process.platform === 'darwin' ? ',' : 'playwright-set-cookie-separator';
-    const response = new network.Response(this.request, responsePayload.status, responsePayload.statusText, headersObjectToArray(responsePayload.headers, ',', setCookieSeparator), timing, getResponseBody, responsePayload.source === 'service-worker');
+    const response = new network.Response(this.request, responsePayload.status, responsePayload.statusText, headersObjectToArray(responsePayload.headers, ',', wkSetCookieSeparator), timing, getResponseBody, responsePayload.source === 'service-worker');
 
     // No raw response headers in WebKit, use "provisional" ones.
     response.setRawResponseHeaders(null);

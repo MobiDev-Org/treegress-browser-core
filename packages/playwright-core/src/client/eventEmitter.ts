@@ -22,14 +22,11 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-import type { EventEmitter as EventEmitterType } from 'events';
-import type { Platform } from './platform';
-import type { Disposable } from './disposable';
+import { EventEmitter as NodeEventEmitter } from 'events';
 
-type EventEmitterLike = {
-  on(eventName: string | symbol, handler: (...args: any[]) => unknown): unknown;
-  removeListener(eventName: string | symbol, handler: (...args: any[]) => unknown): unknown;
-};
+import { isUnderTest } from '@utils/debug';
+
+import type { EventEmitter as EventEmitterType } from 'events';
 
 type EventType = string | symbol;
 type Listener = (...args: any[]) => any;
@@ -42,10 +39,8 @@ export class EventEmitter implements EventEmitterType {
   private _maxListeners: number | undefined = undefined;
   readonly _pendingHandlers = new Map<EventType, Set<Promise<void>>>();
   private _rejectionHandler: ((error: Error) => void) | undefined;
-  readonly _platform: Platform;
 
-  constructor(platform: Platform) {
-    this._platform = platform;
+  constructor() {
     if (this._events === undefined || this._events === Object.getPrototypeOf(this)._events) {
       this._events = Object.create(null);
       this._eventsCount = 0;
@@ -63,7 +58,7 @@ export class EventEmitter implements EventEmitterType {
   }
 
   getMaxListeners(): number {
-    return this._maxListeners === undefined ? this._platform.defaultMaxListeners() : this._maxListeners;
+    return this._maxListeners === undefined ? NodeEventEmitter.defaultMaxListeners : this._maxListeners;
   }
 
   emit(type: EventType, ...args: any[]): boolean {
@@ -161,7 +156,7 @@ export class EventEmitter implements EventEmitterType {
         w.emitter = this;
         w.type = type;
         w.count = existing.length;
-        if (!this._platform.isUnderTest()) {
+        if (!isUnderTest()) {
           // eslint-disable-next-line no-console
           console.warn(w);
         }
@@ -402,17 +397,3 @@ function unwrapListeners(arr: Listener[]): Listener[] {
 function wrappedListener(l: Listener): Listener {
   return (l as any).listener;
 }
-
-class EventsHelper {
-  static addEventListener(
-    emitter: EventEmitterLike,
-    eventName: (string | symbol),
-    handler: (...args: any[]) => any): Disposable {
-    emitter.on(eventName, handler);
-    return {
-      dispose: async () => { emitter.removeListener(eventName, handler); }
-    };
-  }
-}
-
-export const eventsHelper = EventsHelper;

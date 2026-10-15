@@ -55,6 +55,7 @@ for (const context of ['isolated', 'persistent']) {
 
     expect(await client.callTool({
       name: 'browser_console_messages',
+      arguments: {}
     })).toHaveResponse({
       result: expect.stringMatching(/Init script executed successfully.*Custom log/ms),
     });

@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
+import { ManualPromise } from '@isomorphic/manualPromise';
 import { Dispatcher } from './dispatcher';
-import { ManualPromise } from '../../utils/isomorphic/manualPromise';
 import { SdkObject } from '../instrumentation';
 
 import type { ArtifactDispatcher } from './artifactDispatcher';
-import type * as channels from '@protocol/channels';
+import type * as channels from '../channels';
 import type * as stream from 'stream';
-import type { Progress } from '@protocol/progress';
+import type { Progress } from '../progress';
 
 class StreamSdkObject extends SdkObject {
   readonly stream: stream.Readable;
@@ -53,14 +53,20 @@ export class StreamDispatcher extends Dispatcher<StreamSdkObject, channels.Strea
       stream.on('readable', done);
       stream.on('end', done);
       stream.on('error', done);
-      await progress.race(readyPromise).finally(() => {
+      try {
+        await progress.race(readyPromise);
+      } finally {
         stream.off('readable', done);
         stream.off('end', done);
         stream.off('error', done);
-      });
+      }
     }
     const buffer = stream.read(Math.min(stream.readableLength, params.size || stream.readableLength));
     return { binary: buffer || Buffer.from('') };
+  }
+
+  override _onDispose() {
+    this._object.stream.destroy();
   }
 
   async close(params: channels.StreamCloseParams, progress: Progress): Promise<void> {

@@ -14,18 +14,17 @@
  * limitations under the License.
  */
 
-import { monotonicTime } from '../utils/isomorphic/time';
-import { raceAgainstDeadline } from '../utils/isomorphic/timeoutRunner';
+import { monotonicTime } from '@isomorphic/time';
+import { raceAgainstDeadline } from '@isomorphic/timeoutRunner';
 import { Browser } from './browser';
 import { ChannelOwner } from './channelOwner';
 import { Connection } from './connection';
 import { Events } from './events';
+import { kNoTimeout } from './timeoutSettings';
 
-import type * as playwright from '../..';
 import type { Playwright } from './playwright';
 import type { ConnectOptions, HeadersArray } from './types';
-import type * as channels from '@protocol/channels';
-import type { BrowserDescriptor } from '../serverRegistry';
+import type * as channels from './channels';
 
 export async function connectToBrowser(playwright: Playwright, params: ConnectOptions): Promise<Browser> {
   const deadline = params.timeout ? monotonicTime() + params.timeout : 0;
@@ -36,11 +35,10 @@ export async function connectToBrowser(playwright: Playwright, params: ConnectOp
     headers,
     exposeNetwork: params.exposeNetwork,
     slowMo: params.slowMo,
-    timeout: params.timeout || 0,
   };
   if ((params as any).__testHookRedirectPortForwarding)
     connectParams.socksProxyRedirectPortForTest = (params as any).__testHookRedirectPortForwarding;
-  const connection = await connectToEndpoint(playwright._connection, connectParams);
+  const connection = await connectToEndpoint(playwright._connection, connectParams, { signal: undefined, timeout: params.timeout || 0 });
   let browser: Browser;
   connection.on('close', () => {
     // Emulate all pages, contexts and the browser closing upon disconnect.
@@ -76,11 +74,11 @@ export async function connectToBrowser(playwright: Playwright, params: ConnectOp
   }
 }
 
-export async function connectToEndpoint(parentConnection: Connection, params: channels.LocalUtilsConnectParams): Promise<Connection> {
+export async function connectToEndpoint(parentConnection: Connection, params: channels.LocalUtilsConnectParams, timeout: channels.TimeoutOptions): Promise<Connection> {
   const localUtils = parentConnection.localUtils();
   const transport = localUtils ? new JsonPipeTransport(localUtils) : new WebSocketTransport();
-  const connectHeaders = await transport.connect(params);
-  const connection = new Connection(parentConnection._platform, localUtils, parentConnection._instrumentation, connectHeaders);
+  const connectHeaders = await transport.connect(params, timeout);
+  const connection = new Connection(localUtils, parentConnection._instrumentation, connectHeaders);
   connection.markAsRemote();
   connection.on('close', () => transport.close());
 
@@ -101,16 +99,8 @@ export async function connectToEndpoint(parentConnection: Connection, params: ch
   return connection;
 }
 
-export async function connectToBrowserAcrossVersions(descriptor: BrowserDescriptor): Promise<playwright.Browser> {
-  const pw = require(descriptor.playwrightLib);
-  const params: ConnectOptions = { endpoint: descriptor.pipeName! };
-  const browser = await connectToBrowser(pw, params);
-  browser._connectToBrowserType(pw[descriptor.browser.browserName], {}, undefined);
-  return browser;
-}
-
 interface Transport {
-  connect(params: channels.LocalUtilsConnectParams): Promise<HeadersArray>;
+  connect(params: channels.LocalUtilsConnectParams, timeout: channels.TimeoutOptions): Promise<HeadersArray>;
   send(message: any): Promise<void>;
   onMessage(callback: (message: object) => void): void;
   onClose(callback: (reason?: string) => void): void;
@@ -125,14 +115,14 @@ class JsonPipeTransport implements Transport {
     this._owner = owner;
   }
 
-  async connect(params: channels.LocalUtilsConnectParams) {
-    const { pipe, headers: connectHeaders } = await this._owner._channel.connect(params);
+  async connect(params: channels.LocalUtilsConnectParams, timeout: channels.TimeoutOptions) {
+    const { pipe, headers: connectHeaders } = await this._owner._channel.connect(params, timeout);
     this._pipe = pipe;
     return connectHeaders;
   }
 
   async send(message: object) {
-    await this._pipe!.send({ message });
+    await this._pipe!.send({ message }, kNoTimeout);
   }
 
   onMessage(callback: (message: object) => void) {
@@ -144,14 +134,14 @@ class JsonPipeTransport implements Transport {
   }
 
   async close() {
-    await this._pipe!.close().catch(() => {});
+    await this._pipe!.close({}, kNoTimeout).catch(() => {});
   }
 }
 
 class WebSocketTransport implements Transport {
   private _ws: WebSocket | undefined;
 
-  async connect(params: channels.LocalUtilsConnectParams) {
+  async connect(params: channels.LocalUtilsConnectParams, timeout: channels.TimeoutOptions) {
     this._ws = new window.WebSocket(params.endpoint);
     return [];
   }

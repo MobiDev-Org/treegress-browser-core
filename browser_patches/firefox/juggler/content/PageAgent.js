@@ -126,7 +126,7 @@ export class PageAgent {
         }
       }),
       helper.addObserver(this._onWindowOpen.bind(this), 'webNavigation-createdNavigationTarget-from-js'),
-      this._runtime.events.onErrorFromWorker((domWindow, message, stack) => {
+      this._runtime.events.onErrorFromWorker((domWindow, message, stack, location) => {
         const frame = this._frameTree.frameForDocShell(domWindow.docShell);
         if (!frame)
           return;
@@ -134,6 +134,7 @@ export class PageAgent {
           frameId: frame.id(),
           message,
           stack,
+          location,
         });
       }),
       this._runtime.events.onConsoleMessage(msg => this._browserPage.emit('runtimeConsole', msg)),
@@ -217,7 +218,7 @@ export class PageAgent {
   }
 
   _linkClicked(sync, anchorElement) {
-    if (anchorElement.ownerGlobal.docShell !== this._docShell)
+    if (anchorElement.documentGlobal.docShell !== this._docShell)
       return;
     this._browserPage.emit('pageLinkClicked', { phase: sync ? 'after' : 'before' });
   }
@@ -250,9 +251,9 @@ export class PageAgent {
   onWindowEvent(event) {
     if (event.type !== 'DOMContentLoaded' && event.type !== 'load')
       return;
-    if (!event.target.ownerGlobal)
+    if (!event.target.documentGlobal)
       return;
-    const docShell = event.target.ownerGlobal.docShell;
+    const docShell = event.target.documentGlobal.docShell;
     const frame = this._frameTree.frameForDocShell(docShell);
     if (!frame)
       return;
@@ -262,16 +263,17 @@ export class PageAgent {
     });
   }
 
-  _onRuntimeError({ executionContext, message, stack }) {
+  _onRuntimeError({ executionContext, message, stack, location }) {
     this._browserPage.emit('pageUncaughtError', {
       frameId: executionContext.auxData().frameId,
       message: message.toString(),
       stack: stack.toString(),
+      location,
     });
   }
 
   _onDocumentOpenLoad(document) {
-    const docShell = document.ownerGlobal.docShell;
+    const docShell = document.documentGlobal.docShell;
     const frame = this._frameTree.frameForDocShell(docShell);
     if (!frame)
       return;
@@ -307,6 +309,9 @@ export class PageAgent {
   }
 
   _onNavigationCommitted(frame) {
+    if (frame.domWindow().document.isUncommittedInitialDocument)
+      return;
+
     this._browserPage.emit('pageNavigationCommitted', {
       frameId: frame.id(),
       navigationId: frame.lastCommittedNavigationId() || undefined,
@@ -475,7 +480,23 @@ export class PageAgent {
         tip.commitCompositionWith(text, keyEvent);
       } else {
         const flags = 0;
-        tip.keydown(keyEvent, flags);
+        // On macOS, Firefox treats Option+<printable key> as text input. Empty text
+        // means no text should be inserted, so we consume keydown after the page
+        // has seen it, which prevents the keypress, same as in Chromium and WebKit.
+        const suppressTextInput = !text && [...key].length === 1 && Services.appinfo.OS === 'Darwin';
+        if (!suppressTextInput) {
+          tip.keydown(keyEvent, flags);
+        } else {
+          const dispose = helper.addEventListener(this._docShell.chromeEventHandler, 'keydown', event => {
+            if (event.altKey && !event.ctrlKey && !event.metaKey)
+              event.preventDefault();
+          }, { capture: true, mozSystemGroup: true });
+          try {
+            tip.keydown(keyEvent, flags);
+          } finally {
+            dispose();
+          }
+        }
       }
     } else if (type === 'keyup') {
       if (text)
@@ -489,19 +510,22 @@ export class PageAgent {
 
   async _dispatchTouchEvent({type, touchPoints, modifiers}) {
     const frame = this._frameTree.mainFrame();
-    const defaultPrevented = frame.domWindow().windowUtils.sendTouchEvent(
+    const defaultPrevented = frame.domWindow().synthesizeTouchEvent(
       type.toLowerCase(),
-      touchPoints.map((point, id) => id),
-      touchPoints.map(point => point.x),
-      touchPoints.map(point => point.y),
-      touchPoints.map(point => point.radiusX === undefined ? 1.0 : point.radiusX),
-      touchPoints.map(point => point.radiusY === undefined ? 1.0 : point.radiusY),
-      touchPoints.map(point => point.rotationAngle === undefined ? 0.0 : point.rotationAngle),
-      touchPoints.map(point => point.force === undefined ? 1.0 : point.force),
-      touchPoints.map(point => 0),
-      touchPoints.map(point => 0),
-      touchPoints.map(point => 0),
-      modifiers);
+      touchPoints.map((point, id) => ({
+        identifier: id,
+        offsetX: point.x,
+        offsetY: point.y,
+        radiiX: point.radiusX ?? 1.0,
+        radiiY: point.radiusY ?? 1.0,
+        rotationAngle: point.rotationAngle ?? 0.0,
+        pressure: point.force ?? 1.0,
+        tiltX: 0,
+        tiltY: 0,
+        twist: 0,
+      })),
+      modifiers
+    );
     return {defaultPrevented};
   }
 

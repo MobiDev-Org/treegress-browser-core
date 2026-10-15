@@ -15,10 +15,11 @@
  */
 
 import { test, expect, writeFiles } from './fixtures';
-import { spawnAsync } from '../../packages/playwright-core/lib/server/utils/spawnAsync';
-
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
 import path from 'path';
 import fs from 'fs';
+
+const { spawnAsync } = utils;
 
 async function runInitAgents(options?: { args?: string[], cwd?: string }): Promise<{stdout: string, stderr: string, code: number | null, error?: Error}> {
   const result = await spawnAsync('npx', [
@@ -88,4 +89,57 @@ test('claude generates correct mcp config', async ({  }) => {
     expect(mcpJson.mcpServers['playwright-test'].command).toBe('npx');
     expect(mcpJson.mcpServers['playwright-test'].args).toEqual(['playwright', 'run-test-mcp-server']);
   }
+});
+
+test('codex generates agent toml files', async ({  }) => {
+  const baseDir = await writeFiles({
+    'playwright.config.ts': `module.exports = {};`,
+  });
+
+  await runInitAgents({ cwd: baseDir, args: ['--loop', 'codex'] });
+
+  const agentsDir = path.join(baseDir, '.codex', 'agents');
+  expect(fs.existsSync(agentsDir)).toBe(true);
+
+  const plannerToml = fs.readFileSync(path.join(agentsDir, 'playwright_test_planner.toml'), 'utf-8');
+  expect(plannerToml).toContain(`name = "playwright_test_planner"`);
+  expect(plannerToml).toContain(`[mcp_servers.playwright-test]`);
+  expect(plannerToml).toContain(`developer_instructions = """`);
+  if (process.platform === 'win32') {
+    expect(plannerToml).toContain(`command = "cmd"`);
+    expect(plannerToml).toContain(`args = ["/c", "npx", "playwright", "run-test-mcp-server"]`);
+  } else {
+    expect(plannerToml).toContain(`command = "npx"`);
+    expect(plannerToml).toContain(`args = ["playwright", "run-test-mcp-server"]`);
+  }
+
+  expect(plannerToml).toContain(`sandbox_mode = "read-only"`);
+  expect(plannerToml).toMatch(/enabled_tools = \[[^\]]*"planner_save_plan"[^\]]*\]/);
+  expect(plannerToml).toMatch(/enabled_tools = \[[^\]]*"browser_navigate"[^\]]*\]/);
+
+  const healerToml = fs.readFileSync(path.join(agentsDir, 'playwright_test_healer.toml'), 'utf-8');
+  expect(healerToml).toContain(`sandbox_mode = "workspace-write"`);
+  expect(healerToml).toMatch(/enabled_tools = \[[^\]]*"test_debug"[^\]]*\]/);
+});
+
+test('init-skills installs all skills', async ({  }) => {
+  const baseDir = await writeFiles({});
+
+  await spawnAsync('npx', ['playwright', 'init-skills'], { cwd: baseDir, shell: true });
+
+  for (const skill of ['playwright-cli', 'playwright-component-testing', 'playwright-trace'])
+    expect(fs.existsSync(path.join(baseDir, '.claude', 'skills', skill, 'SKILL.md'))).toBe(true);
+  expect(fs.existsSync(path.join(baseDir, '.claude', 'skills', 'playwright-cli', 'references', 'tracing.md'))).toBe(true);
+
+  const traceSkill = fs.readFileSync(path.join(baseDir, '.claude', 'skills', 'playwright-trace', 'SKILL.md'), 'utf-8');
+  expect(traceSkill.match(/^allowed-tools: .*/gm)).toEqual(['allowed-tools: Bash(npx playwright trace:*)']);
+});
+
+test('init-skills installs into .agents with --loop agents', async ({  }) => {
+  const baseDir = await writeFiles({});
+
+  await spawnAsync('npx', ['playwright', 'init-skills', '--loop', 'agents'], { cwd: baseDir, shell: true });
+
+  for (const skill of ['playwright-cli', 'playwright-component-testing', 'playwright-trace'])
+    expect(fs.existsSync(path.join(baseDir, '.agents', 'skills', skill, 'SKILL.md'))).toBe(true);
 });

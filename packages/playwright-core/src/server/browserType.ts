@@ -18,29 +18,30 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { assert } from '@isomorphic/assert';
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { DEFAULT_PLAYWRIGHT_TIMEOUT } from '@isomorphic/time';
+import { debugMode } from '@utils/debug';
+import { existsAsync } from '@utils/fileUtils';
+import { envArrayToObject, launchProcess } from '@utils/processLauncher';
+import { RecentLogsCollector } from '@utils/debugLogger';
 import { normalizeProxySettings, validateBrowserContextOptions } from './browserContext';
-import { debugMode } from './utils/debug';
-import { assert } from '../utils/isomorphic/assert';
-import { ManualPromise } from '../utils/isomorphic/manualPromise';
-import { DEFAULT_PLAYWRIGHT_TIMEOUT } from '../utils/isomorphic/time';
-import { existsAsync } from './utils/fileUtils';
 import { helper } from './helper';
 import { SdkObject } from './instrumentation';
 import { PipeTransport } from './pipeTransport';
-import { envArrayToObject, launchProcess } from './utils/processLauncher';
 import { isProtocolError } from './protocolError';
 import { registry } from './registry';
 import { ClientCertificatesProxy } from './socksClientCertificatesInterceptor';
 import { WebSocketTransport } from './transport';
-import { RecentLogsCollector } from './utils/debugLogger';
 
 import type { Browser, BrowserOptions, BrowserProcess } from './browser';
 import type { BrowserContext } from './browserContext';
+import type { Worker } from './page';
 import type { Progress } from './progress';
 import type { BrowserName } from './registry';
 import type { ConnectionTransport } from './transport';
 import type * as types from './types';
-import type * as channels from '@protocol/channels';
+import type * as channels from './channels';
 
 export const kNoXServerRunningError = 'Looks like you launched a headed browser without having a XServer running.\n' +
   'Set either \'headless: true\' or use \'xvfb-run <your-playwright-app>\' before running Playwright.\n\n<3 Playwright Team';
@@ -67,11 +68,11 @@ export abstract class BrowserType extends SdkObject {
     options = this._validateLaunchOptions(options);
     const seleniumHubUrl = (options as any).__testHookSeleniumRemoteURL || process.env.SELENIUM_REMOTE_URL;
     if (seleniumHubUrl)
-      return this._launchWithSeleniumHub(progress, seleniumHubUrl, options);
+      return this.launchWithSeleniumHub(progress, seleniumHubUrl, options);
     return this._innerLaunchWithRetries(progress, options, undefined, helper.debugProtocolLogger(protocolLogger)).catch(e => { throw this._rewriteStartupLog(e); });
   }
 
-  async launchPersistentContext(progress: Progress, userDataDir: string, options: channels.BrowserTypeLaunchPersistentContextOptions & { cdpPort?: number, internalIgnoreHTTPSErrors?: boolean, socksProxyPort?: number }): Promise<BrowserContext> {
+  async launchPersistentContext(progress: Progress, userDataDir: string, options: channels.BrowserTypeLaunchPersistentContextOptions & { internalIgnoreHTTPSErrors?: boolean, socksProxyPort?: number }): Promise<BrowserContext> {
     const launchOptions = this._validateLaunchOptions(options);
     // Note: Any initial TLS requests will fail since we rely on the Page/Frames initialize which sets ignoreHTTPSErrors.
     let clientCertificatesProxy: ClientCertificatesProxy | undefined;
@@ -108,7 +109,7 @@ export abstract class BrowserType extends SdkObject {
   private async _innerLaunch(progress: Progress, options: types.LaunchOptions, persistent: types.BrowserContextOptions | undefined, protocolLogger: types.ProtocolLogger, maybeUserDataDir?: string): Promise<Browser> {
     options.proxy = options.proxy ? normalizeProxySettings(options.proxy) : undefined;
     const browserLogsCollector = new RecentLogsCollector();
-    const { browserProcess, userDataDir, artifactsDir, transport } = await this._launchProcess(progress, options, !!persistent, browserLogsCollector, maybeUserDataDir);
+    const { browserProcess, userDataDir, artifactsDir, transport, wsEndpoint } = await this._launchProcess(progress, options, !!persistent, browserLogsCollector, maybeUserDataDir);
     try {
       if ((options as any).__testHookBeforeCreateBrowser)
         await progress.race((options as any).__testHookBeforeCreateBrowser());
@@ -127,8 +128,9 @@ export abstract class BrowserType extends SdkObject {
         proxy: options.proxy,
         protocolLogger,
         browserLogsCollector,
-        wsEndpoint: transport instanceof WebSocketTransport ? transport.wsEndpoint : undefined,
+        wsEndpoint,
         originalLaunchOptions: options,
+        userDataDir: persistent ? userDataDir : undefined,
       };
       if (persistent)
         validateBrowserContextOptions(persistent, browserOptions);
@@ -137,10 +139,10 @@ export abstract class BrowserType extends SdkObject {
       (browser as any)._userDataDirForTest = userDataDir;
       // We assume no control when using custom arguments, and do not prepare the default context in that case.
       if (persistent && !options.ignoreAllDefaultArgs)
-        await browser._defaultContext!._loadDefaultContext(progress);
+        await browser._defaultContext!.loadDefaultContext(progress);
       return browser;
     } catch (error) {
-      await browserProcess.close().catch(() => {});
+      await progress.race(browserProcess.close().catch(() => {}));
       throw error;
     }
   }
@@ -150,7 +152,6 @@ export abstract class BrowserType extends SdkObject {
       ignoreDefaultArgs,
       ignoreAllDefaultArgs,
       args = [],
-      executablePath = null,
     } = options;
     const tempDirectories: string[] = [];
     let artifactsDir: string;
@@ -181,10 +182,9 @@ export abstract class BrowserType extends SdkObject {
       browserArguments.push(...await this.defaultArgs(options, isPersistent, userDataDir));
 
     let executable: string;
-    if (executablePath) {
-      if (!(await existsAsync(executablePath)))
-        throw new Error(`Failed to launch ${this._name} because executable doesn't exist at ${executablePath}`);
-      executable = executablePath;
+    const customExecutablePath = await this.resolveExecutablePath(options);
+    if (customExecutablePath) {
+      executable = customExecutablePath;
     } else {
       const registryExecutable = registry.findExecutable(this.getExecutableName(options));
       if (!registryExecutable || registryExecutable.browserName !== this._name)
@@ -196,7 +196,7 @@ export abstract class BrowserType extends SdkObject {
     return { executable, browserArguments, userDataDir, artifactsDir, tempDirectories };
   }
 
-  private async _launchProcess(progress: Progress, options: types.LaunchOptions, isPersistent: boolean, browserLogsCollector: RecentLogsCollector, userDataDir?: string): Promise<{ browserProcess: BrowserProcess, artifactsDir: string, userDataDir: string, transport: ConnectionTransport }> {
+  private async _launchProcess(progress: Progress, options: types.LaunchOptions, isPersistent: boolean, browserLogsCollector: RecentLogsCollector, userDataDir?: string): Promise<{ browserProcess: BrowserProcess, artifactsDir: string, userDataDir: string, transport: ConnectionTransport, wsEndpoint?: string }> {
     const {
       handleSIGINT = true,
       handleSIGTERM = true,
@@ -211,7 +211,7 @@ export abstract class BrowserType extends SdkObject {
     let transport: ConnectionTransport | undefined = undefined;
     let browserProcess: BrowserProcess | undefined = undefined;
     const exitPromise = new ManualPromise();
-    const { launchedProcess, gracefullyClose, kill } = await launchProcess({
+    const { launchedProcess, gracefullyClose, kill } = await progress.race(launchProcess({
       command: prepared.executable,
       args: prepared.browserArguments,
       env: this.amendEnvironment(env, prepared.userDataDir, isPersistent, options),
@@ -240,7 +240,7 @@ export abstract class BrowserType extends SdkObject {
         if (browserProcess && browserProcess.onclose)
           browserProcess.onclose(exitCode, signal);
       },
-    });
+    }));
 
     async function closeOrKill(timeout: number): Promise<void> {
       let timer: NodeJS.Timeout;
@@ -271,28 +271,28 @@ export abstract class BrowserType extends SdkObject {
         const updatedLog = this.doRewriteStartupLog(log);
         throw new Error(`Failed to launch the browser process.\nBrowser logs:\n${updatedLog}`);
       }
-      if (options.cdpPort !== undefined || !this.supportsPipeTransport()) {
+      if (!this.supportsPipeTransport(options)) {
         transport = await WebSocketTransport.connect(progress, wsEndpoint!);
       } else {
         const stdio = launchedProcess.stdio as unknown as [NodeJS.ReadableStream, NodeJS.WritableStream, NodeJS.WritableStream, NodeJS.WritableStream, NodeJS.ReadableStream];
         transport = new PipeTransport(stdio[3], stdio[4]);
       }
-      return { browserProcess, artifactsDir: prepared.artifactsDir, userDataDir: prepared.userDataDir, transport };
+      return { browserProcess, artifactsDir: prepared.artifactsDir, userDataDir: prepared.userDataDir, transport, wsEndpoint };
     } catch (error) {
-      await closeOrKill(DEFAULT_PLAYWRIGHT_TIMEOUT).catch(() => {});
+      await progress.race(closeOrKill(DEFAULT_PLAYWRIGHT_TIMEOUT).catch(() => {}));
       throw error;
     }
   }
 
-  async connectOverCDP(progress: Progress, endpointURL: string, options: { slowMo?: number, timeout?: number, headers?: types.HeadersArray, isLocal?: boolean }): Promise<Browser> {
+  async connectOverCDP(progress: Progress, params: channels.BrowserTypeConnectOverCDPParams): Promise<Browser> {
     throw new Error('CDP connections are only supported by Chromium');
   }
 
-  async connectOverCDPTransport(progress: Progress, transport: ConnectionTransport): Promise<Browser> {
+  async connectToWorker(progress: Progress, endpoint: string): Promise<Worker> {
     throw new Error('CDP connections are only supported by Chromium');
   }
 
-  async _launchWithSeleniumHub(progress: Progress, hubUrl: string, options: types.LaunchOptions): Promise<Browser> {
+  async launchWithSeleniumHub(progress: Progress, hubUrl: string, options: types.LaunchOptions): Promise<Browser> {
     throw new Error('Connecting to SELENIUM_REMOTE_URL is only supported by Chromium');
   }
 
@@ -302,6 +302,9 @@ export abstract class BrowserType extends SdkObject {
       headless = false;
     if (downloadsPath && !path.isAbsolute(downloadsPath))
       downloadsPath = path.join(process.cwd(), downloadsPath);
+    // Legacy placeholder for "every context sets its own proxy", no longer required.
+    if (proxy?.server === 'per-context' || proxy?.server === 'http://per-context')
+      proxy = undefined;
     if (options.socksProxyPort)
       proxy = { server: `socks5://127.0.0.1:${options.socksProxyPort}` };
     return { ...options, headless, downloadsPath, proxy };
@@ -335,12 +338,21 @@ export abstract class BrowserType extends SdkObject {
   async prepareUserDataDir(options: types.LaunchOptions, userDataDir: string): Promise<void> {
   }
 
-  supportsPipeTransport(): boolean {
+  supportsPipeTransport(options: types.LaunchOptions): boolean {
     return true;
   }
 
   getExecutableName(options: types.LaunchOptions): string {
     return options.channel || this._name;
+  }
+
+  protected async resolveExecutablePath(options: types.LaunchOptions): Promise<string | undefined> {
+    const { executablePath } = options;
+    if (!executablePath)
+      return undefined;
+    if (!(await existsAsync(executablePath)))
+      throw new Error(`Failed to launch ${this._name} because executable doesn't exist at ${executablePath}`);
+    return executablePath;
   }
 
   abstract defaultArgs(options: types.LaunchOptions, isPersistent: boolean, userDataDir: string): Promise<string[]>;

@@ -150,6 +150,12 @@ Called on some global error, for example unhandled exception in the worker proce
 
 The error.
 
+### param: Reporter.onError.workerInfo
+* since: v1.60
+- `workerInfo` ?<[WorkerInfo]>
+
+Contains information about the worker that produced this error. `undefined` for errors that are not associated with a specific worker.
+
 ## optional async method: Reporter.onExit
 * since: v1.33
 
@@ -291,3 +297,20 @@ Result of the test run.
 - returns: <[boolean]>
 
 Whether this reporter uses stdio for reporting. When it does not, Playwright Test could add some output to enhance user experience. If your reporter does not print to the terminal, it is strongly recommended to return `false`.
+
+## optional async method: Reporter.preprocess
+* since: v1.62
+
+Called after the configuration has been resolved and before [`method: Reporter.onBegin`]. Allows a reporter to mark individual tests as skipped, excluded, fixed or failing.
+
+### param: Reporter.preprocess.params
+* since: v1.62
+- `params` <[Object]>
+  - `config` <[FullConfig]> Resolved configuration.
+  - `suite` <[Suite]> The root suite that contains the projects, files and test cases that will run.
+  - `testRun` <[TestRun]> Control which tests will run and their expected status.
+
+
+The suite reflects `--project`, `--grep`/`--grep-invert` and `.only` filtering, so it only contains tests that match the current invocation. Setup and dependency projects are readonly and cannot be changed through [TestRun].
+
+The suite ignores the `--shard` argument: it always contains the full, un-sharded corpus. Playwright applies its built-in sharding after [`method: Reporter.preprocess`] returns, unless the reporter calls [`method: TestRun.skipSharding`].

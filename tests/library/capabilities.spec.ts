@@ -68,7 +68,6 @@ it('should respect CSP @smoke', async ({ page, server }) => {
 
 it('should play video @smoke', async ({ page, asset, browserName, isWindows, isLinux, mode }) => {
   it.skip(browserName === 'webkit' && isWindows, 'passes locally but fails on GitHub Action bot, apparently due to a Media Pack issue in the Windows Server');
-  it.skip(mode.startsWith('service'));
 
   // Safari only plays mp4 so we test WebKit with an .mp4 clip.
   const fileName = browserName === 'webkit' ? 'video_mp4.html' : 'video.html';
@@ -82,7 +81,6 @@ it('should play video @smoke', async ({ page, asset, browserName, isWindows, isL
 
 it('should play webm video @smoke', async ({ page, asset, browserName, platform, macVersion, mode }) => {
   it.skip(browserName === 'webkit' && platform === 'win32', 'not supported');
-  it.skip(mode.startsWith('service'));
 
   const absolutePath = asset('video_webm.html');
   // Our test server doesn't support range requests required to play on Mac,
@@ -92,14 +90,16 @@ it('should play webm video @smoke', async ({ page, asset, browserName, platform,
   await page.$eval('video', v => v.pause());
 });
 
-it('should play audio @smoke', async ({ page, server, browserName, platform }) => {
+it('should play audio @smoke', async ({ page, server, browserName, platform, macVersion }) => {
   it.fixme(browserName === 'webkit' && platform === 'win32', 'https://github.com/microsoft/playwright/issues/10892');
+  it.skip(browserName === 'webkit' && platform === 'darwin' && macVersion === 15, 'audio output is unreliable on hosted macOS 15 runners');
+
   await page.goto(server.EMPTY_PAGE);
   await page.setContent(`<audio src="${server.PREFIX}/example.mp3"></audio>`);
   await page.$eval('audio', e => e.play());
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(3000);
   await page.$eval('audio', e => e.pause());
-  expect(await page.$eval('audio', e => e.currentTime)).toBeGreaterThan(0.2);
+  expect(await page.$eval('audio', e => e.currentTime)).toBeGreaterThan(0.1);
 });
 
 it('should support webgl @smoke', async ({ page }) => {
@@ -142,21 +142,18 @@ it('should not crash on showDirectoryPicker', async ({ page, server, browserName
   await page.waitForTimeout(3_000);
 });
 
-it('should not crash on storage.getDirectory()', async ({ page, server, browserName, isMac }) => {
-  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/18235' });
+it('should not crash on storage.getDirectory()', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/18235' }
+}, async ({ page, server, browserName }) => {
   await page.goto(server.EMPTY_PAGE);
   const error = await page.evaluate(async () => {
     const dir = await navigator.storage.getDirectory();
     return dir.name;
   }).catch(e => e);
-  if (browserName === 'webkit') {
-    if (isMac)
-      expect(error.message).toContain('UnknownError: The operation failed for an unknown transient reason');
-    else
-      expect(error.message).toContain('TypeError: undefined is not an object');
-  } else {
+  if (browserName === 'webkit')
+    expect(error.message).toContain('UnknownError: The operation failed for an unknown transient reason');
+  else
     expect(error).toBeFalsy();
-  }
 });
 
 it('navigator.clipboard should be present', async ({ page, server }) => {
@@ -392,7 +389,7 @@ it('should be able to render avif images', {
     description: 'https://github.com/microsoft/playwright/issues/32673',
   }
 }, async ({ page, server, browserName, platform, isFrozenWebkit }) => {
-  it.fixme(browserName === 'webkit' && platform === 'win32');
+  it.skip(browserName === 'webkit' && platform === 'win32');
   it.skip(isFrozenWebkit);
   await page.goto(server.EMPTY_PAGE);
   await page.setContent(`<img src="${server.PREFIX}/rgb.avif" onerror="window.error = true">`);
@@ -444,7 +441,7 @@ it('should not auto play audio', {
     description: 'https://github.com/microsoft/playwright/issues/33590'
   }
 }, async ({ page, browserName, isWindows }) => {
-  it.fixme(browserName === 'webkit' && isWindows);
+  it.skip(browserName === 'webkit' && isWindows, 'audio does not play at all');
   it.skip(process.env.PW_CLOCK === 'frozen', 'no way to inject real setTimeout');
   await page.route('**/*', async route => {
     await route.fulfill({

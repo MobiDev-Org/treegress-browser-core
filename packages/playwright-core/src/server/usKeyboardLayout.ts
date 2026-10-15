@@ -134,6 +134,14 @@ export const USKeyboardLayout: KeyboardLayout = {
   'ArrowRight': { 'keyCode': 39, 'key': 'ArrowRight' },
   'ArrowDown': { 'keyCode': 40, 'key': 'ArrowDown' },
 
+  // Media keys
+  'AudioVolumeMute': { 'keyCode': 173, 'key': 'AudioVolumeMute' },
+  'AudioVolumeDown': { 'keyCode': 174, 'key': 'AudioVolumeDown' },
+  'AudioVolumeUp': { 'keyCode': 175, 'key': 'AudioVolumeUp' },
+  'MediaTrackNext': { 'keyCode': 176, 'key': 'MediaTrackNext' },
+  'MediaTrackPrevious': { 'keyCode': 177, 'key': 'MediaTrackPrevious' },
+  'MediaPlayPause': { 'keyCode': 179, 'key': 'MediaPlayPause' },
+
   // Numpad
   'NumLock': { 'keyCode': 144, 'key': 'NumLock' },
   'NumpadDivide': { 'keyCode': 111, 'key': '/', 'location': 3 },
@@ -150,6 +158,6 @@ export const USKeyboardLayout: KeyboardLayout = {
   'Numpad2': { 'keyCode': 40, 'shiftKeyCode': 98, 'key': 'ArrowDown', 'shiftKey': '2', 'location': 3 },
   'Numpad3': { 'keyCode': 34, 'shiftKeyCode': 99, 'key': 'PageDown', 'shiftKey': '3', 'location': 3 },
   'Numpad0': { 'keyCode': 45, 'shiftKeyCode': 96, 'key': 'Insert', 'shiftKey': '0', 'location': 3 },
-  'NumpadDecimal': { 'keyCode': 46, 'shiftKeyCode': 110, 'key': '\u0000', 'shiftKey': '.', 'location': 3 },
+  'NumpadDecimal': { 'keyCode': 46, 'shiftKeyCode': 110, 'key': 'Delete', 'shiftKey': '.', 'location': 3 },
   'NumpadEnter': { 'keyCode': 13, 'key': 'Enter', 'text': '\r', 'location': 3 },
 };

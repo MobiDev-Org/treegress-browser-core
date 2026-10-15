@@ -4,7 +4,7 @@
 
 const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
 const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Preferences.sys.mjs");
-const {ContextualIdentityService} = ChromeUtils.importESModule("resource://gre/modules/ContextualIdentityService.sys.mjs");
+const {ContextualIdentityService} = ChromeUtils.importESModule("moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs");
 const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys.mjs');
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
 
@@ -17,12 +17,16 @@ const IDENTITY_NAME = 'JUGGLER ';
 const ALL_PERMISSIONS = [
   'geo',
   'desktop-notification',
+  'local-network',
+  'loopback-network',
 ];
 
 let globalTabAndWindowActivationChain = Promise.resolve();
 // This is a workaround for https://github.com/microsoft/playwright/issues/34586
 let didCreateFirstPage = false;
 let globalNewPageChain = Promise.resolve();
+
+let globalContextCloseCounter = 0;
 
 class DownloadInterceptor {
   constructor(registry) {
@@ -117,6 +121,8 @@ export class TargetRegistry {
     this._browserToTarget = new Map();
     this._browserIdToTarget = new Map();
 
+    this._browserIdToActor = new Map();
+
     this._proxiesWithClashingAuthCacheKeys = new Set();
     this._browserProxy = null;
 
@@ -139,7 +145,6 @@ export class TargetRegistry {
         if (!target)
           return;
         target.emit(PageTarget.Events.Crashed);
-        target.dispose();
       }
     }, 'oop-frameloader-crashed');
 
@@ -164,8 +169,6 @@ export class TargetRegistry {
       target.updateOverridesForBrowsingContext(tab.linkedBrowser.browsingContext);
       if (!hasExplicitSize)
         target.updateViewportSize();
-      if (browserContext.videoRecordingOptions)
-        target._startVideoRecording(browserContext.videoRecordingOptions);
     };
 
     const onTabCloseListener = event => {
@@ -194,7 +197,7 @@ export class TargetRegistry {
       //
       // In this case, we want to keep this callback synchronous so that we will call
       // `onTabOpenListener` synchronously and before the sync IPc message `juggler:content-ready`.
-      if (domWindow.document.readyState === 'uninitialized' || domWindow.document.readyState === 'loading') {
+      if (domWindow.document.readyState === 'uninitialized' || domWindow.document.readyState === 'loading' || domWindow.document.isUncommittedInitialDocument) {
         // For non-initialized windows, DOMContentLoaded initializes gBrowser
         // and starts tab loading (see //browser/base/content/browser.js), so we
         // are guaranteed to call `onTabOpenListener` before the sync IPC message
@@ -235,6 +238,27 @@ export class TargetRegistry {
     for (const win of Services.wm.getEnumerator(null))
       onOpenWindow(win);
   }
+
+  onActorCreated(actor) {
+    // Only interested in main frames for now.
+    if (actor.browsingContext.parent)
+      return;
+
+    const browserId = actor.browsingContext.browserId;
+    this._browserIdToActor.set(browserId, actor);
+
+    const target = this._browserIdToTarget.get(browserId);
+    target?.setActor(actor);
+  }
+
+  onActorDestroyed(actor) {
+    const browserId = actor.browsingContext.browserId;
+    const target = this._browserIdToTarget.get(browserId);
+    target?.removeActor(actor);
+    if (this._browserIdToActor.get(browserId) === actor)
+      this._browserIdToActor.delete(browserId);
+  }
+
 
   // Firefox uses nsHttpAuthCache to cache authentication to the proxy.
   // If we're provided with a single proxy with a multiple different authentications, then
@@ -392,15 +416,16 @@ export class PageTarget {
     this._linkedBrowser = tab.linkedBrowser;
     this._browserContext = browserContext;
     this._viewportSize = undefined;
+    this._deviceScaleFactor = undefined;
+    this._screenSize = undefined;
+    this._isMobile = undefined;
     this._zoom = 1;
     this._initialDPPX = this._linkedBrowser.browsingContext.overrideDPPX;
     this._url = 'about:blank';
     this._openerId = opener ? opener.id() : undefined;
     this._actor = undefined;
-    this._actorSequenceNumber = 0;
     this._channel = new SimpleChannel(`browser::page[${this._targetId}]`, 'target-' + this._targetId);
-    this._videoRecordingInfo = undefined;
-    this._screencastRecordingInfo = undefined;
+    this._screencastId = undefined;
     this._dialogs = new Map();
     this.forcedColors = 'none';
     this.disableCache = false;
@@ -425,13 +450,19 @@ export class PageTarget {
     this._disposed = false;
     browserContext.pages.add(this);
     this._registry._browserToTarget.set(this._linkedBrowser, this);
-    this._registry._browserIdToTarget.set(this._linkedBrowser.browsingContext.browserId, this);
+
+    const browserId = this._linkedBrowser.browsingContext.browserId;
+    this._browserId = browserId;
+    this._registry._browserIdToTarget.set(browserId, this);
+    const actor = this._registry._browserIdToActor.get(browserId);
+    if (actor)
+      this.setActor(actor);
 
     this._registry.emit(TargetRegistry.Events.TargetCreated, this);
   }
 
   async activateAndRun(callback = () => {}, { muteNotificationsPopup = false } = {}) {
-    const ownerWindow = this._tab.linkedBrowser.ownerGlobal;
+    const ownerWindow = this._tab.linkedBrowser.documentGlobal;
     const tabBrowser = ownerWindow.gBrowser;
     // Serialize all tab-switching commands per tabbed browser
     // to disallow concurrent tab switching.
@@ -456,10 +487,6 @@ export class PageTarget {
 
   frameIdToBrowsingContext(frameId) {
     return helper.collectAllBrowsingContexts(this._linkedBrowser.browsingContext).find(bc => helper.browsingContextToFrameId(bc) === frameId);
-  }
-
-  nextActorSequenceNumber() {
-    return ++this._actorSequenceNumber;
   }
 
   setActor(actor) {
@@ -504,8 +531,10 @@ export class PageTarget {
     this.updateTouchOverride(browsingContext);
     this.updateUserAgent(browsingContext);
     this.updateTimezoneOverride(browsingContext);
+    this.updateLanguageOverride(browsingContext);
     this.updatePlatform(browsingContext);
     this.updateDPPXOverride(browsingContext);
+    this.updateScreenEmulation(browsingContext);
     this.updateZoom(browsingContext);
     this.updateEmulatedMedia(browsingContext);
     this.updateColorSchemeOverride(browsingContext);
@@ -545,14 +574,46 @@ export class PageTarget {
     (browsingContext || this._linkedBrowser.browsingContext).timezoneOverride = this._browserContext.timezoneOverride;
   }
 
+  updateLanguageOverride(browsingContext = undefined) {
+    browsingContext ||= this._linkedBrowser.browsingContext;
+    browsingContext.languageOverride = this._browserContext.languageOverride || '';
+  }
+
   updatePlatform(browsingContext = undefined) {
     (browsingContext || this._linkedBrowser.browsingContext).customPlatform = this._browserContext.defaultPlatform;
   }
 
   updateDPPXOverride(browsingContext = undefined) {
     browsingContext ||= this._linkedBrowser.browsingContext;
-    const dppx = this._zoom * (this._browserContext.deviceScaleFactor || this._initialDPPX);
+    const deviceScaleFactor = this._deviceScaleFactor ?? this._browserContext.deviceScaleFactor;
+    const dppx = this._zoom * (deviceScaleFactor || this._initialDPPX);
     browsingContext.overrideDPPX = dppx;
+  }
+
+  updateScreenEmulation(browsingContext = undefined) {
+    browsingContext ||= this._linkedBrowser.browsingContext;
+    const screenSize = this._screenSize || this._browserContext.screenSize;
+    const isMobile = this._isMobile ?? this._browserContext.isMobile;
+
+    // `isRDMPane` is a "mobile mode": viewport media queries, touch/pointer
+    // support, viewport media queries.
+    browsingContext.inRDMPane = !!isMobile;
+
+    // Set window.screen.width and window.screen.height
+    if (screenSize) {
+      browsingContext.setScreenAreaOverride(screenSize.width, screenSize.height);
+    } else {
+      browsingContext.resetScreenAreaOverride();
+    }
+
+    // Derive the orientation from the emulated screen size and keep it in sync
+    // with the screen area override.
+    if (screenSize && isMobile) {
+      const isPortrait = screenSize.height >= screenSize.width;
+      browsingContext.setOrientationOverride(isPortrait ? 'portrait-primary' : 'landscape-primary', isPortrait ? 0 : 90);
+    } else {
+      browsingContext.resetOrientationOverride();
+    }
   }
 
   async updateZoom(browsingContext = undefined) {
@@ -584,6 +645,7 @@ export class PageTarget {
   async updateViewportSize() {
     await waitForWindowReady(this._window);
     this.updateDPPXOverride();
+    this.updateScreenEmulation();
 
     // Viewport size is defined by three arguments:
     // 1. default size. Could be explicit if set as part of `window.open` call, e.g.
@@ -603,7 +665,6 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');
       this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');
       this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');
-      this._linkedBrowser.browsingContext.inRDMPane = true;
 
       const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();
       const toolbarTop = stackRect.y;
@@ -617,7 +678,6 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.removeProperty('overflow');
       this._linkedBrowser.closest('.browserStack').style.removeProperty('contain');
       this._linkedBrowser.closest('.browserStack').style.removeProperty('scrollbar-width');
-      this._linkedBrowser.browsingContext.inRDMPane = false;
 
       const actualSize = this._linkedBrowser.getBoundingClientRect();
       await this._channel.connect('').send('awaitViewportDimensions', {
@@ -679,8 +739,11 @@ export class PageTarget {
     await this._channel.connect('').send('setInterceptFileChooserDialog', enabled).catch(e => {});
   }
 
-  async setViewportSize(viewportSize) {
+  async setViewportSize(viewportSize, deviceScaleFactor, screenSize, isMobile) {
     this._viewportSize = viewportSize;
+    this._deviceScaleFactor = deviceScaleFactor;
+    this._screenSize = screenSize;
+    this._isMobile = isMobile;
     await this.updateViewportSize();
   }
 
@@ -721,7 +784,7 @@ export class PageTarget {
   }
 
   _updateCrossProcessCookie() {
-    Services.ppmm.sharedData.set('juggler:page-cookie-' + this._linkedBrowser.browsingContext.browserId, this.crossProcessCookie);
+    Services.ppmm.sharedData.set('juggler:page-cookie-' + this._browserId, this.crossProcessCookie);
     Services.ppmm.sharedData.flush();
   }
 
@@ -749,48 +812,9 @@ export class PageTarget {
     await this._channel.connect('').send('applyContextSetting', { name, value }).catch(e => void e);
   }
 
-  async _startVideoRecording({width, height, dir}) {
-    // On Mac the window may not yet be visible when TargetCreated and its
-    // NSWindow.windowNumber may be -1, so we wait until the window is known
-    // to be initialized and visible.
-    await this.windowReady();
-    const file = PathUtils.join(dir, helper.generateId() + '.webm');
-    if (width < 10 || width > 10000 || height < 10 || height > 10000)
-      throw new Error("Invalid size");
-
-    const docShell = this._gBrowser.ownerGlobal.docShell;
-    // Exclude address bar and navigation control from the video.
-    const rect = this.linkedBrowser().getBoundingClientRect();
-    const devicePixelRatio = this._window.devicePixelRatio;
-    let sessionId;
-    const registry = this._registry;
-    const screencastClient = {
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIScreencastServiceClient]),
-      screencastFrame(data, deviceWidth, deviceHeight, timestamp) {
-      },
-      screencastStopped() {
-        registry.emit(TargetRegistry.Events.ScreencastStopped, sessionId);
-      },
-    };
-    const viewport = this._viewportSize || this._browserContext.defaultViewportSize || { width: 0, height: 0 };
-    sessionId = screencastService.startVideoRecording(screencastClient, docShell, true, file, width, height, 0, viewport.width, viewport.height, devicePixelRatio * rect.top);
-    this._videoRecordingInfo = { sessionId, file };
-    this.emit(PageTarget.Events.ScreencastStarted);
-  }
-
-  _stopVideoRecording() {
-    if (!this._videoRecordingInfo)
-      throw new Error('No video recording in progress');
-    const videoRecordingInfo = this._videoRecordingInfo;
-    this._videoRecordingInfo = undefined;
-    screencastService.stopVideoRecording(videoRecordingInfo.sessionId);
-  }
-
-  videoRecordingInfo() {
-    return this._videoRecordingInfo;
-  }
-
   async startScreencast({ width, height, quality }) {
+    if (this._screencastId)
+      return;
     // On Mac the window may not yet be visible when TargetCreated and its
     // NSWindow.windowNumber may be -1, so we wait until the window is known
     // to be initialized and visible.
@@ -798,7 +822,7 @@ export class PageTarget {
     if (width < 10 || width > 10000 || height < 10 || height > 10000)
       throw new Error("Invalid size");
 
-    const docShell = this._gBrowser.ownerGlobal.docShell;
+    const docShell = this._gBrowser.documentGlobal.docShell;
     // Exclude address bar and navigation control from the video.
     const rect = this.linkedBrowser().getBoundingClientRect();
     const devicePixelRatio = this._window.devicePixelRatio;
@@ -807,30 +831,28 @@ export class PageTarget {
     const screencastClient = {
       QueryInterface: ChromeUtils.generateQI([Ci.nsIScreencastServiceClient]),
       screencastFrame(data, deviceWidth, deviceHeight, timestamp) {
-        if (self._screencastRecordingInfo)
+        if (self._screencastId)
           self.emit(PageTarget.Events.ScreencastFrame, { data, deviceWidth, deviceHeight, timestamp });
       },
       screencastStopped() {
       },
     };
     const viewport = this._viewportSize || this._browserContext.defaultViewportSize || { width: 0, height: 0 };
-    const screencastId = screencastService.startVideoRecording(screencastClient, docShell, false, '', width, height, quality || 90, viewport.width, viewport.height, devicePixelRatio * rect.top);
-    this._screencastRecordingInfo = { screencastId };
-    return { screencastId };
+    this._screencastId = screencastService.startScreencast(screencastClient, docShell, width, height, quality || 90, viewport.width, viewport.height, devicePixelRatio * rect.top);
   }
 
-  screencastFrameAck({ screencastId }) {
-    if (!this._screencastRecordingInfo || this._screencastRecordingInfo.screencastId !== screencastId)
+  screencastFrameAck() {
+    if (!this._screencastId)
       return;
-    screencastService.screencastFrameAck(screencastId);
+    screencastService.screencastFrameAck(this._screencastId);
   }
 
   stopScreencast() {
-    if (!this._screencastRecordingInfo)
-      throw new Error('No screencast in progress');
-    const { screencastId } = this._screencastRecordingInfo;
-    this._screencastRecordingInfo = undefined;
-    screencastService.stopVideoRecording(screencastId);
+    if (!this._screencastId)
+      return;
+    const screencastId = this._screencastId;
+    this._screencastId = undefined;
+    screencastService.stopScreencast(screencastId);
   }
 
   ensureContextMenuClosed() {
@@ -851,13 +873,12 @@ export class PageTarget {
   dispose() {
     this.ensureContextMenuClosed();
     this._disposed = true;
-    if (this._videoRecordingInfo)
-      this._stopVideoRecording();
-    if (this._screencastRecordingInfo)
-      this.stopScreencast();
+    this.stopScreencast();
     this._browserContext.pages.delete(this);
     this._registry._browserToTarget.delete(this._linkedBrowser);
-    this._registry._browserIdToTarget.delete(this._linkedBrowser.browsingContext.browserId);
+    this._registry._browserIdToTarget.delete(this._browserId);
+    Services.ppmm.sharedData.delete('juggler:page-cookie-' + this._browserId);
+    Services.ppmm.sharedData.flush();
     try {
       helper.removeListeners(this._eventListeners);
     } catch (e) {
@@ -871,7 +892,6 @@ export class PageTarget {
 }
 
 PageTarget.Events = {
-  ScreencastStarted: Symbol('PageTarget.ScreencastStarted'),
   ScreencastFrame: Symbol('PageTarget.ScreencastFrame'),
   Crashed: Symbol('PageTarget.Crashed'),
   DialogOpened: Symbol('PageTarget.DialogOpened'),
@@ -934,8 +954,11 @@ class BrowserContext {
     this.downloadOptions = undefined;
     this.defaultViewportSize = undefined;
     this.deviceScaleFactor = undefined;
+    this.screenSize = undefined;
+    this.isMobile = undefined;
     this.defaultUserAgent = null;
     this.timezoneOverride = undefined;
+    this.languageOverride = undefined;
     this.defaultPlatform = null;
     this.touchOverride = false;
     this.forceOffline = false;
@@ -944,7 +967,6 @@ class BrowserContext {
     this.forcedColors = 'none';
     this.reducedMotion = 'none';
     this.contrast = 'none';
-    this.videoRecordingOptions = undefined;
     this.crossProcessCookie = {
       initScripts: [],
       bindings: [],
@@ -1000,7 +1022,18 @@ class BrowserContext {
     }
     this._registry._browserContextIdToBrowserContext.delete(this.browserContextId);
     this._registry._userContextIdToBrowserContext.delete(this.userContextId);
+    Services.ppmm.sharedData.delete('juggler:context-cookie-' + this.userContextId);
+    Services.ppmm.sharedData.flush();
     this._registry._updateProxiesWithSameAuthCacheAndDifferentCredentials();
+    // Clean the memory. on every 10'th context closure. On M1 Max, this method
+    // takes ~150ms, so we spread them out.
+    if (++globalContextCloseCounter % 10 === 0) {
+      await new Promise(x => {
+        Cc["@mozilla.org/memory-reporter-manager;1"]
+          .getService(Ci.nsIMemoryReporterManager)
+          .minimizeMemoryUsage(x);
+      });
+    }
   }
 
   setProxy(proxy) {
@@ -1040,6 +1073,12 @@ class BrowserContext {
       page.updateTimezoneOverride();
   }
 
+  setLanguageOverride(locale) {
+    this.languageOverride = locale;
+    for (const page of this.pages)
+      page.updateLanguageOverride();
+  }
+
   setDefaultPlatform(platform) {
     this.defaultPlatform = platform;
     for (const page of this.pages)
@@ -1067,6 +1106,8 @@ class BrowserContext {
   async setDefaultViewport(viewport) {
     this.defaultViewportSize = viewport ? viewport.viewportSize : undefined;
     this.deviceScaleFactor = viewport ? viewport.deviceScaleFactor : undefined;
+    this.screenSize = viewport ? viewport.screenSize : undefined;
+    this.isMobile = viewport ? viewport.isMobile : undefined;
     await Promise.all(Array.from(this.pages).map(page => page.updateViewportSize()));
   }
 
@@ -1202,14 +1243,14 @@ class BrowserContext {
     return result;
   }
 
-  async setVideoRecordingOptions(options) {
-    this.videoRecordingOptions = options;
+  async setScreencastOptions(options) {
+    this.screencastOptions = options;
     const promises = [];
     for (const page of this.pages) {
       if (options)
-        promises.push(page._startVideoRecording(options));
-      else if (page._videoRecordingInfo)
-        promises.push(page._stopVideoRecording());
+        promises.push(page.startScreencast(options));
+      else
+        promises.push(page.stopScreencast());
     }
     await Promise.all(promises);
   }
@@ -1301,5 +1342,4 @@ TargetRegistry.Events = {
   TargetDestroyed: Symbol('TargetRegistry.Events.TargetDestroyed'),
   DownloadCreated: Symbol('TargetRegistry.Events.DownloadCreated'),
   DownloadFinished: Symbol('TargetRegistry.Events.DownloadFinished'),
-  ScreencastStopped: Symbol('TargetRegistry.ScreencastStopped'),
 };

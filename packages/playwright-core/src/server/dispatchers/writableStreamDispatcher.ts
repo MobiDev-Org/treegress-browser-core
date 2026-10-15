@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -20,8 +20,8 @@ import { Dispatcher } from './dispatcher';
 import { SdkObject } from '../instrumentation';
 
 import type { BrowserContextDispatcher } from './browserContextDispatcher';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 class WritableStreamSdkObject extends SdkObject {
   readonly streamOrDirectory: fs.WriteStream | string;
@@ -68,5 +68,10 @@ export class WritableStreamDispatcher extends Dispatcher<WritableStreamSdkObject
     if (typeof this._object.streamOrDirectory === 'string')
       return this._object.streamOrDirectory;
     return this._object.streamOrDirectory.path as string;
+  }
+
+  override _onDispose() {
+    if (typeof this._object.streamOrDirectory !== 'string')
+      this._object.streamOrDirectory.destroy();
   }
 }

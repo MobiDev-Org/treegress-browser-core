@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-import { assert } from '../../utils/isomorphic/assert';
+import { assert } from '@isomorphic/assert';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { parseEvaluationResultValue } from '@isomorphic/utilityScriptSerializers';
 import { getExceptionMessage, releaseObject } from './crProtocolHelper';
-import { rewriteErrorMessage } from '../../utils/isomorphic/stackTrace';
-import { parseEvaluationResultValue } from '../../utils/isomorphic/utilityScriptSerializers';
 import * as js from '../javascript';
 import * as dom from '../dom';
 import { isSessionClosedError } from '../protocolError';
@@ -93,13 +93,19 @@ export class CRExecutionContext implements js.ExecutionContextDelegate {
       return;
     await releaseObject(this._client, handle._objectId);
   }
+
+  shouldPrependErrorPrefix(): boolean {
+    return false;
+  }
 }
 
 function rewriteError(error: Error): Protocol.Runtime.evaluateReturnValue {
-  if (error.message.includes('Object reference chain is too long'))
+  if (error.message.includes('Object reference chain is too long') || error.message.includes('CBOR: stack limit exceeded'))
     throw new Error('Cannot serialize result: object reference chain is too long.');
   if (error.message.includes('Object couldn\'t be returned by value'))
     return { result: { type: 'undefined' } };
+  if (error.message.includes('Promise was collected'))
+    throw new Error('Resulting promise was garbage collected.');
 
   if (error instanceof TypeError && error.message.startsWith('Converting circular structure to JSON'))
     rewriteErrorMessage(error, error.message + ' Are you passing a nested JSHandle?');

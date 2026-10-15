@@ -18,19 +18,25 @@ import * as React from 'react';
 import { type Setting, SettingsView } from './settingsView';
 import { kThemeOptions, type Theme, useThemeSetting } from '@web/theme';
 import { useSetting } from '@web/uiUtils';
+import { canToggleAriaMode, shouldDisplayAriaMode } from './ariaModeView';
+
+import type { TraceModel } from '@isomorphic/trace/traceModel';
 
 /**
  * A view of the collection of standard settings used between various applications
  */
 export const DefaultSettingsView: React.FC<{
-  location: 'ui-mode' | 'trace-viewer'
-}> = ({ location }) => {
+  location: 'ui-mode' | 'trace-viewer',
+  model?: TraceModel,
+}> = ({ location, model }) => {
   const [
     shouldPopulateCanvasFromScreenshot,
     setShouldPopulateCanvasFromScreenshot,
   ] = useSetting('shouldPopulateCanvasFromScreenshot', false);
+  const [displayAriaMode, setDisplayAriaMode] = useSetting('displayAriaMode', false);
   const [theme, setTheme] = useThemeSetting();
   const [mergeFiles, setMergeFiles] = useSetting('mergeFiles', false);
+  const canToggleAria = canToggleAriaMode(model);
 
   return (
     <SettingsView
@@ -54,6 +60,16 @@ export const DefaultSettingsView: React.FC<{
           set: setShouldPopulateCanvasFromScreenshot,
           name: 'Display canvas content',
           title: 'Attempt to display the captured canvas appearance in the snapshot preview. May not be accurate.',
+        },
+        {
+          type: 'check',
+          value: shouldDisplayAriaMode(model, displayAriaMode),
+          set: setDisplayAriaMode,
+          name: 'Display Aria',
+          disabled: !canToggleAria,
+          title: canToggleAria
+            ? 'Display the action screenshot and aria snapshot instead of the DOM snapshot.'
+            : 'The trace does not have both DOM and aria snapshots, so there is nothing to switch between.',
         },
       ]}
     />

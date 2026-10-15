@@ -73,10 +73,10 @@ it('should fill color input', async ({ page }) => {
   expect(await page.$eval('input', input => input.value)).toBe('#aaaaaa');
 });
 
-it('should fill color input case insensitive', async ({ page, browserName, isWindows }) => {
+it('should fill color input case insensitive', async ({ page, browserName, isWindows, channel }) => {
   await page.setContent('<input type=color value="#e66465">');
   await page.fill('input', '#AbCd00');
-  if (browserName === 'webkit' && isWindows)
+  if (browserName === 'webkit' && isWindows && channel !== 'webkit-wsl')
     expect(await page.$eval('input', input => input.value)).toBe('#AbCd00');
   else
     expect(await page.$eval('input', input => input.value)).toBe('#abcd00');
@@ -224,8 +224,8 @@ it('should not double-fill in contenteditable with beforeinput handler in Firefo
     type: 'issue',
     description: 'https://github.com/microsoft/playwright/issues/36715'
   }
-}, async ({ page, browserName }) => {
-  it.fixme(browserName === 'firefox', 'https://github.com/microsoft/playwright/issues/36715');
+}, async ({ page, browserName, isBidi }) => {
+  it.fixme(browserName === 'firefox' && !isBidi, 'https://github.com/microsoft/playwright/issues/36715');
 
   await page.setContent(`
     <div id="editor" contenteditable="true"></div>

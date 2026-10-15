@@ -21,8 +21,8 @@ import { JSHandleDispatcher, parseArgument, serializeResult } from './jsHandleDi
 import type { ElementHandle } from '../dom';
 import type { Frame } from '../frames';
 import type * as js from '../javascript';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 
 export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher> implements channels.ElementHandleChannel {
@@ -56,12 +56,12 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async ownerFrame(params: channels.ElementHandleOwnerFrameParams, progress: Progress): Promise<channels.ElementHandleOwnerFrameResult> {
-    const frame = await this._elementHandle.ownerFrame();
+    const frame = await this._elementHandle.ownerFrame(progress);
     return { frame: frame ? FrameDispatcher.from(this._browserContextDispatcher(), frame) : undefined };
   }
 
   async contentFrame(params: channels.ElementHandleContentFrameParams, progress: Progress): Promise<channels.ElementHandleContentFrameResult> {
-    const frame = await progress.race(this._elementHandle.contentFrame());
+    const frame = await this._elementHandle.contentFrame(progress);
     return { frame: frame ? FrameDispatcher.from(this._browserContextDispatcher(), frame) : undefined };
   }
 
@@ -174,7 +174,7 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async boundingBox(params: channels.ElementHandleBoundingBoxParams, progress: Progress): Promise<channels.ElementHandleBoundingBoxResult> {
-    const value = await progress.race(this._elementHandle.boundingBox());
+    const value = await this._elementHandle.boundingBox(progress);
     return { value: value || undefined };
   }
 
@@ -187,21 +187,21 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async querySelector(params: channels.ElementHandleQuerySelectorParams, progress: Progress): Promise<channels.ElementHandleQuerySelectorResult> {
-    const handle = await progress.race(this._elementHandle.querySelector(params.selector, params));
+    const handle = await this._elementHandle.querySelector(progress, params);
     return { element: ElementHandleDispatcher.fromNullable(this.parentScope(), handle) };
   }
 
   async querySelectorAll(params: channels.ElementHandleQuerySelectorAllParams, progress: Progress): Promise<channels.ElementHandleQuerySelectorAllResult> {
-    const elements = await progress.race(this._elementHandle.querySelectorAll(params.selector));
+    const elements = await this._elementHandle.querySelectorAll(progress, params.selector);
     return { elements: elements.map(e => ElementHandleDispatcher.from(this.parentScope(), e)) };
   }
 
   async evalOnSelector(params: channels.ElementHandleEvalOnSelectorParams, progress: Progress): Promise<channels.ElementHandleEvalOnSelectorResult> {
-    return { value: serializeResult(await progress.race(this._elementHandle.evalOnSelector(params.selector, !!params.strict, params.expression, params.isFunction, parseArgument(params.arg)))) };
+    return { value: serializeResult(await this._elementHandle.evalOnSelector(progress, params, params.expression, params.isFunction, parseArgument(params.arg))) };
   }
 
   async evalOnSelectorAll(params: channels.ElementHandleEvalOnSelectorAllParams, progress: Progress): Promise<channels.ElementHandleEvalOnSelectorAllResult> {
-    return { value: serializeResult(await progress.race(this._elementHandle.evalOnSelectorAll(params.selector, params.expression, params.isFunction, parseArgument(params.arg)))) };
+    return { value: serializeResult(await this._elementHandle.evalOnSelectorAll(progress, params.selector, params.expression, params.isFunction, parseArgument(params.arg))) };
   }
 
   async waitForElementState(params: channels.ElementHandleWaitForElementStateParams, progress: Progress): Promise<void> {
@@ -209,7 +209,7 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async waitForSelector(params: channels.ElementHandleWaitForSelectorParams, progress: Progress): Promise<channels.ElementHandleWaitForSelectorResult> {
-    return { element: ElementHandleDispatcher.fromNullable(this.parentScope(), await this._elementHandle.waitForSelector(progress, params.selector, params)) };
+    return { element: ElementHandleDispatcher.fromNullable(this.parentScope(), await this._elementHandle.waitForSelector(progress, params, params)) };
   }
 
   private _browserContextDispatcher(): BrowserContextDispatcher {

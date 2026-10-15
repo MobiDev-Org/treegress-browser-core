@@ -77,7 +77,8 @@ export default class MyReporter implements Reporter {
       location = formatLocation(step.location);
     const skip = step.annotations?.find(a => a.type === 'skip');
     const skipped = skip?.description ? ' (skipped: ' + skip.description + ')' : skip ? ' (skipped)' : '';
-    console.log(formatPrefix(step.category) + indent + step.title + location + skipped);
+    const title = step.subtitle ? step.title + ' ' + step.subtitle : step.title;
+    console.log(formatPrefix(step.category) + indent + title + location + skipped);
     if (step.error) {
       const errorLocation = this.printErrorLocation ? formatLocation(step.error.location) : '';
       console.log(formatPrefix(step.category) + indent + '↪ error: ' + this.trimError(step.error.message!) + errorLocation);
@@ -388,6 +389,41 @@ test('should not pass return value from step', async ({ runInlineTest }) => {
   expect(result.output).toContain('v2 = 20');
 });
 
+test('should contain steps chain in the stack', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+
+      async function innerFunction(page) {
+        await test.step('inner step', async () => {
+          await expect(page.locator('div')).toBeVisible({ timeout: 1 });
+        });
+      }
+
+      async function outerFunction(page) {
+        await test.step('outer step', async () => {
+          await innerFunction(page);
+        });
+      }
+
+      // It is important to have "page" here to trigger some internal instrumentation.
+      test('test with chained steps', async ({ page }) => {
+        await test.step('top-level step', async () => {
+          await outerFunction(page);
+        });
+      });
+    `
+  }, { reporter: '', workers: 1 });
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  expect(result.output).toContain('at innerFunction');
+  expect(result.output).toContain('at outerFunction');
+  expect(result.output).toContain('a.test.ts:5');
+  expect(result.output).toContain('a.test.ts:6');
+  expect(result.output).toContain('a.test.ts:11');
+  expect(result.output).toContain('a.test.ts:18');
+});
+
 test('step timeout option', async ({ runInlineTest }) => {
   const result = await runInlineTest({
     'a.test.ts': `
@@ -443,22 +479,6 @@ test('step timeout includes interrupted action errors', async ({ runInlineTest }
   expect.soft(result.output).toContain('Error: page.waitForTimeout: Test ended.');
   expect.soft(result.output.split('Error: page.waitForTimeout: Test ended.').length).toBe(2);
   expect.soft(result.output).toContain('> 5 |           await page.waitForTimeout(100_000);');
-});
-
-test('step timeout is errors.TimeoutError', async ({ runInlineTest }) => {
-  const result = await runInlineTest({
-    'a.test.ts': `
-      import { test, expect, errors } from '@playwright/test';
-      test('step timeout error type', async () => {
-        const e = await test.step('my step', async () => {
-          await new Promise(() => {});
-        }, { timeout: 100 }).catch(e => e);
-        expect(e).toBeInstanceOf(errors.TimeoutError);
-      });
-    `
-  }, { reporter: '', workers: 1 });
-  expect(result.exitCode).toBe(0);
-  expect(result.passed).toBe(1);
 });
 
 test('should mark step as failed when soft expect fails', async ({ runInlineTest }) => {
@@ -557,10 +577,10 @@ pw:api    |    Create context
 fixture   |  Fixture "page"
 pw:api    |    Create page
 test.step |grand @ a.test.ts:20
-test.step |  parent1 @ a.test.ts:22
+test.step |  parent1 @ a.test.ts:21
 test.step |    child1 @ a.test.ts:23
 pw:api    |      Click locator('body') @ a.test.ts:24
-test.step |  parent2 @ a.test.ts:27
+test.step |  parent2 @ a.test.ts:21
 test.step |    child2 @ a.test.ts:28
 expect    |      Expect "toBeVisible" main element @ a.test.ts:29
 hook      |After Hooks
@@ -785,16 +805,16 @@ hook      |Before Hooks
 test.step |boxed step @ a.test.ts:3
 test.step |↪ error: Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:4
 test.step |    at a.test.ts:4:27
-test.step |    at a.test.ts:3:26
+test.step |    at a.test.ts:3:15
 expect    |  Expect "toBe" @ a.test.ts:4
 expect    |  ↪ error: Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:4
 expect    |      at a.test.ts:4:27
-expect    |      at a.test.ts:3:26
+expect    |      at a.test.ts:3:15
 hook      |After Hooks
 hook      |Worker Cleanup
           |Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:4
           |    at a.test.ts:4:27
-          |    at a.test.ts:3:26
+          |    at a.test.ts:3:15
 `);
 });
 
@@ -820,14 +840,14 @@ test('should step w/ box', async ({ runInlineTest }) => {
 hook      |Before Hooks
 test.step |boxed step @ a.test.ts:8
 test.step |↪ error: Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:8
-test.step |    at a.test.ts:8:21
+test.step |    at a.test.ts:8:15
 expect    |  Expect "toBe" @ a.test.ts:5
 expect    |  ↪ error: Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:8
-expect    |      at a.test.ts:8:21
+expect    |      at a.test.ts:8:15
 hook      |After Hooks
 hook      |Worker Cleanup
           |Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:8
-          |    at a.test.ts:8:21
+          |    at a.test.ts:8:15
 `);
 });
 
@@ -853,14 +873,14 @@ test('should soft step w/ box', async ({ runInlineTest }) => {
 hook      |Before Hooks
 test.step |boxed step @ a.test.ts:8
 test.step |↪ error: Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:8
-test.step |    at a.test.ts:8:21
+test.step |    at a.test.ts:8:15
 expect    |  Expect "soft toBe" @ a.test.ts:5
 expect    |  ↪ error: Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:8
-expect    |      at a.test.ts:8:21
+expect    |      at a.test.ts:8:15
 hook      |After Hooks
 hook      |Worker Cleanup
           |Error: expect(received).toBe(expected) // Object.is equality @ a.test.ts:8
-          |    at a.test.ts:8:21
+          |    at a.test.ts:8:15
 `);
 });
 
@@ -982,12 +1002,12 @@ pw:api    |    Create context
 fixture   |  Fixture "page"
 pw:api    |    Create page
 expect    |Expect "toPass" @ a.test.ts:11
-pw:api    |  Navigate to "about:blank" @ a.test.ts:6
+pw:api    |  Navigate about:blank @ a.test.ts:6
 test.step |  inner step attempt: 0 @ a.test.ts:7
 test.step |  ↪ error: Error: expect(received).toBe(expected) // Object.is equality
 expect    |    Expect "toBe" @ a.test.ts:9
 expect    |    ↪ error: Error: expect(received).toBe(expected) // Object.is equality
-pw:api    |  Navigate to "about:blank" @ a.test.ts:6
+pw:api    |  Navigate about:blank @ a.test.ts:6
 test.step |  inner step attempt: 1 @ a.test.ts:7
 expect    |    Expect "toBe" @ a.test.ts:9
 hook      |After Hooks
@@ -1034,12 +1054,12 @@ pw:api    |    Create context
 fixture   |  Fixture "page"
 pw:api    |    Create page
 expect    |Expect "poll toHaveLength" @ a.test.ts:14
-pw:api    |  Navigate to "about:blank" @ a.test.ts:7
+pw:api    |  Navigate about:blank @ a.test.ts:7
 test.step |  inner step attempt: 0 @ a.test.ts:8
 expect    |    Expect "toBe" @ a.test.ts:10
 expect    |  Expect "toHaveLength" @ a.test.ts:6
 expect    |  ↪ error: Error: expect(received).toHaveLength(expected)
-pw:api    |  Navigate to "about:blank" @ a.test.ts:7
+pw:api    |  Navigate about:blank @ a.test.ts:7
 test.step |  inner step attempt: 1 @ a.test.ts:8
 expect    |    Expect "toBe" @ a.test.ts:10
 expect    |  Expect "toHaveLength" @ a.test.ts:6
@@ -1227,12 +1247,12 @@ pw:api    |    Create page
 fixture   |  Fixture "request"
 pw:api    |    Create request context
 pw:api    |Wait for navigation @ a.test.ts:5
-pw:api    |Navigate to "data:" @ a.test.ts:6
+pw:api    |Navigate data: @ a.test.ts:6
 pw:api    |Click locator('button') @ a.test.ts:8
 pw:api    |Click getByRole('button') @ a.test.ts:9
-pw:api    |GET "/empty.html" @ a.test.ts:10
+pw:api    |GET ${server.HOST}/empty.html @ a.test.ts:10
 pw:api    |↪ error: <error message>
-pw:api    |GET "/empty.html" @ a.test.ts:11
+pw:api    |GET ${server.HOST}/empty.html @ a.test.ts:11
 pw:api    |↪ error: <error message>
 hook      |After Hooks
 fixture   |  Fixture "request"
@@ -1444,7 +1464,7 @@ fixture   |  Fixture "context"
 pw:api    |    Create context
 fixture   |  Fixture "page"
 pw:api    |    Create page
-pw:api    |Navigate to "/empty.html" @ a.test.ts:4
+pw:api    |Navigate ${server.HOST}/empty.html @ a.test.ts:4
 pw:api    |Set content @ a.test.ts:5
 test.step |custom step @ a.test.ts:6
 pw:api    |  Wait for event "response" @ a.test.ts:7
@@ -1491,7 +1511,7 @@ fixture   |  Fixture "page"
 pw:api    |    Create page
 pw:api    |Wait for event "request" @ a.test.ts:5
 pw:api    |Wait for event "response" @ a.test.ts:6
-pw:api    |Navigate to "/empty.html" @ a.test.ts:7
+pw:api    |Navigate ${server.HOST}/empty.html @ a.test.ts:7
 hook      |After Hooks
 fixture   |  Fixture "page"
 fixture   |  Fixture "context"
@@ -1534,8 +1554,8 @@ pw:api    |    Create context
 fixture   |  Fixture "page"
 pw:api    |    Create page
 test.step |custom step @ a.test.ts:4
-pw:api    |  Navigate to "/empty.html" @ a.test.ts:12
-pw:api    |  GET "/empty.html" @ a.test.ts:6
+pw:api    |  Navigate ${server.HOST}/empty.html @ a.test.ts:12
+pw:api    |  GET ${server.HOST}/empty.html @ a.test.ts:6
 expect    |  Expect "toBe" @ a.test.ts:8
 hook      |After Hooks
 fixture   |  Fixture "page"
@@ -1747,19 +1767,19 @@ pw:api    |    Create page
 pw:api    |Set content @ a.test.ts:16
 expect    |Expect "toBeInvisible" locator('div') @ a.test.ts:17
 expect    |  Expect "poll toBe" @ a.test.ts:7
-pw:api    |    Query count locator('div').filter({ visible: true }) @ a.test.ts:7
+pw:api    |    Query count locator('div').visible() @ a.test.ts:7
 expect    |    Expect "toBe" @ a.test.ts:7
 expect    |    ↪ error: Error: expect(received).toBe(expected) // Object.is equality
-pw:api    |    Query count locator('div').filter({ visible: true }) @ a.test.ts:7
+pw:api    |    Query count locator('div').visible() @ a.test.ts:7
 expect    |    Expect "toBe" @ a.test.ts:7
 expect    |    ↪ error: Error: expect(received).toBe(expected) // Object.is equality
-pw:api    |    Query count locator('div').filter({ visible: true }) @ a.test.ts:7
+pw:api    |    Query count locator('div').visible() @ a.test.ts:7
 expect    |    Expect "toBe" @ a.test.ts:7
 expect    |    ↪ error: Error: expect(received).toBe(expected) // Object.is equality
-pw:api    |    Query count locator('div').filter({ visible: true }) @ a.test.ts:7
+pw:api    |    Query count locator('div').visible() @ a.test.ts:7
 expect    |    Expect "toBe" @ a.test.ts:7
 expect    |    ↪ error: Error: expect(received).toBe(expected) // Object.is equality
-pw:api    |    Query count locator('div').filter({ visible: true }) @ a.test.ts:7
+pw:api    |    Query count locator('div').visible() @ a.test.ts:7
 expect    |    Expect "toBe" @ a.test.ts:7
 pw:api    |Wait for timeout @ a.test.ts:18
 pw:api    |Set content @ a.test.ts:19
@@ -1825,10 +1845,10 @@ pw:api    |    Create page
 fixture   |  Fixture "bar" @ a.test.ts:4
 pw:api    |    Set content @ a.test.ts:14
 test.step |    inner step @ a.test.ts:15
-pw:api    |      Navigate to "data:" @ a.test.ts:16
+pw:api    |      Navigate data: @ a.test.ts:16
 pw:api    |  Set content @ a.test.ts:22
 test.step |  inner step @ a.test.ts:23
-pw:api    |    Navigate to "data:" @ a.test.ts:24
+pw:api    |    Navigate data: @ a.test.ts:24
 expect    |Expect "toBeVisible" locator('body') @ a.test.ts:32
 expect    |Expect "toBe" @ a.test.ts:33
 expect    |Expect "toBe" @ a.test.ts:34
@@ -1841,4 +1861,151 @@ fixture   |  Fixture "page"
 fixture   |  Fixture "context"
 pw:api    |    Close context
 `);
+});
+
+test('should report step params', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'reporter.ts': `
+      import type { Reporter, TestCase, TestResult, TestStep } from '@playwright/test/reporter';
+      export default class MyReporter implements Reporter {
+        onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+          if (step.location?.file.endsWith('a.test.ts'))
+            console.log('%%' + step.category + ' | ' + step.title + ' | ' + step.subtitle + ' | ' + JSON.stringify(step.params));
+        }
+      }
+    `,
+    'playwright.config.ts': `
+      module.exports = { reporter: './reporter' };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('pass', async ({ page }) => {
+        await page.goto('about:blank');
+        await page.setContent('<button>Click me</button>');
+        await page.getByRole('button').click();
+        await expect(page.getByRole('button')).toBeVisible();
+        await test.step('my step', async () => {}, { params: { foo: 'bar', count: 7 } });
+      });
+    `
+  }, { reporter: '' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual([
+    `pw:api | Navigate | about:blank | {"url":"about:blank"}`,
+    `pw:api | Set content | undefined | undefined`,
+    `pw:api | Click | getByRole('button') | {"locator":"getByRole('button')"}`,
+    `expect | Expect "toBeVisible" | getByRole('button') | {"locator":"getByRole('button')"}`,
+    `test.step | my step | undefined | {"foo":"bar","count":7}`,
+  ]);
+});
+
+test('should report step subtitle', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'reporter.ts': `
+      import type { Reporter, TestCase, TestResult, TestStep } from '@playwright/test/reporter';
+      export default class MyReporter implements Reporter {
+        onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+          if (step.category === 'test.step')
+            console.log('%%' + step.title + ' | ' + step.subtitle);
+        }
+      }
+    `,
+    'playwright.config.ts': `
+      module.exports = { reporter: './reporter' };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('pass', async ({}) => {
+        await test.step('my step', async () => {}, { subtitle: 'my subtitle' });
+        await test.step.skip('skipped step', async () => {}, { subtitle: 'skipped subtitle' });
+        await test.step('plain step', async () => {});
+      });
+    `
+  }, { reporter: '' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual([
+    `my step | my subtitle`,
+    `skipped step | skipped subtitle`,
+    `plain step | undefined`,
+  ]);
+});
+
+test('should report input step params', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'reporter.ts': `
+      import type { Reporter, TestCase, TestResult, TestStep } from '@playwright/test/reporter';
+      export default class MyReporter implements Reporter {
+        onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+          if (step.location?.file.endsWith('a.test.ts'))
+            console.log('%%' + (step.subtitle ? step.title + ' ' + step.subtitle : step.title) + ' | ' + JSON.stringify(step.params));
+        }
+      }
+    `,
+    'playwright.config.ts': `
+      module.exports = { reporter: './reporter' };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('pass', async ({ page }) => {
+        await page.setContent('<input id=i><button>Click me</button><select><option value=a>a</option><option value=b>b</option></select>');
+        await page.locator('#i').fill('value');
+        await page.locator('#i').press('Enter');
+        await page.keyboard.type('typed');
+        await page.getByRole('button').click({ button: 'right', clickCount: 2, modifiers: ['Shift'], position: { x: 3, y: 4 } });
+        await page.mouse.move(10, 20);
+        await page.mouse.wheel(0, 100);
+        await page.locator('select').selectOption('b');
+        await page.dispatchEvent('#i', 'focus');
+        await page.locator('#i').waitFor({ state: 'visible' });
+        await page.setViewportSize({ width: 800, height: 600 });
+        await page.dragAndDrop('#i', 'select');
+        await page.evaluate(() => 1);
+      });
+    `
+  }, { reporter: '' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual([
+    `Set content | undefined`,
+    `Fill "value" locator('#i') | {"locator":"locator('#i')","value":"value"}`,
+    `Press "Enter" locator('#i') | {"locator":"locator('#i')","key":"Enter"}`,
+    `Type "typed" | {"text":"typed"}`,
+    `Click getByRole('button') | {"locator":"getByRole('button')","button":"right","clickCount":2,"modifiers":["Shift"],"position":{"x":3,"y":4}}`,
+    `Mouse move | {"x":10,"y":20}`,
+    `Mouse wheel | {"deltaX":0,"deltaY":100}`,
+    `Select option locator('select') | {"locator":"locator('select')","options":[{"valueOrLabel":"b"}]}`,
+    `Dispatch "focus" locator('#i') | {"locator":"locator('#i')","type":"focus"}`,
+    `Wait for selector locator('#i') | {"locator":"locator('#i')","state":"visible"}`,
+    `Set viewport size | {"width":800,"height":600}`,
+    `Drag and drop | {"source":"locator('#i')","target":"locator('select')"}`,
+    `Evaluate | undefined`,
+  ]);
+});
+
+test('should truncate long step params', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'reporter.ts': `
+      import type { Reporter, TestCase, TestResult, TestStep } from '@playwright/test/reporter';
+      export default class MyReporter implements Reporter {
+        onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+          if (step.params?.value)
+            console.log('%%' + step.params.value);
+        }
+      }
+    `,
+    'playwright.config.ts': `
+      module.exports = { reporter: './reporter' };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('pass', async ({ page }) => {
+        await page.setContent('<input id=i>');
+        await page.locator('#i').fill('x'.repeat(1000));
+      });
+    `
+  }, { reporter: '' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual(['x'.repeat(200) + '\u2026']);
 });

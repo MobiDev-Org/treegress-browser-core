@@ -10,7 +10,7 @@ With Playwright's Snapshot testing you can assert the accessibility tree of a pa
 
 ```js
 await page.goto('https://playwright.dev/');
-await expect(page.getByRole('banner')).toMatchAriaSnapshot(`
+await expect(page).toMatchAriaSnapshot(`
   - banner:
     - heading /Playwright enables reliable end-to-end/ [level=1]
     - link "Get started":
@@ -23,7 +23,7 @@ await expect(page.getByRole('banner')).toMatchAriaSnapshot(`
 
 ```python sync
 page.goto('https://playwright.dev/')
-expect(page.query_selector('banner')).to_match_aria_snapshot("""
+expect(page).to_match_aria_snapshot("""
   - banner:
     - heading /Playwright enables reliable end-to-end/ [level=1]
     - link "Get started":
@@ -36,7 +36,7 @@ expect(page.query_selector('banner')).to_match_aria_snapshot("""
 
 ```python async
 await page.goto('https://playwright.dev/')
-await expect(page.query_selector('banner')).to_match_aria_snapshot("""
+await expect(page).to_match_aria_snapshot("""
   - banner:
     - heading /Playwright enables reliable end-to-end/ [level=1]
     - link "Get started":
@@ -49,7 +49,7 @@ await expect(page.query_selector('banner')).to_match_aria_snapshot("""
 
 ```java
 page.navigate("https://playwright.dev/");
-assertThat(page.locator("banner")).matchesAriaSnapshot("""
+assertThat(page).matchesAriaSnapshot("""
   - banner:
     - heading /Playwright enables reliable end-to-end/ [level=1]
     - link "Get started":
@@ -62,14 +62,14 @@ assertThat(page.locator("banner")).matchesAriaSnapshot("""
 
 ```csharp
 await page.GotoAsync("https://playwright.dev/");
-await Expect(page.Locator("banner")).ToMatchAriaSnapshotAsync(@"
+await Expect(page).ToMatchAriaSnapshotAsync(@"
   - banner:
     - heading ""Playwright enables reliable end-to-end testing for modern web apps."" [level=1]
     - link ""Get started"":
       - /url: /docs/intro
     - link ""Star microsoft/playwright on GitHub"":
       - /url: https://github.com/microsoft/playwright
-    - link /[\\d]+k\\+ stargazers on GitHub/
+    - link /[\d]+k\+ stargazers on GitHub/
 ");
 ```
 
@@ -141,7 +141,7 @@ By combining snapshot testing for broad, structural checks and assertion testing
 
 In Playwright, aria snapshots provide a YAML representation of the accessibility tree of a page.
 These snapshots can be stored and compared later to verify if the page structure remains consistent or meets defined
-expectations.
+expectations. A template is a constraint, not necessarily a complete serialization of the accessibility tree.
 
 The YAML format describes the hierarchical structure of accessible elements on the page, detailing **roles**, **attributes**, **values**, and **text content**.
 The structure follows a tree-like syntax, where each node represents an accessible element, and indentation indicates
@@ -156,7 +156,8 @@ Each accessible element in the tree is represented as a YAML node:
 - **role**: Specifies the ARIA or HTML role of the element (e.g., `heading`, `list`, `listitem`, `button`).
 - **"name"**: Accessible name of the element. Quoted strings indicate exact values, `/patterns/` are used for regular expression.
 - **[attribute=value]**: Attributes and values, in square brackets, represent specific ARIA attributes, such
-  as `checked`, `disabled`, `expanded`, `level`, `pressed`, or `selected`.
+  as `checked`, `disabled`, `expanded`, `invalid`, `level`, `pressed`, or `selected`. Attributes can constrain a
+  specific value, such as `[pressed=mixed]`.
 
 These values are derived from ARIA attributes or calculated based on HTML semantics. To inspect the accessibility tree
 structure of a page, use the [Chrome DevTools Accessibility Tab](https://developer.chrome.com/docs/devtools/accessibility/reference#tab).
@@ -164,9 +165,9 @@ structure of a page, use the [Chrome DevTools Accessibility Tab](https://develop
 
 ## Snapshot matching
 
-The [`method: LocatorAssertions.toMatchAriaSnapshot`] assertion method in Playwright compares the accessible
-structure of the locator scope with a predefined aria snapshot template, helping validate the page's state against
-testing requirements.
+The [`method: PageAssertions.toMatchAriaSnapshot`] assertion method in Playwright compares the accessible
+structure of the page with a predefined aria snapshot template, helping validate the page's state against
+testing requirements. You can also use [`method: LocatorAssertions.toMatchAriaSnapshot`] to match a specific part of the page.
 
 For the following DOM:
 
@@ -177,31 +178,31 @@ For the following DOM:
 You can match it using the following snapshot template:
 
 ```js
-await expect(page.locator('body')).toMatchAriaSnapshot(`
+await expect(page).toMatchAriaSnapshot(`
   - heading "title"
 `);
 ```
 
 ```python sync
-expect(page.locator("body")).to_match_aria_snapshot("""
+expect(page).to_match_aria_snapshot("""
   - heading "title"
 """)
 ```
 
 ```python async
-await expect(page.locator("body")).to_match_aria_snapshot("""
+await expect(page).to_match_aria_snapshot("""
   - heading "title"
 """)
 ```
 
 ```java
-assertThat(page.locator("body")).matchesAriaSnapshot("""
+assertThat(page).matchesAriaSnapshot("""
   - heading "title"
 """);
 ```
 
 ```csharp
-await Expect(page.Locator("body")).ToMatchAriaSnapshotAsync(@"
+await Expect(page).ToMatchAriaSnapshotAsync(@"
   - heading ""title""
 ");
 ```
@@ -210,9 +211,12 @@ When matching, the snapshot template is compared to the current accessibility tr
 
 * If the tree structure matches the template, the test passes; otherwise, it fails, indicating a mismatch between
   expected and actual accessibility states.
-* The comparison is case-sensitive and collapses whitespace, so indentation and line breaks are ignored.
+* The comparison is case-sensitive and normalizes whitespace within names and text values. YAML indentation
+  determines nesting.
 * The comparison is order-sensitive, meaning the order of elements in the snapshot template must match the order in the
   page's accessibility tree.
+* A single-node template can match at any depth within the selected page or locator. Multiple top-level nodes must match
+  under the same parent, in order.
 
 
 ### Partial matching
@@ -260,7 +264,7 @@ Similarly, you can partially match children in lists or groups by omitting speci
 ```
 
 ```yaml title="aria snapshot (partial match)"
-- list
+- list:
   - listitem: Feature B
 ```
 
@@ -280,15 +284,18 @@ By default, a template containing the subset of children will be matched:
 ```
 
 ```yaml title="aria snapshot (partial match)"
-- list
+- list:
   - listitem: Feature B
 ```
 
 
-The `/children` property can be used to control how child elements are matched:
-- `contain` (default): Matches if all specified children are present in order
-- `equal`: Matches if the children exactly match the specified list in order
-- `deep-equal`: Matches if the children exactly match the specified list in order, including nested children
+The `/children` property controls children for the node where it appears:
+- `contain` (default): Matches if all specified children are present in order.
+- `equal`: Matches if direct children exactly match the specified list in order.
+- `deep-equal`: Matches if children and nested children exactly match the specified list in order.
+
+With no expected child entries, `contain` allows any children, while `equal` and `deep-equal` require none. Add
+`/children: contain` to a nested node to override inherited `deep-equal` matching and allow extra children there.
 
 ```html
 <ul>
@@ -301,7 +308,7 @@ The `/children` property can be used to control how child elements are matched:
 Following snapshot will fail due to Feature C not being in the template:
 
 ```yaml title="aria snapshot"
-- list
+- list:
   - /children: equal
   - listitem: Feature A
   - listitem: Feature B
@@ -362,13 +369,18 @@ accessible names to aid snapshot creation and review.
 
 When using the Playwright test runner (`@playwright/test`), you can automatically update snapshots with the `--update-snapshots` flag, `-u` for short.
 
-Running tests with the `--update-snapshots` flag will update snapshots that did not match. Matching snapshots will not be updated.
+Running without the flag uses `default` mode: absent snapshots are generated, but the tests that generate them fail,
+so that a run with new snapshots does not silently pass. Use `missing` to generate absent snapshots and keep those
+tests passing. Supplying `-u` uses `changed` mode and updates snapshots that do not match. Use `all` to regenerate
+every snapshot, including matching ones, or `none` to prevent snapshot updates.
 
 ```bash
 npx playwright test --update-snapshots
 ```
 
-Updating snapshots is useful when application structure changes require new snapshots as a baseline. Note that Playwright will wait for the maximum expect timeout specified in the test runner configuration to ensure the page is settled before taking the snapshot. It might be necessary to adjust the `--timeout` if the test hits the timeout while generating snapshots.
+Updating snapshots is useful when application structure changes require new snapshots as a baseline. Playwright retries
+the assertion until its expect timeout expires. Adjust `--timeout` if snapshot generation takes longer than the test
+timeout.
 
 #### Empty template for snapshot generation
 
@@ -378,15 +390,12 @@ Passing an empty string as the template in an assertion generates a snapshot on-
 await expect(locator).toMatchAriaSnapshot('');
 ```
 
-Note that Playwright will wait for the maximum expect timeout specified in the test runner configuration to ensure the
-page is settled before taking the snapshot. It might be necessary to adjust the `--timeout` if the test hits the timeout
-while generating snapshots.
+This works without `-u` because the default mode generates missing snapshots.
 
 #### Snapshot patch files
 
-When updating snapshots, Playwright creates patch files that capture differences. These patch files can be reviewed,
-applied, and committed to source control, allowing teams to track structural changes over time and ensure updates are
-consistent with application requirements.
+For inline snapshot templates, Playwright creates patch files that capture differences. These patch files can be
+reviewed and applied. Separate `.aria.yml` snapshots are written directly to their configured snapshot path.
 
 The way source code is updated can be changed using the `--update-source-method` flag. There are several options available:
 
@@ -418,35 +427,35 @@ export default defineConfig({
 });
 ```
 
-### Using the `Locator.ariaSnapshot` method
+### Using [`method: Page.ariaSnapshot`] and [`method: Locator.ariaSnapshot`]
 
-The [`method: Locator.ariaSnapshot`] method allows you to programmatically create a YAML representation of accessible
+Methods [`method: Page.ariaSnapshot`] and [`method: Locator.ariaSnapshot`] allow you to programmatically create a YAML representation of accessible
 elements within a locator's scope, especially helpful for generating snapshots dynamically during test execution.
 
 **Example**:
 
 ```js
-const snapshot = await page.locator('body').ariaSnapshot();
+const snapshot = await page.ariaSnapshot();
 console.log(snapshot);
 ```
 
 ```python sync
-snapshot = page.locator("body").aria_snapshot()
+snapshot = page.aria_snapshot()
 print(snapshot)
 ```
 
 ```python async
-snapshot = await page.locator("body").aria_snapshot()
+snapshot = await page.aria_snapshot()
 print(snapshot)
 ```
 
 ```java
-String snapshot = page.locator("body").ariaSnapshot();
+String snapshot = page.ariaSnapshot();
 System.out.println(snapshot);
 ```
 
 ```csharp
-var snapshot = await page.Locator("body").AriaSnapshotAsync();
+var snapshot = await page.AriaSnapshotAsync();
 Console.WriteLine(snapshot);
 ```
 
@@ -564,7 +573,7 @@ Groups capture nested elements, such as `<details>` elements with summary conten
 
 ### Attributes and states
 
-Commonly used ARIA attributes, like `checked`, `disabled`, `expanded`, `level`, `pressed`, and `selected`, represent
+Commonly used ARIA attributes, like `checked`, `disabled`, `expanded`, `invalid`, `level`, `pressed`, and `selected`, represent
 control states.
 
 #### Checkbox with `checked` attribute
@@ -585,4 +594,25 @@ control states.
 
 ```yaml title="aria snapshot"
 - button "Toggle" [pressed=true]
+```
+
+#### Input with `aria-invalid` attribute
+
+The `aria-invalid` value is surfaced directly. A value of `true` renders as `[invalid]`, while `grammar`
+and `spelling` render as `[invalid=grammar]` and `[invalid=spelling]`. A `false` value is omitted.
+
+```html
+<input type="text" aria-label="Email" aria-invalid="true" value="not-an-email">
+```
+
+```yaml title="aria snapshot"
+- textbox "Email" [invalid]: not-an-email
+```
+
+```html
+<input type="text" aria-label="Bio" aria-invalid="spelling">
+```
+
+```yaml title="aria snapshot"
+- textbox "Bio" [invalid=spelling]
 ```

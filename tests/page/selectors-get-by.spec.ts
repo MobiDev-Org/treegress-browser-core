@@ -31,6 +31,21 @@ it('getByTestId with custom testId should work', async ({ page, playwright }) =>
   await expect(page.locator('div').getByTestId('Hello')).toHaveText('Hello world');
 });
 
+it('getByTestId with comma-separated testIdAttributes should match any', async ({ page, playwright }) => {
+  await page.setContent(`
+    <section>
+      <div data-pw="Hello">first</div>
+      <div data-ti="Hello">second</div>
+      <div data-testid="Hello">third</div>
+    </section>
+  `);
+  playwright.selectors.setTestIdAttribute('data-pw,data-ti');
+  await expect(page.getByTestId('Hello')).toHaveCount(2);
+  await expect(page.getByTestId('Hello')).toHaveText(['first', 'second']);
+  await expect(page.mainFrame().getByTestId('Hello')).toHaveCount(2);
+  await expect(page.locator('section').getByTestId('Hello')).toHaveCount(2);
+});
+
 it('getByTestId should escape id', async ({ page }) => {
   await page.setContent(`<div><div data-testid='He"llo'>Hello world</div></div>`);
   await expect(page.getByTestId('He"llo')).toHaveText('Hello world');
@@ -269,4 +284,115 @@ it('getByRole escaping', async ({ page }) => {
   ]);
   expect.soft(await page.getByRole('button', { name: 'Click \\\\me', exact: true }).evaluateAll(els => els.map(e => e.outerHTML))).toEqual([
   ]);
+});
+
+it('getByRole should accept regexp with v flag', async ({ page }) => {
+  // Regression test for https://github.com/microsoft/playwright/issues/41457
+  await page.setContent(`<button>Click me</button><button>Submit</button>`);
+  await expect(page.getByRole('button', { name: /Click me/v })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /click me/iv })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /Missing/v })).toHaveCount(0, { timeout: 1000 });
+});
+
+it('getByRole with description', async ({ page }) => {
+  await page.setContent(`
+    <div role="alert" aria-label="Upload successful" aria-description="File doc-2025.pdf was uploaded successfully">Alert 1</div>
+    <div role="alert" aria-label="Upload successful" aria-description="File report-2026.pdf was uploaded successfully">Alert 2</div>
+    <div role="alert" aria-label="Invalid file" aria-description="File demo.doc has an invalid file format">Alert 3</div>
+  `);
+
+  // description substring match (default)
+  expect.soft(await page.getByRole('alert', { description: 'doc-2025' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 1',
+  ]);
+  expect.soft(await page.getByRole('alert', { description: 'report-2026' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 2',
+  ]);
+
+  // description with name combined
+  expect.soft(await page.getByRole('alert', { name: 'Upload successful', description: 'doc-2025' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 1',
+  ]);
+  expect.soft(await page.getByRole('alert', { name: 'Upload successful', description: 'report-2026' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 2',
+  ]);
+  expect.soft(await page.getByRole('alert', { name: 'Invalid file', description: 'doc-2025' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+  ]);
+
+  // description exact match
+  expect.soft(await page.getByRole('alert', { description: 'doc-2025', exact: true }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+  ]);
+  expect.soft(await page.getByRole('alert', { description: 'File doc-2025.pdf was uploaded successfully', exact: true }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 1',
+  ]);
+
+  // description regex match
+  expect.soft(await page.getByRole('alert', { description: /report-\d+/ }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 2',
+  ]);
+  expect.soft(await page.getByRole('alert', { description: /uploaded successfully$/ }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert 1',
+    'Alert 2',
+  ]);
+});
+
+it('getByRole with description via aria-describedby', async ({ page }) => {
+  await page.setContent(`
+    <button aria-describedby="desc1">Submit</button>
+    <span id="desc1">Submits the form data</span>
+    <button aria-describedby="desc2">Submit</button>
+    <span id="desc2">Saves as draft</span>
+  `);
+
+  expect.soft(await page.getByRole('button', { name: 'Submit', description: 'form data' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Submit',
+  ]);
+  expect.soft(await page.getByRole('button', { name: 'Submit', description: 'draft' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Submit',
+  ]);
+});
+
+it('getByRole with description via title fallback', async ({ page }) => {
+  await page.setContent(`
+    <button title="Submits the form">Submit</button>
+    <button title="Resets the form">Reset</button>
+  `);
+
+  expect.soft(await page.getByRole('button', { description: 'Submits' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Submit',
+  ]);
+  expect.soft(await page.getByRole('button', { description: 'Resets' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Reset',
+  ]);
+});
+
+it('getByRole with description whitespace normalization', async ({ page }) => {
+  await page.setContent(`
+    <div role="alert" aria-description="File  doc-2025.pdf   was uploaded   successfully">Alert</div>
+  `);
+
+  expect.soft(await page.getByRole('alert', { description: '  doc-2025.pdf \n was  uploaded ' }).evaluateAll(els => els.map(e => e.textContent))).toEqual([
+    'Alert',
+  ]);
+});
+
+it('locators should not be affected by global and sticky regex flags', async ({ page }) => {
+  await page.setContent(`
+    <div>foo</div><div>foo</div><div>foo</div>
+    <label>foo<input></label><label>foo<input></label><label>foo<input></label>
+    <button>foo</button><button>foo</button><button>foo</button>
+    <input placeholder=foo><input placeholder=foo><input placeholder=foo>
+  `);
+  await expect(page.getByText(/foo/)).toHaveCount(9);
+  await expect(page.getByText(/foo/g)).toHaveCount(9);
+  await expect(page.getByText(/foo/y)).toHaveCount(9);
+  await expect(page.getByLabel(/foo/)).toHaveCount(3);
+  await expect(page.getByLabel(/foo/g)).toHaveCount(3);
+  await expect(page.getByLabel(/foo/y)).toHaveCount(3);
+  await expect(page.getByRole('button', { name: /foo/ })).toHaveCount(3);
+  await expect(page.getByRole('button', { name: /foo/g })).toHaveCount(3);
+  await expect(page.getByRole('button', { name: /foo/y })).toHaveCount(3);
+  await expect(page.getByPlaceholder(/foo/)).toHaveCount(3);
+  await expect(page.getByPlaceholder(/foo/g)).toHaveCount(3);
+  await expect(page.getByPlaceholder(/foo/y)).toHaveCount(3);
 });

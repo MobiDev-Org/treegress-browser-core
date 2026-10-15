@@ -15,17 +15,19 @@
  * limitations under the License.
  */
 
-import type { HeadersArray, Point, Size } from '../utils/isomorphic/types';
-export type { HeadersArray, Point, Quad, Rect, Size } from '../utils/isomorphic/types';
-import type * as channels from '@protocol/channels';
+import type { HeadersArray, Point } from '@isomorphic/types';
+import type { ElementHandle } from './dom';
+export type { HeadersArray, Point, Quad, Rect, Size, DeviceDescriptor, Devices } from '@isomorphic/types';
+import type * as channels from './channels';
+import type { ProxySettings } from '@utils/network';
 
-export type StrictOptions = {
+export type SelectorTarget = {
+  selector: string,
   strict?: boolean,
+  scope?: ElementHandle,
 };
 
-export type QueryOnSelectorOptions = StrictOptions;
-
-export type WaitForElementOptions = StrictOptions & { state?: 'attached' | 'detached' | 'visible' | 'hidden' } & { omitReturnValue?: boolean };
+export type WaitForElementOptions = { state?: 'attached' | 'detached' | 'visible' | 'hidden', omitReturnValue?: boolean };
 
 export type LifecycleEvent = 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
 export const kLifecycleEvents: Set<LifecycleEvent> = new Set(['load', 'domcontentloaded', 'networkidle', 'commit']);
@@ -34,19 +36,13 @@ export type NavigateOptions = {
   waitUntil?: LifecycleEvent,
 };
 
-export type CommonActionOptions = StrictOptions & {
+export type CommonActionOptions = {
   force?: boolean,
-  noAutoWaiting?: boolean,
 };
 
 export type PointerActionWaitOptions = CommonActionOptions & {
   trial?: boolean;
-};
-
-export type VideoOptions = {
-  width: number,
-  height: number,
-  outputFile: string,
+  scroll?: 'auto' | 'none';
 };
 
 export type ScreencastFrame = {
@@ -56,13 +52,6 @@ export type ScreencastFrame = {
   viewportHeight: number,
 };
 
-export type Credentials = {
-  username: string;
-  password: string;
-  origin?: string;
-  sendImmediately?: boolean;
-};
-
 export type Geolocation = {
   longitude: number;
   latitude: number;
@@ -70,6 +59,7 @@ export type Geolocation = {
 };
 
 export type SelectOption = {
+  valueOrLabel?: string;
   value?: string;
   label?: string;
   index?: number;
@@ -92,22 +82,7 @@ export type ForcedColors = 'active' | 'none' | 'no-override';
 
 export type Contrast = 'no-preference' | 'more' | 'no-override';
 
-export type DeviceDescriptor = {
-  userAgent: string,
-  viewport: Size,
-  deviceScaleFactor: number,
-  isMobile: boolean,
-  hasTouch: boolean,
-  defaultBrowserType: 'chromium' | 'firefox' | 'webkit'
-};
-export type Devices = { [name: string]: DeviceDescriptor };
-
-export type ProxySettings = {
-  server: string,
-  bypass?: string,
-  username?: string,
-  password?: string
-};
+export type { ProxySettings } from '@utils/network';
 
 export type KeyboardModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
 export type SmartKeyboardModifier = KeyboardModifier |  'ControlOrMeta';
@@ -129,11 +104,7 @@ export type MouseClickOptions = PointerActionOptions & {
   delay?: number;
   button?: MouseButton;
   clickCount?: number;
-};
-
-export type MouseMultiClickOptions = PointerActionOptions & {
-  delay?: number;
-  button?: MouseButton;
+  steps?: number;
 };
 
 export type World = 'main' | 'utility';
@@ -157,12 +128,8 @@ export type NormalizedContinueOverrides = {
   isFallback: boolean,
 };
 
-export type EmulatedSize = { viewport: Size, screen: Size };
-
 export type LaunchOptions = Omit<channels.BrowserTypeLaunchParams, 'timeout'> & {
-  cdpPort?: number,
   proxyOverride?: ProxySettings,
-  assistantMode?: boolean,
   socksProxyPort?: number,
 };
 

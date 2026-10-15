@@ -37,6 +37,37 @@ test('should succeed', async ({ runInlineTest }) => {
   expect(result.failed).toBe(0);
 });
 
+test('should support declare class fields', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/38586' },
+}, async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'one-success.spec.ts': `
+      import { test, expect } from '@playwright/test';
+
+      class Base {
+        constructor(p1, p2) {
+          this.p1 = p1;
+          this.p2 = p2;
+        }
+      }
+
+      class Derived extends Base {
+        p1: string;
+        declare p2: string;
+      }
+
+      test('works', () => {
+        const d = new Derived('value1', 'value2');
+        expect(d.p1).toBe(undefined);
+        expect(d.p2).toBe('value2');
+      })
+    `
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
+  expect(result.failed).toBe(0);
+});
+
 test('should treat enums equally', async ({ runInlineTest }) => {
   const result = await runInlineTest({
     'component.tsx': `

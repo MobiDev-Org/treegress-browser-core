@@ -29,7 +29,7 @@ test('should match snapshot with name', async ({ runInlineTest }, testInfo) => {
       import { test, expect } from '@playwright/test';
       test('test', async ({ page }) => {
         await page.setContent(\`<h1>hello world</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'test.aria.yml' });
+        await expect(page).toMatchAriaSnapshot({ name: 'test.aria.yml' });
       });
     `
   });
@@ -43,14 +43,37 @@ test('should generate multiple missing', async ({ runInlineTest }, testInfo) => 
       import { test, expect } from '@playwright/test';
       test('test', async ({ page }) => {
         await page.setContent(\`<h1>hello world</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'test-1.aria.yml' });
+        await expect(page).toMatchAriaSnapshot({ name: 'test-1.aria.yml' });
         await page.setContent(\`<h1>hello world 2</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'test-2.aria.yml' });
+        await expect(page).toMatchAriaSnapshot({ name: 'test-2.aria.yml' });
       });
     `
   });
 
   expect(result.exitCode).toBe(1);
+  expect(result.output).toContain(`A snapshot doesn't exist at a.spec.ts-snapshots${path.sep}test-1.aria.yml, writing actual`);
+  expect(result.output).toContain(`A snapshot doesn't exist at a.spec.ts-snapshots${path.sep}test-2.aria.yml, writing actual`);
+  const snapshot1 = await fs.promises.readFile(testInfo.outputPath('a.spec.ts-snapshots/test-1.aria.yml'), 'utf8');
+  expect(snapshot1).toBe('- heading "hello world" [level=1]');
+  const snapshot2 = await fs.promises.readFile(testInfo.outputPath('a.spec.ts-snapshots/test-2.aria.yml'), 'utf8');
+  expect(snapshot2).toBe('- heading "hello world 2" [level=1]');
+});
+
+test('should pass when generating multiple missing with update-snapshots=missing', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    'a.spec.ts': `
+      import { test, expect } from '@playwright/test';
+      test('test', async ({ page }) => {
+        await page.setContent(\`<h1>hello world</h1>\`);
+        await expect(page).toMatchAriaSnapshot({ name: 'test-1.aria.yml' });
+        await page.setContent(\`<h1>hello world 2</h1>\`);
+        await expect(page).toMatchAriaSnapshot({ name: 'test-2.aria.yml' });
+      });
+    `
+  }, { 'update-snapshots': 'missing' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
   expect(result.output).toContain(`A snapshot doesn't exist at a.spec.ts-snapshots${path.sep}test-1.aria.yml, writing actual`);
   expect(result.output).toContain(`A snapshot doesn't exist at a.spec.ts-snapshots${path.sep}test-2.aria.yml, writing actual`);
   const snapshot1 = await fs.promises.readFile(testInfo.outputPath('a.spec.ts-snapshots/test-1.aria.yml'), 'utf8');
@@ -71,9 +94,9 @@ test('should rebaseline all', async ({ runInlineTest }, testInfo) => {
       import { test, expect } from '@playwright/test';
       test('test', async ({ page }) => {
         await page.setContent(\`<h1>hello world</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'test-1.aria.yml' });
+        await expect(page).toMatchAriaSnapshot({ name: 'test-1.aria.yml' });
         await page.setContent(\`<h1>hello world 2</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'test-2.aria.yml' });
+        await expect(page).toMatchAriaSnapshot({ name: 'test-2.aria.yml' });
       });
     `
   }, { 'update-snapshots': 'all' });
@@ -96,7 +119,7 @@ test('should not rebaseline matching', async ({ runInlineTest }, testInfo) => {
       import { test, expect } from '@playwright/test';
       test('test', async ({ page }) => {
         await page.setContent(\`<h1>hello world</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'test.aria.yml' });
+        await expect(page).toMatchAriaSnapshot({ name: 'test.aria.yml' });
       });
     `
   }, { 'update-snapshots': 'changed' });
@@ -112,9 +135,9 @@ test('should generate snapshot name', async ({ runInlineTest }, testInfo) => {
       import { test, expect } from '@playwright/test';
       test('test name', async ({ page }) => {
         await page.setContent(\`<h1>hello world</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot();
+        await expect(page).toMatchAriaSnapshot();
         await page.setContent(\`<h1>hello world 2</h1>\`);
-        await expect(page.locator('body')).toMatchAriaSnapshot();
+        await expect(page).toMatchAriaSnapshot();
       });
     `
   });
@@ -146,7 +169,7 @@ test('backwards compat with .yml extension', async ({ runInlineTest }) => {
   expect(result.output).toContain(`A snapshot is generated at a.spec.ts-snapshots${path.sep}test-1.yml.`);
 });
 
-for (const updateSnapshots of ['all', 'changed', 'missing', 'none']) {
+for (const updateSnapshots of ['all', 'changed', 'missing', 'none', 'default']) {
   test(`should update snapshot with the update-snapshots=${updateSnapshots} (config)`, async ({ runInlineTest }, testInfo) => {
     const result = await runInlineTest({
       'playwright.config.ts': `
@@ -429,4 +452,30 @@ test('top-level equal should overwrite deep-equal children config', async ({ run
   });
 
   expect(result.exitCode).toBe(0);
+});
+
+test('expect(page).toMatchAriaSnapshot should respect config.expect.toMatchAriaSnapshot.children', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.ts': `
+      export default {
+        expect: {
+          toMatchAriaSnapshot: {
+            children: 'equal',
+          },
+        },
+      };
+    `,
+    'a.spec.ts': `
+      import { test, expect } from '@playwright/test';
+      test('test', async ({ page }) => {
+        await page.setContent(\`<h1>Title</h1><p>Paragraph</p>\`);
+        await expect(page).toMatchAriaSnapshot(\`
+          - heading "Title" [level=1]
+        \`, { timeout: 1000 });
+      });
+    `
+  });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain('+ - paragraph: Paragraph');
 });

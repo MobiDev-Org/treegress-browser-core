@@ -1,6 +1,6 @@
 {
   "name": "@treegress.com/treegress-browser-core",
-  "version": "1.59.0-treegress.12",
+  "version": "1.64.1-treegress.1",
   "description": "A high-level API to automate web browsers",
   "repository": {
     "type": "git",
@@ -8,7 +8,7 @@
   },
   "homepage": "https://treegress.com",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "author": {
     "name": "mobidev.biz"
@@ -25,24 +25,10 @@
       "default": "./index.js"
     },
     "./package.json": "./package.json",
-    "./lib/outofprocess": "./lib/outofprocess.js",
-    "./lib/cli/program": "./lib/cli/program.js",
-    "./lib/cli/client/program": "./lib/cli/client/program.js",
-    "./lib/client/connect": "./lib/client/connect.js",
-    "./lib/mcpBundle": "./lib/mcpBundle.js",
-    "./lib/mcp/exports": "./lib/mcp/exports.js",
-    "./lib/tools/exports": "./lib/tools/exports.js",
-    "./lib/mcp/index": "./lib/mcp/index.js",
-    "./lib/remote/playwrightServer": "./lib/remote/playwrightServer.js",
-    "./lib/server": "./lib/server/index.js",
-    "./lib/server/utils/image_tools/stats": "./lib/server/utils/image_tools/stats.js",
-    "./lib/server/utils/image_tools/compare": "./lib/server/utils/image_tools/compare.js",
-    "./lib/server/utils/image_tools/imageChannel": "./lib/server/utils/image_tools/imageChannel.js",
-    "./lib/server/utils/image_tools/colorUtils": "./lib/server/utils/image_tools/colorUtils.js",
-    "./lib/server/registry/index": "./lib/server/registry/index.js",
-    "./lib/utils": "./lib/utils.js",
+    "./lib/bootstrap": "./lib/bootstrap.js",
+    "./lib/coreBundle": "./lib/coreBundle.js",
     "./lib/utilsBundle": "./lib/utilsBundle.js",
-    "./lib/zipBundle": "./lib/zipBundle.js"
+    "./lib/tools/cli-client/program": "./lib/tools/cli-client/program.js"
   },
   "bin": {
     "playwright-core": "cli.js",

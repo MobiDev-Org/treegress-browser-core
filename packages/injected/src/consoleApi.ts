@@ -60,6 +60,7 @@ class Locator {
     self.getByTitle = (text: string | RegExp, options?: { exact?: boolean }): Locator => self.locator(getByTitleSelector(text, options));
     self.getByRole = (role: string, options: ByRoleOptions = {}): Locator => self.locator(getByRoleSelector(role, options));
     self.filter = (options?: { hasText?: string | RegExp, hasNotText?: string | RegExp, has?: Locator, hasNot?: Locator, visible?: boolean }): Locator => new Locator(injectedScript, selector, options);
+    self.visible = (): Locator => new Locator(injectedScript, selector, { visible: true });
     self.first = (): Locator => self.locator('nth=0');
     self.last = (): Locator => self.locator('nth=-1');
     self.nth = (index: number): Locator => self.locator(`nth=${index}`);
@@ -93,12 +94,13 @@ export class ConsoleAPI {
       selector: (element: Element) => this._selector(element),
       generateLocator: (element: Element, language?: Language) => this._generateLocator(element, language),
       ariaSnapshot: (element?: Element, options?: AriaTreeOptions) => {
-        return this._injectedScript.ariaSnapshot(element || this._injectedScript.document.body, options || { mode: 'expect' });
+        return this._injectedScript.ariaSnapshot(element || this._injectedScript.document.body, options || { mode: 'default' });
       },
       resume: () => this._resume(),
       ...new Locator(this._injectedScript, ''),
     };
     delete this._injectedScript.window.playwright.filter;
+    delete this._injectedScript.window.playwright.visible;
     delete this._injectedScript.window.playwright.first;
     delete this._injectedScript.window.playwright.last;
     delete this._injectedScript.window.playwright.nth;

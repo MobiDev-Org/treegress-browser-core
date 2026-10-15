@@ -17,12 +17,11 @@
 import fs from 'fs';
 import path from 'path';
 
-import { isRegExp } from 'playwright-core/lib/utils';
+import { isRegExp } from '@isomorphic/rtti';
 
 import { requireOrImport, setSingleTSConfig, setTransformConfig } from '../transform/transform';
-import { errorWithFile, fileIsModule } from '../util';
+import { errorWithFile } from '../util';
 import { FullConfigInternal } from './config';
-import { configureESMLoader, configureESMLoaderTransformConfig, registerESMLoader } from './esmLoaderHost';
 import { addToCompilationCache } from '../transform/compilationCache';
 
 import type { ConfigLocation } from './config';
@@ -101,17 +100,8 @@ async function loadUserConfig(location: ConfigLocation): Promise<Config> {
 }
 
 export async function loadConfig(location: ConfigLocation, overrides?: ConfigCLIOverrides, ignoreProjectDependencies = false, metadata?: Config['metadata']): Promise<FullConfigInternal> {
-  // 0. Setup ESM loader if needed.
-  if (!registerESMLoader()) {
-    // In Node.js < 18, complain if the config file is ESM. Historically, we would restart
-    // the process with --loader, but now we require newer Node.js.
-    if (location.resolvedConfigFile && fileIsModule(location.resolvedConfigFile))
-      throw errorWithFile(location.resolvedConfigFile, `Playwright requires Node.js 18.19 or higher to load esm modules. Please update your version of Node.js.`);
-  }
-
-  // 1. Setup tsconfig; configure ESM loader with tsconfig and compilation cache.
-  setSingleTSConfig(overrides?.tsconfig);
-  await configureESMLoader();
+  // 1. Set the initial tsconfig before loading the config file.
+  await setSingleTSConfig(overrides?.tsconfig);
 
   // 2. Load and validate playwright config.
   const userConfig = await loadUserConfig(location);
@@ -126,14 +116,10 @@ export async function loadConfig(location: ConfigLocation, overrides?: ConfigCLI
   }
 
   // 3. Load transform options from the playwright config.
-  const babelPlugins = (userConfig as any)['@playwright/test']?.babelPlugins || [];
   const external = userConfig.build?.external || [];
-  setTransformConfig({ babelPlugins, external });
+  await setTransformConfig({ external });
   if (!overrides?.tsconfig)
-    setSingleTSConfig(fullConfig?.singleTSConfigPath);
-
-  // 4. Send transform options to ESM loader.
-  await configureESMLoaderTransformConfig();
+    await setSingleTSConfig(fullConfig?.singleTSConfigPath);
 
   return fullConfig;
 }
@@ -251,8 +237,13 @@ function validateConfig(file: string, config: Config) {
   }
 
   if ('updateSnapshots' in config && config.updateSnapshots !== undefined) {
-    if (typeof config.updateSnapshots !== 'string' || !['all', 'changed', 'missing', 'none'].includes(config.updateSnapshots))
-      throw errorWithFile(file, `config.updateSnapshots must be one of "all", "changed", "missing" or "none"`);
+    if (typeof config.updateSnapshots !== 'string' || !['all', 'changed', 'missing', 'none', 'default'].includes(config.updateSnapshots))
+      throw errorWithFile(file, `config.updateSnapshots must be one of "all", "changed", "missing", "none" or "default"`);
+  }
+
+  if ('retryStrategy' in config && config.retryStrategy !== undefined) {
+    if (typeof config.retryStrategy !== 'string' || !['immediate', 'isolated'].includes(config.retryStrategy))
+      throw errorWithFile(file, `config.retryStrategy must be one of "immediate" or "isolated"`);
   }
 
   if ('tsconfig' in config && config.tsconfig !== undefined) {
@@ -290,6 +281,11 @@ function validateProject(file: string, project: Project, title: string) {
   if ('testDir' in project && project.testDir !== undefined) {
     if (typeof project.testDir !== 'string')
       throw errorWithFile(file, `${title}.testDir must be a string`);
+  }
+
+  if (project.expect?.toHaveScreenshot?.type !== undefined) {
+    if (!['png', 'webp'].includes(project.expect.toHaveScreenshot.type))
+      throw errorWithFile(file, `${title}.expect.toHaveScreenshot.type must be one of "png" or "webp"`);
   }
 
   for (const prop of ['testIgnore', 'testMatch'] as const) {

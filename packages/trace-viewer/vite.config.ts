@@ -20,13 +20,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 import { bundle } from './bundle';
+import { istanbul } from '../../utils/build/viteIstanbul';
 
 // https://vitejs.dev/config/
 export default defineConfig({
   base: '',
   plugins: [
     react(),
-    bundle()
+    bundle(),
+    ...(process.env.PWTEST_COVERAGE ? [istanbul()] : []),
   ],
   define: {
     'process.env': {},
@@ -35,27 +37,47 @@ export default defineConfig({
   resolve: {
     alias: {
       '@injected': path.resolve(__dirname, '../injected/src'),
-      '@isomorphic': path.resolve(__dirname, '../playwright-core/src/utils/isomorphic'),
-      '@protocol': path.resolve(__dirname, '../protocol/src'),
+      '@isomorphic': path.resolve(__dirname, '../isomorphic'),
       '@testIsomorphic': path.resolve(__dirname, '../playwright/src/isomorphic'),
-      '@trace': path.resolve(__dirname, '../trace/src'),
       '@web': path.resolve(__dirname, '../web/src'),
     },
   },
-  build: {
-    outDir: path.resolve(__dirname, '../playwright-core/lib/vite/traceViewer'),
-    emptyOutDir: false,
-    rollupOptions: {
-      input: {
-        index: path.resolve(__dirname, 'index.html'),
-        uiMode: path.resolve(__dirname, 'uiMode.html'),
-        snapshot: path.resolve(__dirname, 'snapshot.html'),
-      },
-      output: {
-        entryFileNames: () => '[name].[hash].js',
-        assetFileNames: () => '[name].[hash][extname]',
-        manualChunks: undefined,
+  builder: {},
+  environments: {
+    client: {
+      build: {
+        outDir: path.resolve(__dirname, '../playwright-core/lib/vite/traceViewer'),
+        emptyOutDir: false,
+        rollupOptions: {
+          input: {
+            index: path.resolve(__dirname, 'index.html'),
+            uiMode: path.resolve(__dirname, 'uiMode.html'),
+            snapshot: path.resolve(__dirname, 'snapshot.html'),
+          },
+          output: {
+            entryFileNames: () => '[name].[hash].js',
+            assetFileNames: () => '[name].[hash][extname]',
+            manualChunks: undefined,
+          },
+        },
       },
     },
-  }
+    sw: {
+      consumer: 'client',
+      build: {
+        outDir: path.resolve(__dirname, '../playwright-core/lib/vite/traceViewer'),
+        emptyOutDir: false,
+        rollupOptions: {
+          input: {
+            sw: path.resolve(__dirname, 'src/sw-main.ts'),
+          },
+          output: {
+            entryFileNames: () => 'sw.bundle.js',
+            assetFileNames: () => 'sw.[hash][extname]',
+            manualChunks: undefined,
+          },
+        },
+      },
+    },
+  },
 });

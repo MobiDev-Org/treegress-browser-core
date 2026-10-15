@@ -15,13 +15,17 @@
  * limitations under the License.
  */
 
-import type { APIRequestContext, Browser, BrowserContext, BrowserContextOptions, Page, PageAgent, LaunchOptions, ViewportSize, Geolocation, HTTPCredentials, Locator, APIResponse, PageScreenshotOptions } from 'playwright-core';
+import type { APIRequestContext, Browser, BrowserContext, BrowserContextOptions, Page, LaunchOptions, ViewportSize, Geolocation, HTTPCredentials, Locator, APIResponse, PageScreenshotOptions } from 'playwright-core';
 export * from 'playwright-core';
 
 export type BlobReporterOptions = { outputDir?: string, fileName?: string };
-export type ListReporterOptions = { printSteps?: boolean };
-export type JUnitReporterOptions = { outputFile?: string, stripANSIControlSequences?: boolean, includeProjectInTestName?: boolean };
+export type DotReporterOptions = { omitTags?: boolean };
+export type LineReporterOptions = { omitTags?: boolean };
+export type ListReporterOptions = { printSteps?: boolean, printFailuresInline?: boolean, omitTags?: boolean };
+export type GitHubReporterOptions = { omitTags?: boolean };
+export type JUnitReporterOptions = { outputFile?: string, stripANSIControlSequences?: boolean, includeProjectInTestName?: boolean, includeRetries?: boolean, omitTags?: boolean };
 export type JsonReporterOptions = { outputFile?: string };
+export type PerfettoReporterOptions = { outputFile?: string };
 export type HtmlReporterOptions = {
   outputFolder?: string;
   open?: 'always' | 'never' | 'on-failure';
@@ -31,16 +35,19 @@ export type HtmlReporterOptions = {
   title?: string;
   noSnippets?: boolean;
   noCopyPrompt?: boolean;
+  doNotInlineAssets?: boolean;
+  mergeFiles?: boolean;
 };
 
 export type ReporterDescription = Readonly<
   ['blob'] | ['blob', BlobReporterOptions] |
-  ['dot'] |
-  ['line'] |
+  ['dot'] | ['dot', DotReporterOptions] |
+  ['line'] | ['line', LineReporterOptions] |
   ['list'] | ['list', ListReporterOptions] |
-  ['github'] |
+  ['github'] | ['github', GitHubReporterOptions] |
   ['junit'] | ['junit', JUnitReporterOptions] |
   ['json'] | ['json', JsonReporterOptions] |
+  ['perfetto'] | ['perfetto', PerfettoReporterOptions] |
   ['html'] | ['html', HtmlReporterOptions] |
   ['null'] |
   [string] | [string, any]
@@ -129,6 +136,40 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
    */
   use?: UseOptions<TestArgs, WorkerArgs>;
   /**
+   * Whether the project runs when no `--project` command line option is passed. Defaults to `true`.
+   *
+   * To run a project with `default: false`, select it with the `--project` command line option.
+   *
+   * A project with `default: false` still runs when another running project lists it in
+   * [testProject.dependencies](https://playwright.dev/docs/api/class-testproject#test-project-dependencies) or
+   * [testProject.teardown](https://playwright.dev/docs/api/class-testproject#test-project-teardown).
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   projects: [
+   *     {
+   *       name: 'chromium',
+   *       use: devices['Desktop Chrome'],
+   *     },
+   *     {
+   *       name: 'slow',
+   *       testDir: './slow-tests',
+   *       default: false,
+   *     },
+   *   ],
+   * });
+   * ```
+   *
+   * Now `npx playwright test` only runs `chromium`, while `npx playwright test --project=slow` runs `slow`.
+   */
+  default?: boolean;
+
+  /**
    * List of projects that need to run before any test in this project runs. Dependencies can be useful for configuring
    * the global setup actions in a way that every action is in a form of a test. Passing `--no-deps` argument ignores
    * the dependencies and behaves as if they were not specified.
@@ -196,13 +237,14 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
       threshold?: number;
 
       /**
-       * an acceptable amount of pixels that could be different, unset by default.
+       * an acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * an acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
 
@@ -231,11 +273,24 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
       stylePath?: string|Array<string>;
 
       /**
+       * Format of the screenshots taken when the snapshot name is omitted, defaults to `"png"`. Snapshots with an explicit
+       * name use the format matching their `.png` or `.webp` extension.
+       */
+      type?: "png"|"webp";
+
+      /**
        * A template controlling location of the screenshots. See
        * [testProject.snapshotPathTemplate](https://playwright.dev/docs/api/class-testproject#test-project-snapshot-path-template)
        * for details.
        */
       pathTemplate?: string;
+
+      /**
+       * Default timeout for
+       * [expect(page).toHaveScreenshot(name[, options])](https://playwright.dev/docs/api/class-pageassertions#page-assertions-to-have-screenshot-1)
+       * in milliseconds, defaults to the global expect timeout. Setting to `0` disables the timeout.
+       */
+      timeout?: number;
     };
 
     /**
@@ -273,13 +328,14 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
       threshold?: number;
 
       /**
-       * an acceptable amount of pixels that could be different, unset by default.
+       * an acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * an acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
     };
@@ -528,6 +584,8 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
    *     config)
    * - `{testFileDir}` - Directories in relative path from `testDir` to **test file**.
    *   - Value: `page`
+   * - `{testFileBaseName}` - Test file name without the last extension.
+   *   - Value: `page-click.spec`
    * - `{testFileName}` - Test file name with extension.
    *   - Value: `page-click.spec.ts`
    * - `{testFilePath}` - Relative path from `testDir` to **test file**.
@@ -903,7 +961,7 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    * ```
    *
    */
-  reporter?: LiteralUnion<'list'|'dot'|'line'|'github'|'json'|'junit'|'null'|'html', string> | ReporterDescription[];
+  reporter?: LiteralUnion<'list'|'dot'|'line'|'github'|'json'|'junit'|'null'|'html'|'blob'|'perfetto', string> | ReporterDescription[];
   /**
    * Global options for all tests, for example
    * [testOptions.browserName](https://playwright.dev/docs/api/class-testoptions#test-options-browser-name). Learn more
@@ -1139,13 +1197,14 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
       caret?: "hide"|"initial";
 
       /**
-       * An acceptable amount of pixels that could be different, unset by default.
+       * An acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
 
@@ -1167,6 +1226,12 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
        * [YIQ color space](https://en.wikipedia.org/wiki/YIQ) and defaults `threshold` value to `0.2`.
        */
       threshold?: number;
+
+      /**
+       * Format of the screenshots taken when the snapshot name is omitted, defaults to `"png"`. Snapshots with an explicit
+       * name use the format matching their `.png` or `.webp` extension.
+       */
+      type?: "png"|"webp";
 
       /**
        * A template controlling location of the screenshots. See
@@ -1204,13 +1269,14 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
      */
     toMatchSnapshot?: {
       /**
-       * An acceptable amount of pixels that could be different, unset by default.
+       * An acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
 
@@ -1631,12 +1697,29 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
   retries?: number;
 
   /**
-   * Whether to run LLM agent for [PageAgent](https://playwright.dev/docs/api/class-pageagent):
-   * - "all" disregards existing cache and performs all actions via LLM
-   * - "missing" only performs actions that don't have generated cache actions
-   * - "none" does not talk to LLM at all, relies on the cached actions (default)
+   * Controls when failed tests are retried. Defaults to `'immediate'`.
+   * - `'immediate'` - A failed test is retried as soon as a worker is available, interleaved with the rest of the
+   *   run. This is the default.
+   * - `'isolated'` - Retries are run at the end, after all other tests have finished, one by one in a single worker.
+   *   This minimizes the interference between retried tests and the rest of the suite, at the expense of the total
+   *   run time.
+   *
+   * Learn more about [test retries](https://playwright.dev/docs/test-retries#retries).
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   retries: 2,
+   *   retryStrategy: 'isolated',
+   * });
+   * ```
+   *
    */
-  runAgents?: "all"|"missing"|"none";
+  retryStrategy?: "immediate"|"isolated";
 
   /**
    * Shard tests and execute only the selected shard. Specify in the one-based form like `{ total: 5, current: 2 }`.
@@ -1777,6 +1860,8 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    *     config)
    * - `{testFileDir}` - Directories in relative path from `testDir` to **test file**.
    *   - Value: `page`
+   * - `{testFileBaseName}` - Test file name without the last extension.
+   *   - Value: `page-click.spec`
    * - `{testFileName}` - Test file name with extension.
    *   - Value: `page-click.spec.ts`
    * - `{testFilePath}` - Relative path from `testDir` to **test file**.
@@ -1932,13 +2017,15 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
   tsconfig?: string;
 
   /**
-   * Whether to update expected snapshots with the actual results produced by the test run. Defaults to `'missing'`.
+   * Whether to update expected snapshots with the actual results produced by the test run. Defaults to `'default'`.
    * - `'all'` - All tests that are executed will update snapshots.
    * - `'changed'` - All tests that are executed will update snapshots that did not match. Matching snapshots will not
    *   be updated. Also creates missing snapshots.
    * - `'missing'` - Missing snapshots are created, for example when authoring a new test and running it for the first
-   *   time. This is the default.
+   *   time. Tests that only create missing snapshots pass.
    * - `'none'` - No snapshots are updated.
+   * - `'default'` - Missing snapshots are created, but the tests that create them fail, so that the run does not
+   *   silently pass in CI. This is the default.
    *
    * Learn more about [snapshots](https://playwright.dev/docs/test-snapshots).
    *
@@ -1949,12 +2036,12 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    * import { defineConfig } from '@playwright/test';
    *
    * export default defineConfig({
-   *   updateSnapshots: 'missing',
+   *   updateSnapshots: 'default',
    * });
    * ```
    *
    */
-  updateSnapshots?: "all"|"changed"|"missing"|"none";
+  updateSnapshots?: "all"|"changed"|"missing"|"none"|"default";
 
   /**
    * Defines how to update snapshots in the source code.
@@ -2015,9 +2102,30 @@ export interface FullConfig<TestArgs = {}, WorkerArgs = {}> {
    */
   webServer: TestConfigWebServer | null;
   /**
+   * Snapshot of [`process.argv`](https://nodejs.org/api/process.html#processargv) captured in the runner process.
+   * Useful for reading custom command-line arguments — for example, args supplied after the `--` separator (`npx
+   * playwright test -- --build-path=./out`). Playwright does not parse these; consumers are responsible for slicing and
+   * interpreting them with any argument-parsing library.
+   */
+  argv: Array<string>;
+
+  /**
    * Path to the configuration file used to run the tests. The value is an empty string if no config file was used.
    */
   configFile?: string;
+
+  /**
+   * See
+   * [testConfig.failOnFlakyTests](https://playwright.dev/docs/api/class-testconfig#test-config-fail-on-flaky-tests).
+   */
+  failOnFlakyTests: boolean;
+
+  /**
+   * List of projects that were selected to run, after applying the `--project` command line filter. When no filter is
+   * specified, this is the same as
+   * [fullConfig.projects](https://playwright.dev/docs/api/class-fullconfig#full-config-projects).
+   */
+  filteredProjects: Array<FullProject>;
 
   /**
    * See [testConfig.forbidOnly](https://playwright.dev/docs/api/class-testconfig#test-config-forbid-only).
@@ -2095,14 +2203,6 @@ export interface FullConfig<TestArgs = {}, WorkerArgs = {}> {
   rootDir: string;
 
   /**
-   * Whether to run LLM agent for [PageAgent](https://playwright.dev/docs/api/class-pageagent):
-   * - "all" disregards existing cache and performs all actions via LLM
-   * - "missing" only performs actions that don't have generated cache actions
-   * - "none" does not talk to LLM at all, relies on the cached actions (default)
-   */
-  runAgents: "all"|"missing"|"none";
-
-  /**
    * See [testConfig.shard](https://playwright.dev/docs/api/class-testconfig#test-config-shard).
    */
   shard: null|{
@@ -2125,7 +2225,7 @@ export interface FullConfig<TestArgs = {}, WorkerArgs = {}> {
   /**
    * See [testConfig.updateSnapshots](https://playwright.dev/docs/api/class-testconfig#test-config-update-snapshots).
    */
-  updateSnapshots: "all"|"changed"|"missing"|"none";
+  updateSnapshots: "all"|"changed"|"missing"|"none"|"default";
 
   /**
    * See
@@ -2683,9 +2783,10 @@ export type TestAnnotation = TestDetailsAnnotation & {
 export type TestDetails = {
   tag?: string | string[];
   annotation?: TestDetailsAnnotation | TestDetailsAnnotation[];
+  lock?: string | string[];
 }
 
-type TestBody<TestArgs> = (args: TestArgs, testInfo: TestInfo) => Promise<void> | void;
+type TestBody<TestArgs> = (args: TestArgs, testInfo: TestInfo) => Promise<unknown> | unknown;
 type ConditionBody<TestArgs> = (args: TestArgs) => boolean;
 
 /**
@@ -2774,6 +2875,26 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
    * [testInfo.annotations](https://playwright.dev/docs/api/class-testinfo#test-info-annotations).
    *
    * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+   *
+   * **Locks**
+   *
+   * You can declare named locks to prevent specific tests from running at the same time, while all other tests continue
+   * to run in parallel. Tests that share a lock name never run concurrently, even when they are declared in different
+   * files or belong to different [projects](https://playwright.dev/docs/test-projects). This is useful when a few tests access a shared
+   * resource that does not support concurrent access.
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test('update user settings', {
+   *   lock: 'user-settings',
+   * }, async ({ page }) => {
+   *   // This test never runs concurrently with other tests
+   *   // that declare the 'user-settings' lock.
+   * });
+   * ```
+   *
+   * Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
    * @param title Test title.
    * @param details Additional test details.
    * @param body Test body that takes one or two arguments: an object with fixtures and optional
@@ -2851,6 +2972,26 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
    * [testInfo.annotations](https://playwright.dev/docs/api/class-testinfo#test-info-annotations).
    *
    * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+   *
+   * **Locks**
+   *
+   * You can declare named locks to prevent specific tests from running at the same time, while all other tests continue
+   * to run in parallel. Tests that share a lock name never run concurrently, even when they are declared in different
+   * files or belong to different [projects](https://playwright.dev/docs/test-projects). This is useful when a few tests access a shared
+   * resource that does not support concurrent access.
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test('update user settings', {
+   *   lock: 'user-settings',
+   * }, async ({ page }) => {
+   *   // This test never runs concurrently with other tests
+   *   // that declare the 'user-settings' lock.
+   * });
+   * ```
+   *
+   * Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
    * @param title Test title.
    * @param details Additional test details.
    * @param body Test body that takes one or two arguments: an object with fixtures and optional
@@ -2987,6 +3128,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
    * ```
    *
    * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+   *
+   * **Locks**
+   *
+   * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+   * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test.describe('two tests with a lock', {
+   *   lock: 'user-settings',
+   * }, () => {
+   *   test('one', async ({ page }) => {
+   *     // ...
+   *   });
+   *
+   *   test('two', async ({ page }) => {
+   *     // ...
+   *   });
+   * });
+   * ```
+   *
    * @param title Group title.
    * @param details Additional details for all tests in the group.
    * @param callback A callback that is run immediately when calling
@@ -3082,6 +3245,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * ```
      *
      * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+     *
+     * **Locks**
+     *
+     * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+     * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+     *
+     * ```js
+     * import { test, expect } from '@playwright/test';
+     *
+     * test.describe('two tests with a lock', {
+     *   lock: 'user-settings',
+     * }, () => {
+     *   test('one', async ({ page }) => {
+     *     // ...
+     *   });
+     *
+     *   test('two', async ({ page }) => {
+     *     // ...
+     *   });
+     * });
+     * ```
+     *
      * @param title Group title.
      * @param details Additional details for all tests in the group.
      * @param callback A callback that is run immediately when calling
@@ -3177,6 +3362,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * ```
      *
      * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+     *
+     * **Locks**
+     *
+     * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+     * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+     *
+     * ```js
+     * import { test, expect } from '@playwright/test';
+     *
+     * test.describe('two tests with a lock', {
+     *   lock: 'user-settings',
+     * }, () => {
+     *   test('one', async ({ page }) => {
+     *     // ...
+     *   });
+     *
+     *   test('two', async ({ page }) => {
+     *     // ...
+     *   });
+     * });
+     * ```
+     *
      * @param title Group title.
      * @param details Additional details for all tests in the group.
      * @param callback A callback that is run immediately when calling
@@ -3272,6 +3479,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * ```
      *
      * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+     *
+     * **Locks**
+     *
+     * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+     * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+     *
+     * ```js
+     * import { test, expect } from '@playwright/test';
+     *
+     * test.describe('two tests with a lock', {
+     *   lock: 'user-settings',
+     * }, () => {
+     *   test('one', async ({ page }) => {
+     *     // ...
+     *   });
+     *
+     *   test('two', async ({ page }) => {
+     *     // ...
+     *   });
+     * });
+     * ```
+     *
      * @param title Group title.
      * @param details Additional details for all tests in the group.
      * @param callback A callback that is run immediately when calling
@@ -4201,6 +4430,14 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      *   test('runs second', async ({ page }) => {});
      *   ```
      *
+     * - Declaring locks for all tests in a scope.
+     *
+     *   ```js
+     *   test.describe.configure({ lock: 'user-settings' });
+     *   test('update user settings', async ({ page }) => {});
+     *   test('reset user settings', async ({ page }) => {});
+     *   ```
+     *
      * - Run multiple describes in parallel, but tests inside each describe in order.
      *
      *   ```js
@@ -4221,7 +4458,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      *
      * @param options
      */
-    configure: (options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number }) => void;
+    configure: (options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number, lock?: string | string[] }) => void;
   };
 
   /**
@@ -5547,6 +5784,29 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
   }
 
   /**
+   * Aborts the currently running test by throwing an error. The test is immediately marked as failed and execution
+   * stops. This is useful from inside a fixture or a route handler when you have detected an unrecoverable misuse and
+   * want to fail the test right away.
+   *
+   * **Usage**
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test('does not publish to shared page', async ({ page }) => {
+   *   await page.route('**\/publish', route => {
+   *     test.abort('Tests must not publish to the shared page. Use the `clone` option.');
+   *     return route.abort();
+   *   });
+   *   // ...
+   * });
+   * ```
+   *
+   * @param message Optional message describing the reason for the abort. It will be included in the failure error.
+   */
+  abort(message?: string): never;
+
+  /**
    * Marks a test as "slow". Slow test will be given triple the default timeout.
    *
    * Note that [test.slow([condition, callback, description])](https://playwright.dev/docs/api/class-test#test-slow)
@@ -6534,7 +6794,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * @param body Step body.
      * @param options
      */
-    <T>(title: string, body: (step: TestStepInfo) => T | Promise<T>, options?: { box?: boolean, location?: Location, timeout?: number }): Promise<T>;
+    <T>(title: string, body: (step: TestStepInfo) => T | Promise<T>, options?: { box?: boolean, location?: Location, timeout?: number, params?: { [key: string]: any }, subtitle?: string }): Promise<T>;
     /**
      * Mark a test step as "skip" to temporarily disable its execution, useful for steps that are currently failing and
      * planned for a near-term fix. Playwright will not run the step. See also
@@ -6562,7 +6822,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * @param body Step body.
      * @param options
      */
-    skip(title: string, body: (step: TestStepInfo) => any | Promise<any>, options?: { box?: boolean, location?: Location, timeout?: number }): Promise<void>;
+    skip(title: string, body: (step: TestStepInfo) => any | Promise<any>, options?: { box?: boolean, location?: Location, timeout?: number, params?: { [key: string]: any }, subtitle?: string }): Promise<void>;
   }
   /**
    * `expect` function can be used to create test assertions. Read more about [test assertions](https://playwright.dev/docs/test-assertions).
@@ -6682,6 +6942,9 @@ export type Fixtures<T extends {} = {}, W extends {} = {}, PT extends {} = {}, P
 type BrowserName = 'chromium' | 'firefox' | 'webkit';
 type BrowserChannel = Exclude<LaunchOptions['channel'], undefined>;
 type ColorScheme = Exclude<BrowserContextOptions['colorScheme'], undefined>;
+type Contrast = Exclude<BrowserContextOptions['contrast'], undefined>;
+type ForcedColors = Exclude<BrowserContextOptions['forcedColors'], undefined>;
+type ReducedMotion = Exclude<BrowserContextOptions['reducedMotion'], undefined>;
 type ClientCertificate = Exclude<BrowserContextOptions['clientCertificates'], undefined>[0];
 type ExtraHTTPHeaders = Exclude<BrowserContextOptions['extraHTTPHeaders'], undefined>;
 type Proxy = Exclude<BrowserContextOptions['proxy'], undefined>;
@@ -6880,11 +7143,64 @@ export interface PlaywrightWorkerOptions {
    * [fixtures.browser](https://playwright.dev/docs/api/class-fixtures#fixtures-browser),
    * [fixtures.context](https://playwright.dev/docs/api/class-fixtures#fixtures-context) and
    * [fixtures.page](https://playwright.dev/docs/api/class-fixtures#fixtures-page) use the remote browser instead of
-   * launching a browser locally, and any launch options like
-   * [testOptions.headless](https://playwright.dev/docs/api/class-testoptions#test-options-headless) or
-   * [testOptions.channel](https://playwright.dev/docs/api/class-testoptions#test-options-channel) are ignored.
+   * launching a browser locally.
    */
   connectOptions: ConnectOptions | undefined;
+  /**
+   * **NOTE** This option trades test isolation for speed and is intended for component tests that drive a story gallery. Leave
+   * it unset for end-to-end tests - a fresh browser context per test is one of the core guarantees of Playwright Test.
+   *
+   * **Experimental.** When set to `true`, all tests in a worker process run in a single browser context that is reused
+   * between tests, instead of getting a brand new context per test. Defaults to `false`.
+   *
+   * Between tests, Playwright resets the state that component tests typically touch: it clears cookies, cache, local
+   * storage and IndexedDB of visited origins, unregisters service workers, closes extra pages, removes routes, bindings
+   * and init scripts, and re-applies the configured storage state, viewport and emulation options.
+   *
+   * This reset is best-effort, not a guarantee of isolation. State that is **not** reset includes:
+   * - Permissions granted with
+   *   [browserContext.grantPermissions(permissions[, options])](https://playwright.dev/docs/api/class-browsercontext#browser-context-grant-permissions)
+   *   during a test.
+   * - Runtime changes made through
+   *   [browserContext.setGeolocation(geolocation)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-geolocation),
+   *   [browserContext.setOffline(offline)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-offline)
+   *   and
+   *   [browserContext.setExtraHTTPHeaders(headers)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-extra-http-headers).
+   * - Browsing history, `window.name` and any browser-process-wide state.
+   *
+   * Additional restrictions:
+   * - The option is ignored when
+   *   [testOptions.video](https://playwright.dev/docs/api/class-testoptions#test-options-video) recording is enabled.
+   * - Only a few context options may differ between consecutive tests: `colorScheme`, `forcedColors`,
+   *   `reducedMotion`, `contrast`, `screen`, `userAgent`, `viewport` and `testIdAttribute`. Changing any other option
+   *   in [test.use(options)](https://playwright.dev/docs/api/class-test#test-use), for example `locale` or
+   *   `storageState`, silently forces a fresh context and negates the speedup.
+   * - Do not combine with
+   *   [testOptions.connectOptions](https://playwright.dev/docs/api/class-testoptions#test-options-connect-options)
+   *   pointing multiple workers at a shared browser - workers would compete for the single reusable context.
+   * - `recordHar` in
+   *   [testOptions.contextOptions](https://playwright.dev/docs/api/class-testoptions#test-options-context-options) is
+   *   not supported and produces no HAR file.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   projects: [
+   *     {
+   *       name: 'components',
+   *       testDir: './tests/components',
+   *       use: { reuseContext: true },
+   *     },
+   *   ],
+   * });
+   * ```
+   *
+   */
+  reuseContext: boolean;
   /**
    * Whether to automatically capture a screenshot after each test. Defaults to `'off'`.
    * - `'off'`: Do not capture screenshots.
@@ -6909,15 +7225,21 @@ export interface PlaywrightWorkerOptions {
    */
   screenshot: ScreenshotMode | { mode: ScreenshotMode } & Pick<PageScreenshotOptions, 'fullPage' | 'omitBackground'>;
   /**
-   * Whether to record trace for each test. Defaults to `'off'`.
+   * Whether to record trace for each test. Defaults to `'off'`. The initial run of a test is the "first run";
+   * subsequent runs caused by [retries](https://playwright.dev/docs/test-retries) are "retries".
    * - `'off'`: Do not record trace.
-   * - `'on'`: Record trace for each test.
-   * - `'on-first-retry'`: Record trace only when retrying a test for the first time.
-   * - `'on-all-retries'`: Record trace only when retrying a test.
-   * - `'retain-on-failure'`: Record trace for each test. When test run passes, remove the recorded trace.
-   * - `'retain-on-first-failure'`: Record trace for the first run of each test, but not for retries. When test run
-   *   passes, remove the recorded trace.
-   * - `'retain-on-failure-and-retries'`: Record trace for each test run. Retains all traces when an attempt fails.
+   * - `'on'`: Record and keep a trace for every run.
+   * - `'on-first-retry'`: Record and keep a trace only for the first retry of a test.
+   * - `'on-all-retries'`: Record and keep a trace for every retry.
+   * - `'retain-on-failure'`: Record a trace for every run, but keep it only for runs that failed. A failed run's
+   *   trace is kept even when a later retry passes.
+   * - `'retain-on-first-failure'`: Record a trace only for the first run of a test (not for retries), and keep it
+   *   only if that run failed.
+   * - `'retain-on-failure-and-retries'`: Record a trace for every run, and keep it for any run that failed or that is
+   *   a retry.
+   *
+   * See [trace modes](https://playwright.dev/docs/test-use-options#trace-modes) for a side-by-side comparison of what each mode records and
+   * keeps.
    *
    * For more control, pass an object that specifies `mode` and trace features to enable.
    *
@@ -6936,18 +7258,36 @@ export interface PlaywrightWorkerOptions {
    *
    * Learn more about [recording trace](https://playwright.dev/docs/test-use-options#recording-options).
    */
-  trace: TraceMode | /** deprecated */ 'retry-with-trace' | { mode: TraceMode, snapshots?: boolean, screenshots?: boolean, sources?: boolean, attachments?: boolean };
+  trace: TraceMode | /** deprecated */ 'retry-with-trace' | { mode: TraceMode, snapshots?: boolean | { dom?: boolean, aria?: boolean, screen?: boolean }, screenshots?: boolean, sources?: boolean, attachments?: boolean };
   /**
-   * Whether to record video for each test. Defaults to `'off'`.
+   * Whether to record video for each test. Defaults to `'off'`. The initial run of a test is the "first run";
+   * subsequent runs caused by [retries](https://playwright.dev/docs/test-retries) are "retries".
    * - `'off'`: Do not record video.
-   * - `'on'`: Record video for each test.
-   * - `'retain-on-failure'`: Record video for each test, but remove all videos from successful test runs.
-   * - `'on-first-retry'`: Record video only when retrying a test for the first time.
+   * - `'on'`: Record and keep a video for every run.
+   * - `'on-first-retry'`: Record and keep a video only for the first retry of a test.
+   * - `'on-all-retries'`: Record and keep a video for every retry.
+   * - `'retain-on-failure'`: Record a video for every run, but keep it only for runs that failed. A failed run's
+   *   video is kept even when a later retry passes.
+   * - `'retain-on-first-failure'`: Record a video only for the first run of a test (not for retries), and keep it
+   *   only if that run failed.
+   * - `'retain-on-failure-and-retries'`: Record a video for every run, and keep it for any run that failed or that is
+   *   a retry.
+   *
+   * See [video modes](https://playwright.dev/docs/test-use-options#video-modes) for a side-by-side comparison of what each mode records and
+   * keeps.
    *
    * To control video size, pass an object with `mode` and `size` properties. If video size is not specified, it will be
    * equal to [testOptions.viewport](https://playwright.dev/docs/api/class-testoptions#test-options-viewport) scaled
    * down to fit into 800x800. If `viewport` is not configured explicitly the video size defaults to 800x450. Actual
    * picture of each page will be scaled down if necessary to fit the specified size.
+   *
+   * To record smoother video of animations and scrolling, pass `fps`, for example `{ mode: 'on', size: { width: 1920,
+   * height: 1080 }, fps: 60 }`. Higher frame rates and sizes use more CPU for encoding. Firefox and WebKit currently
+   * capture up to 25 frames per second.
+   *
+   * To annotate actions in the video, pass `show` with `actions` and/or `test` sub-options. The `actions` option
+   * controls visual highlights on interacted elements, each shown for an optional `duration` in milliseconds (defaults
+   * to `500`). The `test` option controls which test information is displayed as a status overlay.
    *
    * **Usage**
    *
@@ -6964,31 +7304,12 @@ export interface PlaywrightWorkerOptions {
    *
    * Learn more about [recording video](https://playwright.dev/docs/test-use-options#recording-options).
    */
-  video: VideoMode | /** deprecated */ 'retry-with-video' | { mode: VideoMode, size?: ViewportSize };
+  video: VideoMode | /** deprecated */ 'retry-with-video' | { mode: VideoMode, size?: ViewportSize, fps?: number, show?: { actions?: { duration?: number, position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', /** @deprecated Use `style.title` instead. */ fontSize?: number, cursor?: 'none' | 'pointer', style?: { point?: string, highlight?: string, title?: string } }, test?: { level?: 'file' | 'title' | 'step', position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number } } };
 }
 
 export type ScreenshotMode = 'off' | 'on' | 'only-on-failure' | 'on-first-failure';
 export type TraceMode = 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | 'on-all-retries' | 'retain-on-first-failure' | 'retain-on-failure-and-retries';
-export type VideoMode = 'off' | 'on' | 'retain-on-failure' | 'on-first-retry';
-export type AgentOptions = {
-  provider?: {
-    api: 'openai' | 'openai-compatible' | 'anthropic' | 'google';
-    apiEndpoint?: string;
-    apiKey: string;
-    apiTimeout?: number;
-    model: string;
-  },
-  limits?: {
-    maxTokens?: number;
-    maxActions?: number;
-    maxActionRetries?: number;
-  };
-  cachePathTemplate?: string;
-  runAgents?: 'all' | 'missing' | 'none';
-  secrets?: { [key: string]: string };
-  systemPrompt?: string;
-};
-
+export type VideoMode = 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | 'on-all-retries' | 'retain-on-first-failure' | 'retain-on-failure-and-retries';
 /**
  * Playwright Test provides many options to configure test environment,
  * [Browser](https://playwright.dev/docs/api/class-browser),
@@ -7028,7 +7349,6 @@ export type AgentOptions = {
  *
  */
 export interface PlaywrightTestOptions {
-  agentOptions: AgentOptions | undefined;
   /**
    * Whether to automatically download all the attachments. Defaults to `true` where all the downloads are accepted.
    *
@@ -7086,6 +7406,26 @@ export interface PlaywrightTestOptions {
    *
    */
   colorScheme: ColorScheme;
+  /**
+   * Emulates `'prefers-contrast'` media feature, supported values are `'no-preference'`, `'more'`. See
+   * [page.emulateMedia([options])](https://playwright.dev/docs/api/class-page#page-emulate-media) for more details.
+   * Passing `null` resets emulation to system defaults. Defaults to `'no-preference'`.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     contrast: 'more',
+   *   },
+   * });
+   * ```
+   *
+   */
+  contrast: Contrast;
   /**
    * TLS Client Authentication allows the server to request a client certificate and verify it.
    *
@@ -7164,6 +7504,26 @@ export interface PlaywrightTestOptions {
    */
   extraHTTPHeaders: ExtraHTTPHeaders | undefined;
   /**
+   * Emulates `'forced-colors'` media feature, supported values are `'active'`, `'none'`. See
+   * [page.emulateMedia([options])](https://playwright.dev/docs/api/class-page#page-emulate-media) for more details.
+   * Passing `null` resets emulation to system defaults. Defaults to `'none'`.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     forcedColors: 'active',
+   *   },
+   * });
+   * ```
+   *
+   */
+  forcedColors: ForcedColors;
+  /**
    * **Usage**
    *
    * ```js
@@ -7203,6 +7563,9 @@ export interface PlaywrightTestOptions {
    * Credentials for [HTTP authentication](https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication). If no
    * origin is specified, the username and password are sent to any servers upon unauthorized responses.
    *
+   * Pass an array to use different credentials for different origins. The first entry that matches the request origin
+   * is used, and entries with no origin match any request.
+   *
    * **Usage**
    *
    * ```js
@@ -7219,8 +7582,21 @@ export interface PlaywrightTestOptions {
    * });
    * ```
    *
+   * When passing an array of credentials to [test.use(options)](https://playwright.dev/docs/api/class-test#test-use),
+   * wrap it into an extra array, see [fixture options](https://playwright.dev/docs/test-fixtures#fixtures-options).
+   *
+   * ```js
+   * // example.spec.ts
+   * test.use({
+   *   httpCredentials: [[
+   *     { username: 'alice', password: 'alice-pass', origin: 'https://a.example.com' },
+   *     { username: 'bob', password: 'bob-pass', origin: 'https://b.example.com' },
+   *   ], { scope: 'test' }],
+   * });
+   * ```
+   *
    */
-  httpCredentials: HTTPCredentials | undefined;
+  httpCredentials: HTTPCredentials | HTTPCredentials[] | undefined;
   /**
    * Whether to ignore HTTPS errors when sending network requests. Defaults to `false`.
    *
@@ -7241,8 +7617,8 @@ export interface PlaywrightTestOptions {
   ignoreHTTPSErrors: boolean;
   /**
    * Whether the `meta viewport` tag is taken into account and touch events are enabled. isMobile is a part of device,
-   * so you don't actually need to set it manually. Defaults to `false` and is not supported in Firefox. Learn more
-   * about [mobile emulation](https://playwright.dev/docs/emulation#ismobile).
+   * so you don't actually need to set it manually. Defaults to `false`. Learn more about
+   * [mobile emulation](https://playwright.dev/docs/emulation#ismobile).
    *
    * **Usage**
    *
@@ -7358,6 +7734,46 @@ export interface PlaywrightTestOptions {
    *
    */
   proxy: Proxy | undefined;
+  /**
+   * Emulates `'prefers-reduced-motion'` media feature, supported values are `'reduce'`, `'no-preference'`. See
+   * [page.emulateMedia([options])](https://playwright.dev/docs/api/class-page#page-emulate-media) for more details.
+   * Passing `null` resets emulation to system defaults. Defaults to `'no-preference'`.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     reducedMotion: 'reduce',
+   *   },
+   * });
+   * ```
+   *
+   */
+  reducedMotion: ReducedMotion;
+  /**
+   * Emulates consistent window screen size available inside web page via `window.screen`. Is only used when the
+   * [testOptions.viewport](https://playwright.dev/docs/api/class-testoptions#test-options-viewport) is set.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     viewport: { width: 390, height: 664 },
+   *     screen: { width: 390, height: 844 },
+   *   },
+   * });
+   * ```
+   *
+   */
+  screen: ViewportSize | undefined;
   /**
    * Learn more about [storage state and auth](https://playwright.dev/docs/auth).
    *
@@ -7578,7 +7994,7 @@ export interface PlaywrightTestOptions {
   /**
    * Custom attribute to be used in
    * [page.getByTestId(testId)](https://playwright.dev/docs/api/class-page#page-get-by-test-id). `data-testid` is used
-   * by default.
+   * by default. To match elements with any of several attributes, pass them as a comma-separated list.
    *
    * **Usage**
    *
@@ -7589,6 +8005,19 @@ export interface PlaywrightTestOptions {
    * export default defineConfig({
    *   use: {
    *     testIdAttribute: 'pw-test-id',
+   *   },
+   * });
+   * ```
+   *
+   * Multiple attributes:
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     testIdAttribute: 'data-pw,data-ti',
    *   },
    * });
    * ```
@@ -7646,6 +8075,18 @@ export interface PlaywrightWorkerArgs {
    */
   browser: Browser;
 }
+
+export interface Stories {}
+
+type StoryProps<Story> =
+  Story extends (props: infer Props) => any ? Props :
+  Story extends new (...args: any[]) => { $props: infer Props } ? Props :
+  Story extends new (props: infer Props, ...args: any[]) => any ? Props :
+  Story;
+type StoryId = keyof Stories | (string & {});
+type StoryPropsFor<Id> = Id extends keyof Stories ? StoryProps<Stories[Id]> : Record<string, any>;
+// Explicit mount<typeof Story>() wins over the id lookup; the indexed access keeps Story from being inferred from props.
+type MountProps<Story, Id> = [Story] extends [never] ? StoryPropsFor<Id> : StoryProps<[Story][Story extends any ? 0 : never]>;
 
 /**
  * Playwright Test is based on the concept of the [test fixtures](https://playwright.dev/docs/test-fixtures). Test fixtures are used to
@@ -7738,7 +8179,48 @@ export interface PlaywrightTestArgs {
    *
    */
   request: APIRequestContext;
-  agent: PageAgent;
+  /**
+   * Mounts a component story and returns a [Locator](https://playwright.dev/docs/api/class-locator) pointing to the
+   * root element the story was rendered into. Scope your queries from the returned locator:
+   * `component.getByRole('button')`, not `page.getByRole('button')`.
+   *
+   * A **story** is a small wrapper component that embeds the component under test in one specific scenario: hard-coded
+   * props, mock data, providers, recorded callbacks. Stories are rendered by a **gallery** page that you implement and
+   * serve at [testOptions.baseURL](https://playwright.dev/docs/api/class-testoptions#test-options-base-url). The
+   * gallery exposes `window.mount(params)` and `window.unmount()` functions that render a story into its root element.
+   * Each call to [fixtures.mount(storyId[, props])](https://playwright.dev/docs/api/class-fixtures#fixtures-mount)
+   * navigates to [testOptions.baseURL](https://playwright.dev/docs/api/class-testoptions#test-options-base-url) and
+   * calls `window.mount()` with the story id and props, so tests are fully isolated from each other.
+   *
+   * **Usage**
+   *
+   * ```js
+   * test('click should expand', async ({ mount }) => {
+   *   const component = await mount('components/Expandable/Stateful');
+   *   await component.getByRole('button').click();
+   *   await expect(component.getByTestId('expanded')).toHaveValue('true');
+   * });
+   * ```
+   *
+   * Pass the story type as a template argument to type-check the props:
+   *
+   * ```js
+   * import type { WithTitle } from './Button.story';
+   *
+   * test('renders the title', async ({ mount }) => {
+   *   const component = await mount<typeof WithTitle>('Button/WithTitle', { title: 'Hello' });
+   *   await expect(component).toContainText('Hello');
+   * });
+   * ```
+   *
+   * The returned locator is augmented with two methods:
+   * - `update(props)` - re-renders the same story with new props without remounting, preserving component state;
+   * - `unmount()` - unmounts the story.
+   * @param storyId Identifier of the story to mount, as resolved by the gallery page. Conventionally, the story file path plus the
+   * exported story name, for example `'components/Button/Primary'`.
+   * @param props Optional plain, serializable props passed to the story.
+   */
+  mount: <Story = never, Id extends StoryId = StoryId>(storyId: Id, props?: MountProps<Story, Id>) => Promise<Locator & { update(props?: MountProps<Story, Id>): Promise<void>, unmount(): Promise<void> }>;
 }
 
 type ExcludeProps<A, B> = {
@@ -7751,7 +8233,7 @@ export type PlaywrightTestConfig<TestArgs = {}, WorkerArgs = {}> = Config<Playwr
 
 // Use the global URLPattern type if available (Node.js 22+, modern browsers),
 // otherwise fall back to `never` so it disappears from union types.
-type URLPattern = typeof globalThis extends { URLPattern: infer T } ? T : never;
+type URLPattern = typeof globalThis extends { URLPattern: new (...args: any) => infer T } ? T : never;
 type AsymmetricMatcher = Record<string, any>;
 
 interface AsymmetricMatchers {
@@ -7952,6 +8434,34 @@ interface GenericAssertions<R> {
    *
    */
   not: GenericAssertions<R>;
+  /**
+   * Use `resolves` to unwrap the value of a fulfilled promise so any other matcher can be chained. If the promise is
+   * rejected the assertion fails.
+   *
+   * For example, this code tests that the promise resolves and that the resulting value is `'lemon'`:
+   *
+   * ```js
+   * test('resolves to lemon', async () => {
+   *   await expect(Promise.resolve('lemon')).resolves.toBe('lemon');
+   * });
+   * ```
+   *
+   */
+  resolves: GenericAssertions<R>;
+  /**
+   * Use `.rejects` to unwrap the reason of a rejected promise so any other matcher can be chained. If the promise is
+   * fulfilled the assertion fails.
+   *
+   * For example, this code tests that the promise rejects with reason `'octopus'`:
+   *
+   * ```js
+   * test('rejects to octopus', async () => {
+   *   await expect(Promise.reject(new Error('octopus'))).rejects.toThrow('octopus');
+   * });
+   * ```
+   *
+   */
+  rejects: GenericAssertions<R>;
   /**
    * Compares value with
    * [`expected`](https://playwright.dev/docs/api/class-genericassertions#generic-assertions-to-be-option-expected) by
@@ -8418,1056 +8928,6 @@ type FunctionAssertions = {
   toPass(options?: { timeout?: number, intervals?: number[] }): Promise<void>;
 };
 
-type CSSStyleProperties = { [k in Exclude<keyof CSSStyleDeclaration, 'parentRule' | number>]?: CSSStyleDeclaration[k] extends Function ? never : CSSStyleDeclaration[k] };
-
-/**
- * The [LocatorAssertions](https://playwright.dev/docs/api/class-locatorassertions) class provides assertion methods
- * that can be used to make assertions about the [Locator](https://playwright.dev/docs/api/class-locator) state in the
- * tests.
- *
- * ```js
- * import { test, expect } from '@playwright/test';
- *
- * test('status becomes submitted', async ({ page }) => {
- *   // ...
- *   await page.getByRole('button').click();
- *   await expect(page.locator('.status')).toHaveText('Submitted');
- * });
- * ```
- *
- */
-interface LocatorAssertions {
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) resolves to an element with the given computed
-   * CSS style.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('button');
-   * await expect(locator).toHaveCSS('display', 'flex');
-   * ```
-   *
-   * @param name CSS property name.
-   * @param value CSS property value.
-   * @param options
-   */
-  toHaveCSS(name: string, value: string|RegExp, options?: { timeout?: number }): Promise<void>;
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) resolves to an element with the given computed
-   * CSS properties. Only the listed properties are checked.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('button');
-   * await expect(locator).toHaveCSS({
-   *   display: 'flex',
-   *   backgroundColor: 'rgb(255, 0, 0)'
-   * });
-   * ```
-   *
-   * @param styles CSS properties object. See
-   * [CSSStyleProperties](https://developer.mozilla.org/en-US/docs/Web/API/CSSStyleProperties) for available properties.
-   * @param options
-   */
-  toHaveCSS(values: CSSStyleProperties, options?: { timeout?: number }): Promise<void>;
-  /**
-   * Ensures that [Locator](https://playwright.dev/docs/api/class-locator) points to an element that is
-   * [connected](https://developer.mozilla.org/en-US/docs/Web/API/Node/isConnected) to a Document or a ShadowRoot.
-   *
-   * **Usage**
-   *
-   * ```js
-   * await expect(page.getByText('Hidden text')).toBeAttached();
-   * ```
-   *
-   * @param options
-   */
-  toBeAttached(options?: {
-    attached?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to a checked input.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByLabel('Subscribe to newsletter');
-   * await expect(locator).toBeChecked();
-   * ```
-   *
-   * @param options
-   */
-  toBeChecked(options?: {
-    /**
-     * Provides state to assert for. Asserts for input to be checked by default. This option can't be used when
-     * [`indeterminate`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-be-checked-option-indeterminate)
-     * is set to true.
-     */
-    checked?: boolean;
-
-    /**
-     * Asserts that the element is in the indeterminate (mixed) state. Only supported for checkboxes and radio buttons.
-     * This option can't be true when
-     * [`checked`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-be-checked-option-checked)
-     * is provided.
-     */
-    indeterminate?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to a disabled element. Element is
-   * disabled if it has "disabled" attribute or is disabled via
-   * ['aria-disabled'](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-disabled). Note
-   * that only native control elements such as HTML `button`, `input`, `select`, `textarea`, `option`, `optgroup` can be
-   * disabled by setting "disabled" attribute. "disabled" attribute on other elements is ignored by the browser.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('button.submit');
-   * await expect(locator).toBeDisabled();
-   * ```
-   *
-   * @param options
-   */
-  toBeDisabled(options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an editable element.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('textbox');
-   * await expect(locator).toBeEditable();
-   * ```
-   *
-   * @param options
-   */
-  toBeEditable(options?: {
-    editable?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an empty editable element or to a
-   * DOM node that has no text.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('div.warning');
-   * await expect(locator).toBeEmpty();
-   * ```
-   *
-   * @param options
-   */
-  toBeEmpty(options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an enabled element.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('button.submit');
-   * await expect(locator).toBeEnabled();
-   * ```
-   *
-   * @param options
-   */
-  toBeEnabled(options?: {
-    enabled?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to a focused DOM node.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('textbox');
-   * await expect(locator).toBeFocused();
-   * ```
-   *
-   * @param options
-   */
-  toBeFocused(options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures that [Locator](https://playwright.dev/docs/api/class-locator) either does not resolve to any DOM node, or
-   * resolves to a [non-visible](https://playwright.dev/docs/actionability#visible) one.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('.my-element');
-   * await expect(locator).toBeHidden();
-   * ```
-   *
-   * @param options
-   */
-  toBeHidden(options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element that intersects viewport,
-   * according to the
-   * [intersection observer API](https://developer.mozilla.org/en-US/docs/Web/API/Intersection_Observer_API).
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('button');
-   * // Make sure at least some part of element intersects viewport.
-   * await expect(locator).toBeInViewport();
-   * // Make sure element is fully outside of viewport.
-   * await expect(locator).not.toBeInViewport();
-   * // Make sure that at least half of the element intersects viewport.
-   * await expect(locator).toBeInViewport({ ratio: 0.5 });
-   * ```
-   *
-   * @param options
-   */
-  toBeInViewport(options?: {
-    /**
-     * The minimal ratio of the element to intersect viewport. If equals to `0`, then element should intersect viewport at
-     * any positive ratio. Defaults to `0`.
-     */
-    ratio?: number;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures that [Locator](https://playwright.dev/docs/api/class-locator) points to an attached and
-   * [visible](https://playwright.dev/docs/actionability#visible) DOM node.
-   *
-   * To check that at least one element from the list is visible, use
-   * [locator.first()](https://playwright.dev/docs/api/class-locator#locator-first).
-   *
-   * **Usage**
-   *
-   * ```js
-   * // A specific element is visible.
-   * await expect(page.getByText('Welcome')).toBeVisible();
-   *
-   * // At least one item in the list is visible.
-   * await expect(page.getByTestId('todo-item').first()).toBeVisible();
-   *
-   * // At least one of the two elements is visible, possibly both.
-   * await expect(
-   *     page.getByRole('button', { name: 'Sign in' })
-   *         .or(page.getByRole('button', { name: 'Sign up' }))
-   *         .first()
-   * ).toBeVisible();
-   * ```
-   *
-   * @param options
-   */
-  toBeVisible(options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-
-    visible?: boolean;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given CSS classes.
-   * All classes from the asserted value, separated by spaces, must be present in the
-   * [Element.classList](https://developer.mozilla.org/en-US/docs/Web/API/Element/classList) in any order.
-   *
-   * **Usage**
-   *
-   * ```html
-   * <div class='middle selected row' id='component'></div>
-   * ```
-   *
-   * ```js
-   * const locator = page.locator('#component');
-   * await expect(locator).toContainClass('middle selected row');
-   * await expect(locator).toContainClass('selected');
-   * await expect(locator).toContainClass('row middle');
-   * ```
-   *
-   * When an array is passed, the method asserts that the list of elements located matches the corresponding list of
-   * expected class lists. Each element's class attribute is matched against the corresponding class in the array:
-   *
-   * ```html
-   * <div class='list'>
-   *   <div class='component inactive'></div>
-   *   <div class='component active'></div>
-   *   <div class='component inactive'></div>
-   * </div>
-   * ```
-   *
-   * ```js
-   * const locator = page.locator('.list > .component');
-   * await expect(locator).toContainClass(['inactive', 'active', 'inactive']);
-   * ```
-   *
-   * @param expected A string containing expected class names, separated by spaces, or a list of such strings to assert multiple
-   * elements.
-   * @param options
-   */
-  toContainClass(expected: string|ReadonlyArray<string>, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element that contains the given
-   * text. All nested elements will be considered when computing the text content of the element. You can use regular
-   * expressions for the value as well.
-   *
-   * **Details**
-   *
-   * When `expected` parameter is a string, Playwright will normalize whitespaces and line breaks both in the actual
-   * text and in the expected string before matching. When regular expression is used, the actual text is matched as is.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('.title');
-   * await expect(locator).toContainText('substring');
-   * await expect(locator).toContainText(/\d messages/);
-   * ```
-   *
-   * If you pass an array as an expected value, the expectations are:
-   * 1. Locator resolves to a list of elements.
-   * 1. Elements from a **subset** of this list contain text from the expected array, respectively.
-   * 1. The matching subset of elements has the same order as the expected array.
-   * 1. Each text value from the expected array is matched by some element from the list.
-   *
-   * For example, consider the following list:
-   *
-   * ```html
-   * <ul>
-   *   <li>Item Text 1</li>
-   *   <li>Item Text 2</li>
-   *   <li>Item Text 3</li>
-   * </ul>
-   * ```
-   *
-   * Let's see how we can use the assertion:
-   *
-   * ```js
-   * // ✓ Contains the right items in the right order
-   * await expect(page.locator('ul > li')).toContainText(['Text 1', 'Text 3']);
-   *
-   * // ✖ Wrong order
-   * await expect(page.locator('ul > li')).toContainText(['Text 3', 'Text 2']);
-   *
-   * // ✖ No item contains this text
-   * await expect(page.locator('ul > li')).toContainText(['Some 33']);
-   *
-   * // ✖ Locator points to the outer list element, not to the list items
-   * await expect(page.locator('ul')).toContainText(['Text 3']);
-   * ```
-   *
-   * @param expected Expected substring or RegExp or a list of those.
-   * @param options
-   */
-  toContainText(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
-    /**
-     * Whether to perform case-insensitive match.
-     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-contain-text-option-ignore-case)
-     * option takes precedence over the corresponding regular expression flag if specified.
-     */
-    ignoreCase?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-
-    /**
-     * Whether to use `element.innerText` instead of `element.textContent` when retrieving DOM node text.
-     */
-    useInnerText?: boolean;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
-   * [accessible description](https://w3c.github.io/accname/#dfn-accessible-description).
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByTestId('save-button');
-   * await expect(locator).toHaveAccessibleDescription('Save results to disk');
-   * ```
-   *
-   * @param description Expected accessible description.
-   * @param options
-   */
-  toHaveAccessibleDescription(description: string|RegExp, options?: {
-    /**
-     * Whether to perform case-insensitive match.
-     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-description-option-ignore-case)
-     * option takes precedence over the corresponding regular expression flag if specified.
-     */
-    ignoreCase?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
-   * [aria errormessage](https://w3c.github.io/aria/#aria-errormessage).
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByTestId('username-input');
-   * await expect(locator).toHaveAccessibleErrorMessage('Username is required.');
-   * ```
-   *
-   * @param errorMessage Expected accessible error message.
-   * @param options
-   */
-  toHaveAccessibleErrorMessage(errorMessage: string|RegExp, options?: {
-    /**
-     * Whether to perform case-insensitive match.
-     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message-option-ignore-case)
-     * option takes precedence over the corresponding regular expression flag if specified.
-     */
-    ignoreCase?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
-   * [accessible name](https://w3c.github.io/accname/#dfn-accessible-name).
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByTestId('save-button');
-   * await expect(locator).toHaveAccessibleName('Save to disk');
-   * ```
-   *
-   * @param name Expected accessible name.
-   * @param options
-   */
-  toHaveAccessibleName(name: string|RegExp, options?: {
-    /**
-     * Whether to perform case-insensitive match.
-     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-name-option-ignore-case)
-     * option takes precedence over the corresponding regular expression flag if specified.
-     */
-    ignoreCase?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given attribute.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('input');
-   * await expect(locator).toHaveAttribute('type', 'text');
-   * ```
-   *
-   * @param name Attribute name.
-   * @param value Expected attribute value.
-   * @param options
-   */
-  toHaveAttribute(name: string, value: string|RegExp, options?: {
-    /**
-     * Whether to perform case-insensitive match.
-     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-attribute-option-ignore-case)
-     * option takes precedence over the corresponding regular expression flag if specified.
-     */
-    ignoreCase?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given attribute. The
-   * method will assert attribute presence.
-   *
-   * ```js
-   * const locator = page.locator('input');
-   * // Assert attribute existence.
-   * await expect(locator).toHaveAttribute('disabled');
-   * await expect(locator).not.toHaveAttribute('open');
-   * ```
-   *
-   * @param name Attribute name.
-   * @param options
-   */
-  toHaveAttribute(name: string, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given CSS classes.
-   * When a string is provided, it must fully match the element's `class` attribute. To match individual classes use
-   * [expect(locator).toContainClass(expected[, options])](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-contain-class).
-   *
-   * **Usage**
-   *
-   * ```html
-   * <div class='middle selected row' id='component'></div>
-   * ```
-   *
-   * ```js
-   * const locator = page.locator('#component');
-   * await expect(locator).toHaveClass('middle selected row');
-   * await expect(locator).toHaveClass(/(^|\s)selected(\s|$)/);
-   * ```
-   *
-   * When an array is passed, the method asserts that the list of elements located matches the corresponding list of
-   * expected class values. Each element's class attribute is matched against the corresponding string or regular
-   * expression in the array:
-   *
-   * ```js
-   * const locator = page.locator('.list > .component');
-   * await expect(locator).toHaveClass(['component', 'component selected', 'component']);
-   * ```
-   *
-   * @param expected Expected class or RegExp or a list of those.
-   * @param options
-   */
-  toHaveClass(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) resolves to an exact number of DOM nodes.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const list = page.locator('list > .component');
-   * await expect(list).toHaveCount(3);
-   * ```
-   *
-   * @param count Expected count.
-   * @param options
-   */
-  toHaveCount(count: number, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with the given DOM Node
-   * ID.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('textbox');
-   * await expect(locator).toHaveId('lastname');
-   * ```
-   *
-   * @param id Element id.
-   * @param options
-   */
-  toHaveId(id: string|RegExp, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given JavaScript
-   * property. Note that this property can be of a primitive type as well as a plain serializable JavaScript object.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('.component');
-   * await expect(locator).toHaveJSProperty('loaded', true);
-   * ```
-   *
-   * @param name Property name.
-   * @param value Property value.
-   * @param options
-   */
-  toHaveJSProperty(name: string, value: any, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
-   * [ARIA role](https://www.w3.org/TR/wai-aria-1.2/#roles).
-   *
-   * Note that role is matched as a string, disregarding the ARIA role hierarchy. For example, asserting  a superclass
-   * role `"checkbox"` on an element with a subclass role `"switch"` will fail.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByTestId('save-button');
-   * await expect(locator).toHaveRole('button');
-   * ```
-   *
-   * @param role Required aria role.
-   * @param options
-   */
-  toHaveRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * This function will wait until two consecutive locator screenshots yield the same result, and then compare the last
-   * screenshot with the expectation.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('button');
-   * await expect(locator).toHaveScreenshot('image.png');
-   * ```
-   *
-   * Note that screenshot assertions only work with Playwright test runner.
-   * @param name Snapshot name.
-   * @param options
-   */
-  toHaveScreenshot(name: string|ReadonlyArray<string>, options?: {
-    /**
-     * When set to `"disabled"`, stops CSS animations, CSS transitions and Web Animations. Animations get different
-     * treatment depending on their duration:
-     * - finite animations are fast-forwarded to completion, so they'll fire `transitionend` event.
-     * - infinite animations are canceled to initial state, and then played over after the screenshot.
-     *
-     * Defaults to `"disabled"` that disables animations.
-     */
-    animations?: "disabled"|"allow";
-
-    /**
-     * When set to `"hide"`, screenshot will hide text caret. When set to `"initial"`, text caret behavior will not be
-     * changed.  Defaults to `"hide"`.
-     */
-    caret?: "hide"|"initial";
-
-    /**
-     * Specify locators that should be masked when the screenshot is taken. Masked elements will be overlaid with a pink
-     * box `#FF00FF` (customized by
-     * [`maskColor`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-1-option-mask-color))
-     * that completely covers its bounding box. The mask is also applied to invisible elements, see
-     * [Matching only visible elements](https://playwright.dev/docs/locators#matching-only-visible-elements) to disable that.
-     */
-    mask?: Array<Locator>;
-
-    /**
-     * Specify the color of the overlay box for masked elements, in
-     * [CSS color format](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value). Default color is pink `#FF00FF`.
-     */
-    maskColor?: string;
-
-    /**
-     * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
-     */
-    maxDiffPixelRatio?: number;
-
-    /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
-     */
-    maxDiffPixels?: number;
-
-    /**
-     * Hides default white background and allows capturing screenshots with transparency. Not applicable to `jpeg` images.
-     * Defaults to `false`.
-     */
-    omitBackground?: boolean;
-
-    /**
-     * When set to `"css"`, screenshot will have a single pixel per each css pixel on the page. For high-dpi devices, this
-     * will keep screenshots small. Using `"device"` option will produce a single pixel per each device pixel, so
-     * screenshots of high-dpi devices will be twice as large or even larger.
-     *
-     * Defaults to `"css"`.
-     */
-    scale?: "css"|"device";
-
-    /**
-     * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic
-     * elements, make elements invisible or change their properties to help you creating repeatable screenshots. This
-     * stylesheet pierces the Shadow DOM and applies to the inner frames.
-     */
-    stylePath?: string|Array<string>;
-
-    /**
-     * An acceptable perceived color difference in the [YIQ color space](https://en.wikipedia.org/wiki/YIQ) between the
-     * same pixel in compared images, between zero (strict) and one (lax), default is configurable with
-     * `TestConfig.expect`. Defaults to `0.2`.
-     */
-    threshold?: number;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * This function will wait until two consecutive locator screenshots yield the same result, and then compare the last
-   * screenshot with the expectation.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.getByRole('button');
-   * await expect(locator).toHaveScreenshot();
-   * ```
-   *
-   * Note that screenshot assertions only work with Playwright test runner.
-   * @param options
-   */
-  toHaveScreenshot(options?: {
-    /**
-     * When set to `"disabled"`, stops CSS animations, CSS transitions and Web Animations. Animations get different
-     * treatment depending on their duration:
-     * - finite animations are fast-forwarded to completion, so they'll fire `transitionend` event.
-     * - infinite animations are canceled to initial state, and then played over after the screenshot.
-     *
-     * Defaults to `"disabled"` that disables animations.
-     */
-    animations?: "disabled"|"allow";
-
-    /**
-     * When set to `"hide"`, screenshot will hide text caret. When set to `"initial"`, text caret behavior will not be
-     * changed.  Defaults to `"hide"`.
-     */
-    caret?: "hide"|"initial";
-
-    /**
-     * Specify locators that should be masked when the screenshot is taken. Masked elements will be overlaid with a pink
-     * box `#FF00FF` (customized by
-     * [`maskColor`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-2-option-mask-color))
-     * that completely covers its bounding box. The mask is also applied to invisible elements, see
-     * [Matching only visible elements](https://playwright.dev/docs/locators#matching-only-visible-elements) to disable that.
-     */
-    mask?: Array<Locator>;
-
-    /**
-     * Specify the color of the overlay box for masked elements, in
-     * [CSS color format](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value). Default color is pink `#FF00FF`.
-     */
-    maskColor?: string;
-
-    /**
-     * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
-     */
-    maxDiffPixelRatio?: number;
-
-    /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
-     */
-    maxDiffPixels?: number;
-
-    /**
-     * Hides default white background and allows capturing screenshots with transparency. Not applicable to `jpeg` images.
-     * Defaults to `false`.
-     */
-    omitBackground?: boolean;
-
-    /**
-     * When set to `"css"`, screenshot will have a single pixel per each css pixel on the page. For high-dpi devices, this
-     * will keep screenshots small. Using `"device"` option will produce a single pixel per each device pixel, so
-     * screenshots of high-dpi devices will be twice as large or even larger.
-     *
-     * Defaults to `"css"`.
-     */
-    scale?: "css"|"device";
-
-    /**
-     * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic
-     * elements, make elements invisible or change their properties to help you creating repeatable screenshots. This
-     * stylesheet pierces the Shadow DOM and applies to the inner frames.
-     */
-    stylePath?: string|Array<string>;
-
-    /**
-     * An acceptable perceived color difference in the [YIQ color space](https://en.wikipedia.org/wiki/YIQ) between the
-     * same pixel in compared images, between zero (strict) and one (lax), default is configurable with
-     * `TestConfig.expect`. Defaults to `0.2`.
-     */
-    threshold?: number;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with the given text. All
-   * nested elements will be considered when computing the text content of the element. You can use regular expressions
-   * for the value as well.
-   *
-   * **Details**
-   *
-   * When `expected` parameter is a string, Playwright will normalize whitespaces and line breaks both in the actual
-   * text and in the expected string before matching. When regular expression is used, the actual text is matched as is.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('.title');
-   * await expect(locator).toHaveText(/Welcome, Test User/);
-   * await expect(locator).toHaveText(/Welcome, .*\/);
-   * ```
-   *
-   * If you pass an array as an expected value, the expectations are:
-   * 1. Locator resolves to a list of elements.
-   * 1. The number of elements equals the number of expected values in the array.
-   * 1. Elements from the list have text matching expected array values, one by one, in order.
-   *
-   * For example, consider the following list:
-   *
-   * ```html
-   * <ul>
-   *   <li>Text 1</li>
-   *   <li>Text 2</li>
-   *   <li>Text 3</li>
-   * </ul>
-   * ```
-   *
-   * Let's see how we can use the assertion:
-   *
-   * ```js
-   * // ✓ Has the right items in the right order
-   * await expect(page.locator('ul > li')).toHaveText(['Text 1', 'Text 2', 'Text 3']);
-   *
-   * // ✖ Wrong order
-   * await expect(page.locator('ul > li')).toHaveText(['Text 3', 'Text 2', 'Text 1']);
-   *
-   * // ✖ Last item does not match
-   * await expect(page.locator('ul > li')).toHaveText(['Text 1', 'Text 2', 'Text']);
-   *
-   * // ✖ Locator points to the outer list element, not to the list items
-   * await expect(page.locator('ul')).toHaveText(['Text 1', 'Text 2', 'Text 3']);
-   * ```
-   *
-   * @param expected Expected string or RegExp or a list of those.
-   * @param options
-   */
-  toHaveText(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
-    /**
-     * Whether to perform case-insensitive match.
-     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-text-option-ignore-case)
-     * option takes precedence over the corresponding regular expression flag if specified.
-     */
-    ignoreCase?: boolean;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-
-    /**
-     * Whether to use `element.innerText` instead of `element.textContent` when retrieving DOM node text.
-     */
-    useInnerText?: boolean;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with the given input
-   * value. You can use regular expressions for the value as well.
-   *
-   * **Usage**
-   *
-   * ```js
-   * const locator = page.locator('input[type=number]');
-   * await expect(locator).toHaveValue(/[0-9]/);
-   * ```
-   *
-   * @param value Expected value.
-   * @param options
-   */
-  toHaveValue(value: string|RegExp, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to multi-select/combobox (i.e. a
-   * `select` with the `multiple` attribute) and the specified values are selected.
-   *
-   * **Usage**
-   *
-   * For example, given the following element:
-   *
-   * ```html
-   * <select id="favorite-colors" multiple>
-   *   <option value="R">Red</option>
-   *   <option value="G">Green</option>
-   *   <option value="B">Blue</option>
-   * </select>
-   * ```
-   *
-   * ```js
-   * const locator = page.locator('id=favorite-colors');
-   * await locator.selectOption(['R', 'G']);
-   * await expect(locator).toHaveValues([/R/, /G/]);
-   * ```
-   *
-   * @param values Expected options currently selected.
-   * @param options
-   */
-  toHaveValues(values: ReadonlyArray<string|RegExp>, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Asserts that the target element matches the given [accessibility snapshot](https://playwright.dev/docs/aria-snapshots).
-   *
-   * **Usage**
-   *
-   * ```js
-   * await page.goto('https://demo.playwright.dev/todomvc/');
-   * await expect(page.locator('body')).toMatchAriaSnapshot(`
-   *   - heading "todos"
-   *   - textbox "What needs to be done?"
-   * `);
-   * ```
-   *
-   * @param expected
-   * @param options
-   */
-  toMatchAriaSnapshot(expected: string, options?: {
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Asserts that the target element matches the given [accessibility snapshot](https://playwright.dev/docs/aria-snapshots).
-   *
-   * Snapshot is stored in a separate `.aria.yml` file in a location configured by
-   * `expect.toMatchAriaSnapshot.pathTemplate` and/or `snapshotPathTemplate` properties in the configuration file.
-   *
-   * **Usage**
-   *
-   * ```js
-   * await expect(page.locator('body')).toMatchAriaSnapshot();
-   * await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'body.aria.yml' });
-   * ```
-   *
-   * @param options
-   */
-  toMatchAriaSnapshot(options?: {
-    /**
-     * Name of the snapshot to store in the snapshot folder corresponding to this test. Generates sequential names if not
-     * specified.
-     */
-    name?: string;
-
-    /**
-     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
-     */
-    timeout?: number;
-  }): Promise<void>;
-
-  /**
-   * Makes the assertion check for the opposite condition.
-   *
-   * **Usage**
-   *
-   * For example, this code tests that the Locator doesn't contain text `"error"`:
-   *
-   * ```js
-   * await expect(locator).not.toContainText('error');
-   * ```
-   *
-   */
-  not: LocatorAssertions;
-}
-
 type BaseMatchers<R, T> = GenericAssertions<R> & PlaywrightTest.Matchers<R, T> & SnapshotAssertions;
 type AllowedGenericMatchers<R, T> = PlaywrightTest.Matchers<R, T> & Pick<GenericAssertions<R>, 'toBe' | 'toBeDefined' | 'toBeFalsy' | 'toBeNull' | 'toBeTruthy' | 'toBeUndefined'>;
 
@@ -9562,7 +9022,7 @@ type PollMatchers<R, T, ExtendedMatchers> = {
 
 export type Expect<ExtendedMatchers = {}> = {
   <T = unknown>(actual: T, messageOrOptions?: string | { message?: string }): MakeMatchers<void, T, ExtendedMatchers>;
-  soft: <T = unknown>(actual: T, messageOrOptions?: string | { message?: string }) => MakeMatchers<void, T, ExtendedMatchers>;
+  soft: Expect<ExtendedMatchers>;
   poll: <T = unknown>(actual: () => T | Promise<T>, messageOrOptions?: string | { message?: string, timeout?: number, intervals?: number[] }) => PollMatchers<Promise<void>, T, ExtendedMatchers>;
   extend<MoreMatchers extends Record<string, (this: ExpectMatcherState, receiver: any, ...args: any[]) => MatcherReturnType | Promise<MatcherReturnType>>>(matchers: MoreMatchers): Expect<ExtendedMatchers & MoreMatchers>;
   configure: (configuration: {
@@ -9624,7 +9084,6 @@ export function mergeExpects<List extends any[]>(...expects: List): MergedExpect
 export { };
 
 
-
 /**
  * The [APIResponseAssertions](https://playwright.dev/docs/api/class-apiresponseassertions) class provides assertion
  * methods that can be used to make assertions about the
@@ -9670,6 +9129,1269 @@ interface APIResponseAssertions {
 }
 
 /**
+ * The [LocatorAssertions](https://playwright.dev/docs/api/class-locatorassertions) class provides assertion methods
+ * that can be used to make assertions about the [Locator](https://playwright.dev/docs/api/class-locator) state in the
+ * tests.
+ *
+ * ```js
+ * import { test, expect } from '@playwright/test';
+ *
+ * test('status becomes submitted', async ({ page }) => {
+ *   // ...
+ *   await page.getByRole('button').click();
+ *   await expect(page.locator('.status')).toHaveText('Submitted');
+ * });
+ * ```
+ *
+ */
+interface LocatorAssertions {
+  /**
+   * Ensures that [Locator](https://playwright.dev/docs/api/class-locator) points to an element that is
+   * [connected](https://developer.mozilla.org/en-US/docs/Web/API/Node/isConnected) to a Document or a ShadowRoot.
+   *
+   * **Usage**
+   *
+   * ```js
+   * await expect(page.getByText('Hidden text')).toBeAttached();
+   * ```
+   *
+   * @param options
+   */
+  toBeAttached(options?: {
+    attached?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to a checked input.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByLabel('Subscribe to newsletter');
+   * await expect(locator).toBeChecked();
+   * ```
+   *
+   * @param options
+   */
+  toBeChecked(options?: {
+    /**
+     * Provides state to assert for. Asserts for input to be checked by default. This option can't be used when
+     * [`indeterminate`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-be-checked-option-indeterminate)
+     * is set to true.
+     */
+    checked?: boolean;
+
+    /**
+     * Asserts that the element is in the indeterminate (mixed) state. Only supported for checkboxes and radio buttons.
+     * This option can't be true when
+     * [`checked`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-be-checked-option-checked)
+     * is provided.
+     */
+    indeterminate?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to a disabled element. Element is
+   * disabled if it has "disabled" attribute or is disabled via
+   * ['aria-disabled'](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-disabled). Note
+   * that only native control elements such as HTML `button`, `input`, `select`, `textarea`, `option`, `optgroup` can be
+   * disabled by setting "disabled" attribute. "disabled" attribute on other elements is ignored by the browser.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('button.submit');
+   * await expect(locator).toBeDisabled();
+   * ```
+   *
+   * @param options
+   */
+  toBeDisabled(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an editable element.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('textbox');
+   * await expect(locator).toBeEditable();
+   * ```
+   *
+   * @param options
+   */
+  toBeEditable(options?: {
+    editable?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an empty editable element or to a
+   * DOM node that has no text.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('div.warning');
+   * await expect(locator).toBeEmpty();
+   * ```
+   *
+   * @param options
+   */
+  toBeEmpty(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an enabled element.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('button.submit');
+   * await expect(locator).toBeEnabled();
+   * ```
+   *
+   * @param options
+   */
+  toBeEnabled(options?: {
+    enabled?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to a focused DOM node.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('textbox');
+   * await expect(locator).toBeFocused();
+   * ```
+   *
+   * @param options
+   */
+  toBeFocused(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures that [Locator](https://playwright.dev/docs/api/class-locator) either does not resolve to any DOM node, or
+   * resolves to a [non-visible](https://playwright.dev/docs/actionability#visible) one.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('.my-element');
+   * await expect(locator).toBeHidden();
+   * ```
+   *
+   * @param options
+   */
+  toBeHidden(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element that intersects viewport,
+   * according to the
+   * [intersection observer API](https://developer.mozilla.org/en-US/docs/Web/API/Intersection_Observer_API).
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('button');
+   * // Make sure at least some part of element intersects viewport.
+   * await expect(locator).toBeInViewport();
+   * // Make sure element is fully outside of viewport.
+   * await expect(locator).not.toBeInViewport();
+   * // Make sure that at least half of the element intersects viewport.
+   * await expect(locator).toBeInViewport({ ratio: 0.5 });
+   * ```
+   *
+   * @param options
+   */
+  toBeInViewport(options?: {
+    /**
+     * The minimal ratio of the element to intersect viewport. If equals to `0`, then element should intersect viewport at
+     * any positive ratio. Defaults to `0`.
+     */
+    ratio?: number;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures that [Locator](https://playwright.dev/docs/api/class-locator) points to an attached and
+   * [visible](https://playwright.dev/docs/actionability#visible) DOM node.
+   *
+   * To check that at least one element from the list is visible, use
+   * [locator.first()](https://playwright.dev/docs/api/class-locator#locator-first).
+   *
+   * **Usage**
+   *
+   * ```js
+   * // A specific element is visible.
+   * await expect(page.getByText('Welcome')).toBeVisible();
+   *
+   * // At least one item in the list is visible.
+   * await expect(page.getByTestId('todo-item').first()).toBeVisible();
+   *
+   * // At least one of the two elements is visible, possibly both.
+   * await expect(
+   *     page.getByRole('button', { name: 'Sign in' })
+   *         .or(page.getByRole('button', { name: 'Sign up' }))
+   *         .first()
+   * ).toBeVisible();
+   * ```
+   *
+   * @param options
+   */
+  toBeVisible(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+
+    visible?: boolean;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given CSS classes.
+   * All classes from the asserted value, separated by spaces, must be present in the
+   * [Element.classList](https://developer.mozilla.org/en-US/docs/Web/API/Element/classList) in any order.
+   *
+   * **Usage**
+   *
+   * ```html
+   * <div class='middle selected row' id='component'></div>
+   * ```
+   *
+   * ```js
+   * const locator = page.locator('#component');
+   * await expect(locator).toContainClass('middle selected row');
+   * await expect(locator).toContainClass('selected');
+   * await expect(locator).toContainClass('row middle');
+   * ```
+   *
+   * When an array is passed, the method asserts that the list of elements located matches the corresponding list of
+   * expected class lists. Each element's class attribute is matched against the corresponding class in the array:
+   *
+   * ```html
+   * <div class='list'>
+   *   <div class='component inactive'></div>
+   *   <div class='component active'></div>
+   *   <div class='component inactive'></div>
+   * </div>
+   * ```
+   *
+   * ```js
+   * const locator = page.locator('.list > .component');
+   * await expect(locator).toContainClass(['inactive', 'active', 'inactive']);
+   * ```
+   *
+   * @param expected A string containing expected class names, separated by spaces, or a list of such strings to assert multiple
+   * elements.
+   * @param options
+   */
+  toContainClass(expected: string|ReadonlyArray<string>, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element that contains the given
+   * text. All nested elements will be considered when computing the text content of the element. You can use regular
+   * expressions for the value as well.
+   *
+   * **Details**
+   *
+   * When `expected` parameter is a string, Playwright will normalize whitespaces and line breaks both in the actual
+   * text and in the expected string before matching. When regular expression is used, the actual text is matched as is.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('.title');
+   * await expect(locator).toContainText('substring');
+   * await expect(locator).toContainText(/\d messages/);
+   * ```
+   *
+   * If you pass an array as an expected value, the expectations are:
+   * 1. Locator resolves to a list of elements.
+   * 1. Elements from a **subset** of this list contain text from the expected array, respectively.
+   * 1. The matching subset of elements has the same order as the expected array.
+   * 1. Each text value from the expected array is matched by some element from the list.
+   *
+   * For example, consider the following list:
+   *
+   * ```html
+   * <ul>
+   *   <li>Item Text 1</li>
+   *   <li>Item Text 2</li>
+   *   <li>Item Text 3</li>
+   * </ul>
+   * ```
+   *
+   * Let's see how we can use the assertion:
+   *
+   * ```js
+   * // ✓ Contains the right items in the right order
+   * await expect(page.locator('ul > li')).toContainText(['Text 1', 'Text 3']);
+   *
+   * // ✖ Wrong order
+   * await expect(page.locator('ul > li')).toContainText(['Text 3', 'Text 2']);
+   *
+   * // ✖ No item contains this text
+   * await expect(page.locator('ul > li')).toContainText(['Some 33']);
+   *
+   * // ✖ Locator points to the outer list element, not to the list items
+   * await expect(page.locator('ul')).toContainText(['Text 3']);
+   * ```
+   *
+   * @param expected Expected substring or RegExp or a list of those.
+   * @param options
+   */
+  toContainText(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
+    /**
+     * Whether to perform case-insensitive match.
+     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-contain-text-option-ignore-case)
+     * option takes precedence over the corresponding regular expression flag if specified.
+     */
+    ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+
+    /**
+     * Whether to use `element.innerText` instead of `element.textContent` when retrieving DOM node text.
+     */
+    useInnerText?: boolean;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
+   * [accessible description](https://w3c.github.io/accname/#dfn-accessible-description).
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByTestId('save-button');
+   * await expect(locator).toHaveAccessibleDescription('Save results to disk');
+   * ```
+   *
+   * @param description Expected accessible description.
+   * @param options
+   */
+  toHaveAccessibleDescription(description: string|RegExp, options?: {
+    /**
+     * Whether to perform case-insensitive match.
+     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-description-option-ignore-case)
+     * option takes precedence over the corresponding regular expression flag if specified.
+     */
+    ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
+   * [aria errormessage](https://w3c.github.io/aria/#aria-errormessage).
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByTestId('username-input');
+   * await expect(locator).toHaveAccessibleErrorMessage('Username is required.');
+   * ```
+   *
+   * @param errorMessage Expected accessible error message.
+   * @param options
+   */
+  toHaveAccessibleErrorMessage(errorMessage: string|RegExp, options?: {
+    /**
+     * Whether to perform case-insensitive match.
+     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message-option-ignore-case)
+     * option takes precedence over the corresponding regular expression flag if specified.
+     */
+    ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
+   * [accessible name](https://w3c.github.io/accname/#dfn-accessible-name).
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByTestId('save-button');
+   * await expect(locator).toHaveAccessibleName('Save to disk');
+   * ```
+   *
+   * @param name Expected accessible name.
+   * @param options
+   */
+  toHaveAccessibleName(name: string|RegExp, options?: {
+    /**
+     * Whether to perform case-insensitive match.
+     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-name-option-ignore-case)
+     * option takes precedence over the corresponding regular expression flag if specified.
+     */
+    ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given attribute.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('input');
+   * await expect(locator).toHaveAttribute('type', 'text');
+   * ```
+   *
+   * @param name Attribute name.
+   * @param value Expected attribute value.
+   * @param options
+   */
+  toHaveAttribute(name: string, value: string|RegExp, options?: {
+    /**
+     * Whether to perform case-insensitive match.
+     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-attribute-option-ignore-case)
+     * option takes precedence over the corresponding regular expression flag if specified.
+     */
+    ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given attribute. The
+   * method will assert attribute presence.
+   *
+   * ```js
+   * const locator = page.locator('input');
+   * // Assert attribute existence.
+   * await expect(locator).toHaveAttribute('disabled');
+   * await expect(locator).not.toHaveAttribute('open');
+   * ```
+   *
+   * @param name Attribute name.
+   * @param options
+   */
+  toHaveAttribute(name: string, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given CSS classes.
+   * When a string is provided, it must fully match the element's `class` attribute. To match individual classes use
+   * [expect(locator).toContainClass(expected[, options])](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-contain-class).
+   *
+   * **Usage**
+   *
+   * ```html
+   * <div class='middle selected row' id='component'></div>
+   * ```
+   *
+   * ```js
+   * const locator = page.locator('#component');
+   * await expect(locator).toHaveClass('middle selected row');
+   * await expect(locator).toHaveClass(/(^|\s)selected(\s|$)/);
+   * ```
+   *
+   * When an array is passed, the method asserts that the list of elements located matches the corresponding list of
+   * expected class values. Each element's class attribute is matched against the corresponding string or regular
+   * expression in the array:
+   *
+   * ```js
+   * const locator = page.locator('.list > .component');
+   * await expect(locator).toHaveClass(['component', 'component selected', 'component']);
+   * ```
+   *
+   * @param expected Expected class or RegExp or a list of those.
+   * @param options
+   */
+  toHaveClass(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) resolves to an exact number of DOM nodes.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const list = page.locator('list > .component');
+   * await expect(list).toHaveCount(3);
+   * ```
+   *
+   * @param count Expected count.
+   * @param options
+   */
+  toHaveCount(count: number, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) resolves to an element with the given computed
+   * CSS style.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('button');
+   * await expect(locator).toHaveCSS('display', 'flex');
+   * ```
+   *
+   * @param name CSS property name.
+   * @param value CSS property value.
+   * @param options
+   */
+  toHaveCSS(name: string, value: string|RegExp, options?: {
+    /**
+     * Pseudo-element to read computed styles from.
+     */
+    pseudo?: "before"|"after";
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with the given DOM Node
+   * ID.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('textbox');
+   * await expect(locator).toHaveId('lastname');
+   * ```
+   *
+   * @param id Element id.
+   * @param options
+   */
+  toHaveId(id: string|RegExp, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with given JavaScript
+   * property. Note that this property can be of a primitive type as well as a plain serializable JavaScript object.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('.component');
+   * await expect(locator).toHaveJSProperty('loaded', true);
+   * ```
+   *
+   * @param name Property name.
+   * @param value Property value.
+   * @param options
+   */
+  toHaveJSProperty(name: string, value: any, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with a given
+   * [ARIA role](https://www.w3.org/TR/wai-aria-1.2/#roles).
+   *
+   * Note that role is matched as a string, disregarding the ARIA role hierarchy. For example, asserting  a superclass
+   * role `"checkbox"` on an element with a subclass role `"switch"` will fail.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByTestId('save-button');
+   * await expect(locator).toHaveRole('button');
+   * ```
+   *
+   * @param role Required aria role.
+   * @param options
+   */
+  toHaveRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * This function will wait until two consecutive locator screenshots yield the same result, and then compare the last
+   * screenshot with the expectation.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('button');
+   * await expect(locator).toHaveScreenshot('image.png');
+   *
+   * // Store the snapshot in the WebP format.
+   * await expect(locator).toHaveScreenshot('image.webp');
+   * ```
+   *
+   * Note that screenshot assertions only work with Playwright test runner.
+   * @param name Snapshot name. Must have a `.png` or `.webp` extension, the screenshot is captured in the corresponding format.
+   * Both formats are lossless.
+   * @param options
+   */
+  toHaveScreenshot(name: string|ReadonlyArray<string>, options?: {
+    /**
+     * When set to `"disabled"`, stops CSS animations, CSS transitions and Web Animations. Animations get different
+     * treatment depending on their duration:
+     * - finite animations are fast-forwarded to completion, so they'll fire `transitionend` event.
+     * - infinite animations are canceled to initial state, and then played over after the screenshot.
+     *
+     * Defaults to `"disabled"` that disables animations.
+     */
+    animations?: "disabled"|"allow";
+
+    /**
+     * When set to `"hide"`, screenshot will hide text caret. When set to `"initial"`, text caret behavior will not be
+     * changed.  Defaults to `"hide"`.
+     */
+    caret?: "hide"|"initial";
+
+    /**
+     * Specify locators that should be masked when the screenshot is taken. Masked elements will be overlaid with a pink
+     * box `#FF00FF` (customized by
+     * [`maskColor`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-1-option-mask-color))
+     * that completely covers its bounding box. The mask is also applied to invisible elements, see
+     * [Matching only visible elements](https://playwright.dev/docs/locators#matching-only-visible-elements) to disable that.
+     */
+    mask?: Array<Locator>;
+
+    /**
+     * Specify the color of the overlay box for masked elements, in
+     * [CSS color format](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value). Default color is pink `#FF00FF`.
+     */
+    maskColor?: string;
+
+    /**
+     * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-1-option-threshold)
+     * defines which pixels are considered different.
+     */
+    maxDiffPixelRatio?: number;
+
+    /**
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-1-option-threshold)
+     * defines which pixels are considered different.
+     */
+    maxDiffPixels?: number;
+
+    /**
+     * Hides default white background and allows capturing screenshots with transparency. Not applicable to `jpeg` images.
+     * Defaults to `false`.
+     */
+    omitBackground?: boolean;
+
+    /**
+     * When set to `"css"`, screenshot will have a single pixel per each css pixel on the page. For high-dpi devices, this
+     * will keep screenshots small. Using `"device"` option will produce a single pixel per each device pixel, so
+     * screenshots of high-dpi devices will be twice as large or even larger.
+     *
+     * Defaults to `"css"`.
+     */
+    scale?: "css"|"device";
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic
+     * elements, make elements invisible or change their properties to help you creating repeatable screenshots. This
+     * stylesheet pierces the Shadow DOM and applies to the inner frames.
+     */
+    stylePath?: string|Array<string>;
+
+    /**
+     * An acceptable perceived color difference in the [YIQ color space](https://en.wikipedia.org/wiki/YIQ) between the
+     * same pixel in compared images, between zero (strict) and one (lax), default is configurable with
+     * `TestConfig.expect`. Defaults to `0.2`.
+     */
+    threshold?: number;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * This function will wait until two consecutive locator screenshots yield the same result, and then compare the last
+   * screenshot with the expectation.
+   *
+   * The snapshot is stored in the PNG format. To store it in the WebP format instead, pass a snapshot name with the
+   * `.webp` extension.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.getByRole('button');
+   * await expect(locator).toHaveScreenshot();
+   * ```
+   *
+   * Note that screenshot assertions only work with Playwright test runner.
+   * @param options
+   */
+  toHaveScreenshot(options?: {
+    /**
+     * When set to `"disabled"`, stops CSS animations, CSS transitions and Web Animations. Animations get different
+     * treatment depending on their duration:
+     * - finite animations are fast-forwarded to completion, so they'll fire `transitionend` event.
+     * - infinite animations are canceled to initial state, and then played over after the screenshot.
+     *
+     * Defaults to `"disabled"` that disables animations.
+     */
+    animations?: "disabled"|"allow";
+
+    /**
+     * When set to `"hide"`, screenshot will hide text caret. When set to `"initial"`, text caret behavior will not be
+     * changed.  Defaults to `"hide"`.
+     */
+    caret?: "hide"|"initial";
+
+    /**
+     * Specify locators that should be masked when the screenshot is taken. Masked elements will be overlaid with a pink
+     * box `#FF00FF` (customized by
+     * [`maskColor`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-2-option-mask-color))
+     * that completely covers its bounding box. The mask is also applied to invisible elements, see
+     * [Matching only visible elements](https://playwright.dev/docs/locators#matching-only-visible-elements) to disable that.
+     */
+    mask?: Array<Locator>;
+
+    /**
+     * Specify the color of the overlay box for masked elements, in
+     * [CSS color format](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value). Default color is pink `#FF00FF`.
+     */
+    maskColor?: string;
+
+    /**
+     * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-2-option-threshold)
+     * defines which pixels are considered different.
+     */
+    maxDiffPixelRatio?: number;
+
+    /**
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-2-option-threshold)
+     * defines which pixels are considered different.
+     */
+    maxDiffPixels?: number;
+
+    /**
+     * Hides default white background and allows capturing screenshots with transparency. Not applicable to `jpeg` images.
+     * Defaults to `false`.
+     */
+    omitBackground?: boolean;
+
+    /**
+     * When set to `"css"`, screenshot will have a single pixel per each css pixel on the page. For high-dpi devices, this
+     * will keep screenshots small. Using `"device"` option will produce a single pixel per each device pixel, so
+     * screenshots of high-dpi devices will be twice as large or even larger.
+     *
+     * Defaults to `"css"`.
+     */
+    scale?: "css"|"device";
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic
+     * elements, make elements invisible or change their properties to help you creating repeatable screenshots. This
+     * stylesheet pierces the Shadow DOM and applies to the inner frames.
+     */
+    stylePath?: string|Array<string>;
+
+    /**
+     * An acceptable perceived color difference in the [YIQ color space](https://en.wikipedia.org/wiki/YIQ) between the
+     * same pixel in compared images, between zero (strict) and one (lax), default is configurable with
+     * `TestConfig.expect`. Defaults to `0.2`.
+     */
+    threshold?: number;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with the given text. All
+   * nested elements will be considered when computing the text content of the element. You can use regular expressions
+   * for the value as well.
+   *
+   * **Details**
+   *
+   * When `expected` parameter is a string, Playwright will normalize whitespaces and line breaks both in the actual
+   * text and in the expected string before matching. When regular expression is used, the actual text is matched as is.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('.title');
+   * await expect(locator).toHaveText(/Welcome, Test User/);
+   * await expect(locator).toHaveText(/Welcome, .*\/);
+   * ```
+   *
+   * If you pass an array as an expected value, the expectations are:
+   * 1. Locator resolves to a list of elements.
+   * 1. The number of elements equals the number of expected values in the array.
+   * 1. Elements from the list have text matching expected array values, one by one, in order.
+   *
+   * For example, consider the following list:
+   *
+   * ```html
+   * <ul>
+   *   <li>Text 1</li>
+   *   <li>Text 2</li>
+   *   <li>Text 3</li>
+   * </ul>
+   * ```
+   *
+   * Let's see how we can use the assertion:
+   *
+   * ```js
+   * // ✓ Has the right items in the right order
+   * await expect(page.locator('ul > li')).toHaveText(['Text 1', 'Text 2', 'Text 3']);
+   *
+   * // ✖ Wrong order
+   * await expect(page.locator('ul > li')).toHaveText(['Text 3', 'Text 2', 'Text 1']);
+   *
+   * // ✖ Last item does not match
+   * await expect(page.locator('ul > li')).toHaveText(['Text 1', 'Text 2', 'Text']);
+   *
+   * // ✖ Locator points to the outer list element, not to the list items
+   * await expect(page.locator('ul')).toHaveText(['Text 1', 'Text 2', 'Text 3']);
+   * ```
+   *
+   * @param expected Expected string or RegExp or a list of those.
+   * @param options
+   */
+  toHaveText(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
+    /**
+     * Whether to perform case-insensitive match.
+     * [`ignoreCase`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-text-option-ignore-case)
+     * option takes precedence over the corresponding regular expression flag if specified.
+     */
+    ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+
+    /**
+     * Whether to use `element.innerText` instead of `element.textContent` when retrieving DOM node text.
+     */
+    useInnerText?: boolean;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to an element with the given input
+   * value. You can use regular expressions for the value as well.
+   *
+   * **Usage**
+   *
+   * ```js
+   * const locator = page.locator('input[type=number]');
+   * await expect(locator).toHaveValue(/[0-9]/);
+   * ```
+   *
+   * @param value Expected value.
+   * @param options
+   */
+  toHaveValue(value: string|RegExp, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Ensures the [Locator](https://playwright.dev/docs/api/class-locator) points to multi-select/combobox (i.e. a
+   * `select` with the `multiple` attribute) and the specified values are selected.
+   *
+   * **Usage**
+   *
+   * For example, given the following element:
+   *
+   * ```html
+   * <select id="favorite-colors" multiple>
+   *   <option value="R">Red</option>
+   *   <option value="G">Green</option>
+   *   <option value="B">Blue</option>
+   * </select>
+   * ```
+   *
+   * ```js
+   * const locator = page.locator('id=favorite-colors');
+   * await locator.selectOption(['R', 'G']);
+   * await expect(locator).toHaveValues([/R/, /G/]);
+   * ```
+   *
+   * @param values Expected options currently selected.
+   * @param options
+   */
+  toHaveValues(values: ReadonlyArray<string|RegExp>, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Asserts that the target element matches the given [accessibility snapshot](https://playwright.dev/docs/aria-snapshots).
+   *
+   * **Usage**
+   *
+   * ```js
+   * await page.goto('https://demo.playwright.dev/todomvc/');
+   * await expect(page.locator('body')).toMatchAriaSnapshot(`
+   *   - heading "todos"
+   *   - textbox "What needs to be done?"
+   * `);
+   * ```
+   *
+   * @param expected
+   * @param options
+   */
+  toMatchAriaSnapshot(expected: string, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Asserts that the target element matches the given [accessibility snapshot](https://playwright.dev/docs/aria-snapshots).
+   *
+   * Snapshot is stored in a separate `.aria.yml` file in a location configured by
+   * `expect.toMatchAriaSnapshot.pathTemplate` and/or `snapshotPathTemplate` properties in the configuration file.
+   *
+   * **Usage**
+   *
+   * ```js
+   * await expect(page.locator('body')).toMatchAriaSnapshot();
+   * await expect(page.locator('body')).toMatchAriaSnapshot({ name: 'body.aria.yml' });
+   * ```
+   *
+   * @param options
+   */
+  toMatchAriaSnapshot(options?: {
+    /**
+     * Name of the snapshot to store in the snapshot folder corresponding to this test. Generates sequential names if not
+     * specified.
+     */
+    name?: string;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Makes the assertion check for the opposite condition.
+   *
+   * **Usage**
+   *
+   * For example, this code tests that the Locator doesn't contain text `"error"`:
+   *
+   * ```js
+   * await expect(locator).not.toContainText('error');
+   * ```
+   *
+   */
+  not: LocatorAssertions;
+}
+
+/**
  * The [PageAssertions](https://playwright.dev/docs/api/class-pageassertions) class provides assertion methods that
  * can be used to make assertions about the [Page](https://playwright.dev/docs/api/class-page) state in the tests.
  *
@@ -9693,10 +10415,14 @@ interface PageAssertions {
    *
    * ```js
    * await expect(page).toHaveScreenshot('image.png');
+   *
+   * // Store the snapshot in the WebP format.
+   * await expect(page).toHaveScreenshot('image.webp');
    * ```
    *
    * Note that screenshot assertions only work with Playwright test runner.
-   * @param name Snapshot name.
+   * @param name Snapshot name. Must have a `.png` or `.webp` extension, the screenshot is captured in the corresponding format.
+   * Both formats are lossless.
    * @param options
    */
   toHaveScreenshot(name: string|ReadonlyArray<string>, options?: PageAssertionsToHaveScreenshotOptions): Promise<void>;
@@ -9704,6 +10430,9 @@ interface PageAssertions {
   /**
    * This function will wait until two consecutive page screenshots yield the same result, and then compare the last
    * screenshot with the expectation.
+   *
+   * The snapshot is stored in the PNG format. To store it in the WebP format instead, pass a snapshot name with the
+   * `.webp` extension.
    *
    * **Usage**
    *
@@ -9729,6 +10458,13 @@ interface PageAssertions {
    * @param options
    */
   toHaveTitle(titleOrRegExp: string|RegExp, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9773,6 +10509,78 @@ interface PageAssertions {
      * ignores this flag.
      */
     ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Asserts that the page body matches the given [accessibility snapshot](https://playwright.dev/docs/aria-snapshots).
+   *
+   * **Usage**
+   *
+   * ```js
+   * await page.goto('https://demo.playwright.dev/todomvc/');
+   * await expect(page).toMatchAriaSnapshot(`
+   *   - heading "todos"
+   *   - textbox "What needs to be done?"
+   * `);
+   * ```
+   *
+   * @param expected
+   * @param options
+   */
+  toMatchAriaSnapshot(expected: string, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
+     * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+     */
+    timeout?: number;
+  }): Promise<void>;
+
+  /**
+   * Asserts that the page body matches the given [accessibility snapshot](https://playwright.dev/docs/aria-snapshots).
+   *
+   * Snapshot is stored in a separate `.aria.yml` file in a location configured by
+   * `expect.toMatchAriaSnapshot.pathTemplate` and/or `snapshotPathTemplate` properties in the configuration file.
+   *
+   * **Usage**
+   *
+   * ```js
+   * await expect(page).toMatchAriaSnapshot();
+   * await expect(page).toMatchAriaSnapshot({ name: 'home.aria.yml' });
+   * ```
+   *
+   * @param options
+   */
+  toMatchAriaSnapshot(options?: {
+    /**
+     * Name of the snapshot to store in the snapshot folder corresponding to this test. Generates sequential names if not
+     * specified.
+     */
+    name?: string;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
@@ -9840,13 +10648,16 @@ interface SnapshotAssertions {
   toMatchSnapshot(name: string|ReadonlyArray<string>, options?: {
     /**
      * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-1-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixelRatio?: number;
 
     /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-1-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixels?: number;
 
@@ -9892,13 +10703,16 @@ interface SnapshotAssertions {
   toMatchSnapshot(options?: {
     /**
      * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-2-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixelRatio?: number;
 
     /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-2-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixels?: number;
 
@@ -9946,6 +10760,12 @@ export interface TestInfoError {
    * error. Will be `undefined` if there is no cause or if the cause is not an instance of [Error].
    */
   cause?: TestInfoError;
+
+  /**
+   * Additional context for the error, such as the aria snapshot of the receiver at the time of an `expect(...)` matcher
+   * failure.
+   */
+  errorContext?: string;
 
   /**
    * Error message. Set when [Error] (or its subclass) has been thrown.
@@ -10091,6 +10911,26 @@ export interface TestStepInfo {
   skip(condition: boolean, description?: string): void;
 
   /**
+   * The list of annotations applicable to the current test step.
+   */
+  annotations: Array<{
+    /**
+     * Annotation type, for example `'skip'`.
+     */
+    type: string;
+
+    /**
+     * Optional description.
+     */
+    description?: string;
+
+    /**
+     * Optional location in the source where the annotation is added.
+     */
+    location?: Location;
+  }>;
+
+  /**
    * The full title path starting with the test file name, including the step titles. See also
    * [testInfo.titlePath](https://playwright.dev/docs/api/class-testinfo#test-info-title-path).
    */
@@ -10198,13 +11038,16 @@ export interface PageAssertionsToHaveScreenshotOptions {
 
   /**
    * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-   * configurable with `TestConfig.expect`. Unset by default.
+   * configurable with `TestConfig.expect`. Note that
+   * [`threshold`](https://playwright.dev/docs/api/class-pageassertions#page-assertions-to-have-screenshot-1-option-threshold)
+   * defines which pixels are considered different.
    */
   maxDiffPixelRatio?: number;
 
   /**
-   * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-   * default.
+   * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+   * [`threshold`](https://playwright.dev/docs/api/class-pageassertions#page-assertions-to-have-screenshot-1-option-threshold)
+   * defines which pixels are considered different.
    */
   maxDiffPixels?: number;
 
@@ -10222,6 +11065,13 @@ export interface PageAssertionsToHaveScreenshotOptions {
    * Defaults to `"css"`.
    */
   scale?: "css"|"device";
+
+  /**
+   * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+   * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+   * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+   */
+  signal?: AbortSignal;
 
   /**
    * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic

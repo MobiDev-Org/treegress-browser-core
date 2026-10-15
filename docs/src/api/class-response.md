@@ -49,11 +49,14 @@ You can use [`method: Response.allHeaders`] for complete list of headers that in
 ## async method: Response.headersArray
 * since: v1.15
 - returns: <[Array]<[Object]>>
+  * alias: HttpHeader
+  * alias-csharp: Header
   - `name` <[string]> Name of the header.
   - `value` <[string]> Value of the header.
 
-An array with all the request HTTP headers associated with this response. Unlike [`method: Response.allHeaders`], header names are NOT lower-cased.
+An array with all the response HTTP headers associated with this response. Unlike [`method: Response.allHeaders`], header names are NOT lower-cased.
 Headers with multiple entries, such as `Set-Cookie`, appear in the array multiple times.
+Some browser network stacks combine multiple field values before reporting them, so separate entries are not always available.
 
 ## async method: Response.headerValue
 * since: v1.15
@@ -116,26 +119,13 @@ Contains a boolean stating whether the response was successful (status in the ra
 
 Returns the matching [Request] object.
 
-## async method: Response.securityDetails
+## async method: Response.securityDetails = %%-response-security-details-%%
 * since: v1.13
-- returns: <[null]|[Object]>
-  - `issuer` ?<[string]> Common Name component of the Issuer field.
-    from the certificate. This should only be used for informational purposes. Optional.
-  - `protocol` ?<[string]> The specific TLS protocol used. (e.g. `TLS 1.3`). Optional.
-  - `subjectName` ?<[string]> Common Name component of the Subject
-    field from the certificate. This should only be used for informational purposes. Optional.
-  - `validFrom` ?<[float]> Unix timestamp (in seconds) specifying
-    when this cert becomes valid. Optional.
-  - `validTo` ?<[float]> Unix timestamp (in seconds) specifying
-    when this cert becomes invalid. Optional.
 
 Returns SSL and other security information.
 
-## async method: Response.serverAddr
+## async method: Response.serverAddr = %%-response-server-addr-%%
 * since: v1.13
-- returns: <[null]|[Object]>
-  - `ipAddress` <[string]> IPv4 or IPV6 address of the server.
-  - `port` <[int]>
 
 Returns the IP address and port of the server.
 

@@ -49,7 +49,7 @@ test('browser_file_upload', async ({ client, server }, testInfo) => {
     name: 'browser_click',
     arguments: {
       element: 'Textbox',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     modalState: expect.stringContaining(`- [File chooser]: can be handled by browser_file_upload`),
@@ -77,7 +77,7 @@ test('browser_file_upload', async ({ client, server }, testInfo) => {
       name: 'browser_click',
       arguments: {
         element: 'Textbox',
-        ref: 'e2',
+        target: 'e2',
       },
     });
 
@@ -91,7 +91,7 @@ test('browser_file_upload', async ({ client, server }, testInfo) => {
       name: 'browser_click',
       arguments: {
         element: 'Button',
-        ref: 'e3',
+        target: 'e3',
       },
     });
 
@@ -101,6 +101,43 @@ test('browser_file_upload', async ({ client, server }, testInfo) => {
       modalState: expect.stringContaining(`- [File chooser]: can be handled by browser_file_upload`),
     });
   }
+});
+
+test('browser_file_upload keeps chooser when setFiles fails', async ({ client, server }, testInfo) => {
+  server.setContent('/', `<input type="file" />`, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  await client.callTool({
+    name: 'browser_click',
+    arguments: {
+      element: 'Textbox',
+      target: 'e2',
+    },
+  });
+
+  const missing = testInfo.outputPath('missing.txt');
+  const failed = await client.callTool({
+    name: 'browser_file_upload',
+    arguments: { paths: [missing] },
+  });
+  expect(failed).toHaveResponse({
+    isError: true,
+    modalState: expect.stringContaining(`[File chooser]`),
+  });
+
+  const filePath = testInfo.outputPath('retry.txt');
+  await fs.writeFile(filePath, 'retry');
+  const retried = await client.callTool({
+    name: 'browser_file_upload',
+    arguments: { paths: [filePath] },
+  });
+  expect(retried).toHaveResponse({
+    modalState: undefined,
+  });
 });
 
 test('clicking on download link emits download', async ({ startClient, server }, testInfo) => {
@@ -122,7 +159,7 @@ test('clicking on download link emits download', async ({ startClient, server },
     name: 'browser_click',
     arguments: {
       element: 'Download link',
-      ref: 'e2',
+      target: 'e2',
     },
   });
   const parsed = parseResponse(response);
@@ -161,6 +198,49 @@ test('navigating to download link emits download', async ({ startClient, server,
   });
 });
 
+test('closing browser during download does not crash the server', async ({ startClient, server }, testInfo) => {
+  // Persistent Chromium on macOS does not quit while a download is in progress.
+  const { client } = await startClient({
+    config: { outputDir: testInfo.outputPath('output'), browser: { isolated: true } },
+  });
+
+  server.setContent('/', `<a href="/download" download="test.txt">Download</a>`, 'text/html');
+  server.setRoute('/download', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': 'attachment; filename=test.txt',
+    });
+    // Never finish the response so that the download stays in progress.
+    res.write('a'.repeat(4096));
+  });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+  let events = parseResponse(await client.callTool({
+    name: 'browser_click',
+    arguments: { element: 'Download link', target: 'e2' },
+  })).events ?? '';
+  await expect.poll(async () => {
+    events += parseResponse(await client.callTool({ name: 'browser_snapshot' })).events ?? '';
+    return events;
+  }).toContain('- Downloading file test.txt ...');
+
+  expect(await client.callTool({ name: 'browser_close' })).toHaveResponse({
+    result: expect.stringContaining('No open tabs'),
+  });
+  // Give the pending download a chance to fail after the browser is gone.
+  await new Promise(f => setTimeout(f, 1000));
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`- link "Download" [ref=e2]`),
+  });
+});
+
 test('file upload restricted to roots by default', async ({ startClient, server }, testInfo) => {
   const rootDir = testInfo.outputPath('workspace');
   await fs.mkdir(rootDir, { recursive: true });
@@ -186,7 +266,7 @@ test('file upload restricted to roots by default', async ({ startClient, server 
     name: 'browser_click',
     arguments: {
       element: 'Textbox',
-      ref: 'e2',
+      target: 'e2',
     },
   });
 
@@ -209,7 +289,7 @@ test('file upload restricted to roots by default', async ({ startClient, server 
     name: 'browser_click',
     arguments: {
       element: 'Textbox',
-      ref: 'e2',
+      target: 'e2',
     },
   });
 
@@ -249,7 +329,7 @@ test('file upload is restricted to cwd if no roots are configured', async ({ sta
     name: 'browser_click',
     arguments: {
       element: 'Textbox',
-      ref: 'e2',
+      target: 'e2',
     },
   });
 
@@ -272,7 +352,7 @@ test('file upload is restricted to cwd if no roots are configured', async ({ sta
     name: 'browser_click',
     arguments: {
       element: 'Textbox',
-      ref: 'e2',
+      target: 'e2',
     },
   });
 
@@ -287,6 +367,46 @@ test('file upload is restricted to cwd if no roots are configured', async ({ sta
   })).toHaveResponse({
     isError: true,
     error: expect.stringMatching('File access denied: .* is outside allowed roots. Allowed roots: ' + rootDir.replace(/\\/g, '\\\\')),
+  });
+});
+
+test('file upload resolves relative paths against the root', async ({ startClient, server }, testInfo) => {
+  const rootDir = testInfo.outputPath('workspace');
+  await fs.mkdir(rootDir, { recursive: true });
+  await fs.writeFile(path.join(rootDir, 'inside.txt'), 'Inside root');
+
+  const { client } = await startClient({
+    roots: [
+      {
+        name: 'workspace',
+        uri: `file://${rootDir}`,
+      }
+    ],
+  });
+
+  server.setContent('/', `<input type="file" />`, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  await client.callTool({
+    name: 'browser_click',
+    arguments: {
+      element: 'Textbox',
+      target: 'e2',
+    },
+  });
+
+  // The file lives in the root, not in the server's cwd.
+  expect(await client.callTool({
+    name: 'browser_file_upload',
+    arguments: {
+      paths: ['inside.txt'],
+    },
+  })).toHaveResponse({
+    code: expect.stringContaining(JSON.stringify(path.join(rootDir, 'inside.txt'))),
   });
 });
 
@@ -318,7 +438,7 @@ test('file upload unrestricted when flag is set', async ({ startClient, server }
     name: 'browser_click',
     arguments: {
       element: 'Textbox',
-      ref: 'e2',
+      target: 'e2',
     },
   });
 
@@ -334,5 +454,161 @@ test('file upload unrestricted when flag is set', async ({ startClient, server }
     },
   })).toHaveResponse({
     code: expect.stringContaining(`await fileChooser.setFiles(`),
+  });
+});
+
+test('file upload follows symlinks when checking workspace roots', async ({ startClient, server }, testInfo) => {
+  test.skip(process.platform === 'win32', 'Creating symlinks requires elevated privileges on Windows');
+
+  const rootDir = testInfo.outputPath('workspace');
+  await fs.mkdir(rootDir, { recursive: true });
+  const fileInsideRoot = path.join(rootDir, 'inside.txt');
+  await fs.writeFile(fileInsideRoot, 'Inside root');
+  await fs.symlink(fileInsideRoot, path.join(rootDir, 'inside-link.txt'));
+  const fileOutsideRoot = testInfo.outputPath('outside.txt');
+  await fs.writeFile(fileOutsideRoot, 'Outside root');
+  await fs.symlink(fileOutsideRoot, path.join(rootDir, 'outside-link.txt'));
+  // Root reached through a symlink, like /tmp on macOS.
+  const rootLink = testInfo.outputPath('workspace-link');
+  await fs.symlink(rootDir, rootLink);
+
+  const { client } = await startClient({
+    roots: [
+      {
+        name: 'workspace',
+        uri: `file://${rootLink}`,
+      }
+    ],
+  });
+
+  server.setContent('/', `<input type="file" />`, 'text/html');
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+  await client.callTool({
+    name: 'browser_click',
+    arguments: { element: 'Textbox', target: 'e2' },
+  });
+
+  // Should succeed - symlink points inside the root
+  expect(await client.callTool({
+    name: 'browser_file_upload',
+    arguments: { paths: ['inside-link.txt'] },
+  })).toHaveResponse({
+    code: expect.stringContaining(JSON.stringify(path.join(rootLink, 'inside-link.txt'))),
+  });
+
+  await client.callTool({
+    name: 'browser_click',
+    arguments: { element: 'Textbox', target: 'e2' },
+  });
+
+  // Should fail - symlink points outside the root
+  expect(await client.callTool({
+    name: 'browser_file_upload',
+    arguments: { paths: ['outside-link.txt'] },
+  })).toHaveResponse({
+    isError: true,
+    error: expect.stringMatching('File access denied: .* is outside allowed roots'),
+  });
+});
+
+const dropzoneHtml = `
+  <div id="dropzone" aria-label="dropzone" style="width:300px;height:200px;border:2px dashed #888"></div>
+  <script>
+    window.__dropInfo = null;
+    const zone = document.getElementById('dropzone');
+    zone.addEventListener('dragenter', e => e.preventDefault());
+    zone.addEventListener('dragover', e => e.preventDefault());
+    zone.addEventListener('drop', async e => {
+      e.preventDefault();
+      const files = [];
+      for (const f of e.dataTransfer.files)
+        files.push({ name: f.name, size: f.size, text: await f.text() });
+      const data = {};
+      for (const t of e.dataTransfer.types) {
+        if (t !== 'Files')
+          data[t] = e.dataTransfer.getData(t);
+      }
+      window.__dropInfo = { files, data };
+    });
+  </script>
+`;
+
+test('browser_drop files', async ({ client, server }, testInfo) => {
+  server.setContent('/', dropzoneHtml, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const filePath = testInfo.outputPath('drop-me.txt');
+  await fs.writeFile(filePath, 'hello');
+
+  expect(await client.callTool({
+    name: 'browser_drop',
+    arguments: {
+      element: 'dropzone',
+      target: 'e2',
+      paths: [filePath],
+    },
+  })).toHaveResponse({
+    code: expect.stringContaining(`.drop(`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => window.__dropInfo' },
+  })).toHaveResponse({
+    result: expect.stringContaining(`"text": "hello"`),
+  });
+});
+
+test('browser_drop data', async ({ client, server }) => {
+  server.setContent('/', dropzoneHtml, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_drop',
+    arguments: {
+      element: 'dropzone',
+      target: 'e2',
+      data: { 'text/plain': 'hello world' },
+    },
+  })).toHaveResponse({
+    code: expect.stringContaining(`.drop(`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => window.__dropInfo.data["text/plain"]' },
+  })).toHaveResponse({
+    result: `"hello world"`,
+  });
+});
+
+test('browser_drop requires paths or data', async ({ client, server }) => {
+  server.setContent('/', dropzoneHtml, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_drop',
+    arguments: {
+      element: 'dropzone',
+      target: 'e2',
+    },
+  })).toHaveResponse({
+    isError: true,
+    error: expect.stringContaining(`At least one of "paths" or "data" must be provided.`),
   });
 });

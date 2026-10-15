@@ -16,11 +16,11 @@
 
 import { EventEmitter } from 'events';
 
-import { debugLogger } from '../utils/debugLogger';
+import { debugLogger } from '@utils/debugLogger';
 import { helper } from '../helper';
 import { ProtocolError } from '../protocolError';
 
-import type { RecentLogsCollector } from '../utils/debugLogger';
+import type { RecentLogsCollector } from '@utils/debugLogger';
 import type { ConnectionTransport, ProtocolRequest, ProtocolResponse } from '../transport';
 import type { ProtocolLogger } from '../types';
 import type * as bidiCommands from './third_party/bidiCommands';
@@ -139,9 +139,10 @@ export class BidiConnection {
       this._transport.close();
   }
 
-  createMainFrameBrowsingContextSession(bowsingContextId: bidi.BrowsingContext.BrowsingContext): BidiSession {
-    const result = new BidiSession(this, bowsingContextId, message => this.rawSend(message));
-    this._browsingContextToSession.set(bowsingContextId, result);
+  createMainFrameBrowsingContextSession(browsingContextId: bidi.BrowsingContext.BrowsingContext): BidiSession {
+    const result = new BidiSession(this, browsingContextId, message => this.rawSend(message));
+    this.browserSession._browsingContexts.add(browsingContextId);
+    this._browsingContextToSession.set(browsingContextId, result);
     return result;
   }
 }
@@ -158,7 +159,7 @@ export class BidiSession extends EventEmitter {
   private readonly _rawSend: (message: any) => void;
   private readonly _callbacks = new Map<number, { resolve: (o: any) => void, reject: (e: ProtocolError) => void, error: ProtocolError }>();
   private _crashed: boolean = false;
-  private readonly _browsingContexts = new Set<string>();
+  readonly _browsingContexts = new Set<string>();
 
   override on: <T extends keyof BidiEvents | symbol>(event: T, listener: (payload: T extends symbol ? any : BidiEvents[T extends keyof BidiEvents ? T : never]['params']) => void) => this;
   override addListener: <T extends keyof BidiEvents | symbol>(event: T, listener: (payload: T extends symbol ? any : BidiEvents[T extends keyof BidiEvents ? T : never]['params']) => void) => this;
@@ -217,10 +218,14 @@ export class BidiSession extends EventEmitter {
   }
 
   dispose() {
+    if (this._disposed)
+      return;
     this._disposed = true;
     this.connection._browsingContextToSession.delete(this.sessionId);
-    for (const context of this._browsingContexts)
+    for (const context of this._browsingContexts) {
+      this.connection._browsingContextToSession.get(context)?.dispose();
       this.connection._browsingContextToSession.delete(context);
+    }
     this._browsingContexts.clear();
     for (const callback of this._callbacks.values()) {
       callback.error.type = this._crashed ? 'crashed' : 'closed';
@@ -243,6 +248,8 @@ export class BidiSession extends EventEmitter {
       const callback = this._callbacks.get(object.id)!;
       this._callbacks.delete(object.id);
       if (object.type === 'error') {
+        if (object.error === 'no such frame')
+          callback.error.type = 'closed';
         callback.error.setMessage(object.error + '\nMessage: ' + object.message);
         callback.reject(callback.error);
       } else if (object.type === 'success') {

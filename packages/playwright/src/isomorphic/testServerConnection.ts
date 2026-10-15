@@ -16,15 +16,12 @@
 
 import * as events from './events';
 
-import type { TestServerInterface, TestServerInterfaceEvents } from '@testIsomorphic/testServerInterface';
+import type { TestServerInterface, TestServerInterfaceEvents } from './testServerInterface';
 import type * as reporterTypes from '../../types/testReporter';
 
 // -- Reuse boundary -- Everything below this line is reused in the vscode extension.
 
 export class TestServerConnectionClosedError extends Error {
-  constructor() {
-    super('Test server connection closed');
-  }
 }
 
 export interface TestServerTransport {
@@ -86,7 +83,7 @@ export class TestServerConnection implements TestServerInterface, TestServerInte
 
   private _lastId = 0;
   private _transport: TestServerTransport;
-  private _callbacks = new Map<number, { resolve: (arg: any) => void, reject: (arg: Error) => void }>();
+  private _callbacks = new Map<number, { resolve: (arg: any) => void, reject: (arg: Error) => void, error: TestServerConnectionClosedError }>();
   private _connectedPromise: Promise<void>;
   private _isClosed = false;
 
@@ -125,7 +122,7 @@ export class TestServerConnection implements TestServerInterface, TestServerInte
       this._onCloseEmitter.fire();
       clearInterval(pingInterval);
       for (const callback of this._callbacks.values())
-        callback.reject(new TestServerConnectionClosedError());
+        callback.reject(callback.error);
       this._callbacks.clear();
     });
   }
@@ -141,9 +138,11 @@ export class TestServerConnection implements TestServerInterface, TestServerInte
     await this._connectedPromise;
     const id = ++this._lastId;
     const message = { id, method, params };
+    // Capture proper stack trace in the error here.
+    const error = new TestServerConnectionClosedError(`${method}: test server connection closed`);
     this._transport.send(JSON.stringify(message));
     return new Promise((resolve, reject) => {
-      this._callbacks.set(id, { resolve, reject });
+      this._callbacks.set(id, { resolve, reject, error });
     });
   }
 
@@ -214,14 +213,6 @@ export class TestServerConnection implements TestServerInterface, TestServerInte
 
   async runGlobalTeardown(params: Parameters<TestServerInterface['runGlobalTeardown']>[0]): ReturnType<TestServerInterface['runGlobalTeardown']> {
     return await this._sendMessage('runGlobalTeardown', params);
-  }
-
-  async startDevServer(params: Parameters<TestServerInterface['startDevServer']>[0]): ReturnType<TestServerInterface['startDevServer']> {
-    return await this._sendMessage('startDevServer', params);
-  }
-
-  async stopDevServer(params: Parameters<TestServerInterface['stopDevServer']>[0]): ReturnType<TestServerInterface['stopDevServer']> {
-    return await this._sendMessage('stopDevServer', params);
   }
 
   async clearCache(params: Parameters<TestServerInterface['clearCache']>[0]): ReturnType<TestServerInterface['clearCache']> {

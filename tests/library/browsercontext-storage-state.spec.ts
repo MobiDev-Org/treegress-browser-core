@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import { attachFrame } from 'tests/config/utils';
+import { attachFrame } from '../config/utils';
 import { browserTest as it, expect } from '../config/browserTest';
 import fs from 'fs';
 
@@ -51,7 +51,9 @@ it('should capture local storage', async ({ contextFactory }) => {
   }]);
 });
 
-it('should set local storage', async ({ contextFactory }) => {
+it('should set local storage', async ({ contextFactory, channel }) => {
+  it.fixme(channel?.startsWith('msedge'), 'Network.clearBrowserCache sometimes stalls');
+
   const context = await contextFactory({
     storageState: {
       cookies: [],
@@ -114,7 +116,9 @@ it('should report good error if the url is not valid', async ({ contextFactory }
   expect(error.message).toContain('foo');
 });
 
-it('should round-trip through the file', async ({ contextFactory }, testInfo) => {
+it('should round-trip through the file', async ({ contextFactory, channel }, testInfo) => {
+  it.fixme(channel?.startsWith('msedge'), 'Network.clearBrowserCache sometimes stalls');
+
   const context = await contextFactory();
   const page1 = await context.newPage();
   await page1.route('**/*', route => {
@@ -192,6 +196,84 @@ it('should round-trip through the file', async ({ contextFactory }, testInfo) =>
   const context3 = await contextFactory();
   await context3.setStorageState(path);
   expect(context3.pages()).toHaveLength(0);
+  await checkContext(context3);
+  await context3.close();
+});
+
+it('should round-trip OPFS', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41400' } }, async ({ browserName, contextFactory, page, server }, testInfo) => {
+  it.skip(browserName === 'webkit', 'OPFS is unavailable in non-persistent WebKit contexts');
+
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const nested = await root.getDirectoryHandle('nested', { create: true });
+    await nested.getDirectoryHandle('empty', { create: true });
+
+    const binary = await nested.getFileHandle('data.bin', { create: true });
+    const binaryWritable = await binary.createWritable();
+    await binaryWritable.write(new Uint8Array([0, 1, 2, 255]));
+    await binaryWritable.close();
+
+    const text = await root.getFileHandle('hello.txt', { create: true });
+    const textWritable = await text.createWritable();
+    await textWritable.write('Hello, world!');
+    await textWritable.close();
+  });
+
+  expect(await page.context().storageState()).toEqual({ cookies: [], origins: [] });
+
+  const path = testInfo.outputPath('storage-state.json');
+  const storageState = await page.context().storageState({ path, opfs: true });
+  expect(storageState.origins).toEqual([{
+    origin: server.PREFIX,
+    localStorage: [],
+    opfs: [
+      { path: 'hello.txt', type: 'file', base64: 'SGVsbG8sIHdvcmxkIQ==' },
+      { path: 'nested', type: 'directory' },
+      { path: 'nested/data.bin', type: 'file', base64: 'AAEC/w==' },
+      { path: 'nested/empty', type: 'directory' },
+    ],
+  }]);
+  expect(JSON.parse(await fs.promises.readFile(path, 'utf8'))).toEqual(storageState);
+  expect(await page.context().request.storageState({ opfs: true })).toEqual(storageState);
+
+  const checkContext = async (context: BrowserContext) => {
+    expect(await context.storageState({ opfs: true })).toEqual(storageState);
+    const checkPage = await context.newPage();
+    await checkPage.goto(server.EMPTY_PAGE);
+    expect(await checkPage.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const hello = await (await root.getFileHandle('hello.txt')).getFile();
+      const nested = await root.getDirectoryHandle('nested');
+      const data = await (await nested.getFileHandle('data.bin')).getFile();
+      const empty = await nested.getDirectoryHandle('empty');
+      const emptyEntries = [];
+      for await (const name of empty.keys())
+        emptyEntries.push(name);
+      return {
+        text: await hello.text(),
+        bytes: [...new Uint8Array(await data.arrayBuffer())],
+        empty: emptyEntries,
+      };
+    })).toEqual({
+      text: 'Hello, world!',
+      bytes: [0, 1, 2, 255],
+      empty: [],
+    });
+  };
+
+  const context2 = await contextFactory({ storageState: path });
+  await checkContext(context2);
+  await context2.close();
+
+  const context3 = await contextFactory();
+  const page3 = await context3.newPage();
+  await page3.goto(server.EMPTY_PAGE);
+  await page3.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    await root.getFileHandle('stale.txt', { create: true });
+  });
+  await context3.setStorageState(storageState);
   await checkContext(context3);
   await context3.close();
 });
@@ -368,6 +450,58 @@ it('should work when service worker is intefering', async ({ page, context, serv
   expect(storageState.origins[0].localStorage[0]).toEqual({ name: 'foo', value: 'bar' });
 });
 
+it('should work when service worker is intefering and the origin is not open', async ({ page, context, server, isAndroid, isElectron, electronMajorVersion }) => {
+  it.skip(isAndroid);
+  it.skip(isElectron && electronMajorVersion < 30, 'error: Browser context management is not supported.');
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42656' });
+
+  server.setRoute('/', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(`
+      <script>
+        window.localStorage.foo = 'bar';
+        window.registrationPromise = navigator.serviceWorker.register('sw.js');
+        window.activationPromise = new Promise(resolve => navigator.serviceWorker.oncontrollerchange = resolve);
+      </script>
+    `);
+  });
+
+  server.setRoute('/sw.js', (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/javascript' });
+    res.end(`
+      const kHtmlPage = \`
+        <script>
+          window.localStorage.fromServiceWorker = 'yes';
+          window.location.href = 'redirected.html';
+        </script>
+      \`;
+
+      self.addEventListener('fetch', event => {
+        if (new URL(event.request.url).pathname !== '/')
+          return;
+        const blob = new Blob([kHtmlPage], { type: 'text/html' });
+        event.respondWith(new Response(blob, { status: 200, statusText: 'OK' }));
+      });
+
+      self.addEventListener('activate', event => {
+        event.waitUntil(clients.claim());
+      });
+    `);
+  });
+
+  server.setRoute('/redirected.html', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<html></html>');
+  });
+
+  await page.goto(server.PREFIX);
+  await page.evaluate(() => window['activationPromise']);
+  await page.goto('about:blank');
+
+  const storageState = await context.storageState();
+  expect(storageState.origins[0].localStorage).toEqual([{ name: 'foo', value: 'bar' }]);
+});
+
 it('should set local storage in third-party context', async ({ contextFactory, server }) => {
   const context = await contextFactory({
     storageState: {
@@ -514,6 +648,66 @@ it('should support IndexedDB', async ({ page, server, contextFactory }) => {
   expect(await context.storageState()).toEqual({ cookies: [], origins: [] });
 });
 
+for (const restore of ['newContext', 'setStorageState'] as const) {
+  it(`should roundtrip IndexedDB Map and Set with ${restore}`, { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42703' } }, async ({ page, server, contextFactory }, testInfo) => {
+    await page.goto(server.EMPTY_PAGE);
+    await page.evaluate(() => new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('collections', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('store');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction('store', 'readwrite');
+        const store = transaction.objectStore('store');
+        store.put(new Map([['mk', 'mv']]), 'map');
+        store.put(new Set([1, 2]), 'set');
+        transaction.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }));
+
+    const path = testInfo.outputPath('storage-state.json');
+    const storageState = await page.context().storageState({ indexedDB: true, path });
+    const context = await contextFactory(restore === 'newContext' ? { storageState: path } : {});
+    if (restore === 'setStorageState')
+      await context.setStorageState(storageState);
+    expect(await context.storageState({ indexedDB: true })).toEqual(storageState);
+
+    const restoredPage = await context.newPage();
+    await restoredPage.goto(server.EMPTY_PAGE);
+    const values = await restoredPage.evaluate(async () => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('collections', 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      const transaction = db.transaction('store', 'readonly');
+      const store = transaction.objectStore('store');
+      transaction.oncomplete = () => db.close();
+      const [map, set] = await Promise.all(['map', 'set'].map(key => new Promise<any>((resolve, reject) => {
+        const request = store.get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      })));
+      return {
+        isMap: map instanceof Map,
+        map: [...map],
+        isSet: set instanceof Set,
+        set: [...set],
+      };
+    });
+    expect(values).toEqual({
+      isMap: true,
+      map: [['mk', 'mv']],
+      isSet: true,
+      set: [1, 2],
+    });
+  });
+}
+
 it('should support empty indexedDB', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/35760' } }, async ({ page, server, contextFactory }) => {
   await page.goto(server.EMPTY_PAGE);
   await page.evaluate(() => new Promise<void>(resolve => {
@@ -534,6 +728,82 @@ it('should support empty indexedDB', { annotation: { type: 'issue', description:
 
   const context = await contextFactory({ storageState });
   expect(await context.storageState({ indexedDB: true })).toEqual(storageState);
+});
+
+it('should not leave IndexedDB connections open', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42258' } }, async ({ contextFactory, server }) => {
+  const context = await contextFactory();
+  const page = await context.newPage();
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(async () => {
+    const openRequest = indexedDB.open('db', 1);
+    openRequest.onupgradeneeded = () => openRequest.result.createObjectStore('store');
+    await new Promise<void>((resolve, reject) => {
+      openRequest.onsuccess = () => {
+        const db = openRequest.result;
+        const transaction = db.transaction('store', 'readwrite');
+        transaction.objectStore('store').put('value', 'key');
+        transaction.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        transaction.onerror = () => reject(transaction.error);
+      };
+      openRequest.onerror = () => reject(openRequest.error);
+    });
+  });
+
+  const state = await context.storageState({ indexedDB: true });
+
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase('db');
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error('deleteDatabase was blocked'));
+  }));
+
+  await context.setStorageState(state);
+  expect(await context.storageState({ indexedDB: true })).toEqual(state);
+});
+
+it('should round-trip WebAuthn credentials with storageState', async ({ contextFactory, server }) => {
+  const context = await contextFactory();
+  const credential = await context.credentials.create(server.HOSTNAME);
+
+  // Credentials are opt-in, omitted by default.
+  expect(await context.storageState()).toEqual({ cookies: [], origins: [] });
+
+  const storageState = await context.storageState({ credentials: true });
+  expect(storageState).toEqual({ cookies: [], origins: [], credentials: [credential] });
+
+  // A fresh context seeded from the storage state holds the same credential and round-trips equal.
+  const context2 = await contextFactory({ storageState });
+  expect(await context2.credentials.get()).toEqual([credential]);
+  expect(await context2.storageState({ credentials: true })).toEqual(storageState);
+});
+
+it('setStorageState should replace credentials', async ({ contextFactory }) => {
+  const ctxA = await contextFactory();
+  const credA = await ctxA.credentials.create('a.example.com');
+  const stateA = await ctxA.storageState({ credentials: true });
+
+  const ctxB = await contextFactory();
+  const credB = await ctxB.credentials.create('b.example.com');
+  const stateB = await ctxB.storageState({ credentials: true });
+
+  const context = await contextFactory({ storageState: stateA });
+  expect(await context.credentials.get()).toEqual([credA]);
+
+  // Replacing the storage state swaps in the new credentials.
+  await context.setStorageState(stateB);
+  expect(await context.credentials.get()).toEqual([credB]);
+
+  // A storage state without credentials clears them.
+  await context.setStorageState({ cookies: [], origins: [] });
+  expect(await context.credentials.get()).toEqual([]);
+
+  // Credentials can be installed again afterwards.
+  await context.setStorageState(stateA);
+  expect(await context.credentials.get()).toEqual([credA]);
 });
 
 it('setStorageState should handle missing file', async ({ contextFactory }, testInfo) => {

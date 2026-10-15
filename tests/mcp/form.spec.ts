@@ -63,31 +63,31 @@ test('browser_fill_form (textbox)', async ({ client, server }) => {
         {
           name: 'Name textbox',
           type: 'textbox',
-          ref: 'e4',
+          target: 'e4',
           value: 'John Doe'
         },
         {
           name: 'Email textbox',
           type: 'textbox',
-          ref: 'e6',
+          target: 'e6',
           value: 'john.doe@example.com'
         },
         {
           name: 'Age textbox',
           type: 'slider',
-          ref: 'e8',
+          target: 'e8',
           value: '25'
         },
         {
           name: 'Country select',
           type: 'combobox',
-          ref: 'e10',
+          target: 'e10',
           value: 'United States'
         },
         {
           name: 'Subscribe checkbox',
           type: 'checkbox',
-          ref: 'e12',
+          target: 'e12',
           value: 'true'
         },
       ]
@@ -97,7 +97,7 @@ test('browser_fill_form (textbox)', async ({ client, server }) => {
 await page.getByRole('textbox', { name: 'Email' }).fill('john.doe@example.com');
 await page.getByRole('slider', { name: 'Age' }).fill('25');
 await page.getByLabel('Choose a country United').selectOption('United States');
-await page.getByRole('checkbox', { name: 'Subscribe to newsletter' }).setChecked(true);`,
+await page.getByRole('checkbox', { name: 'Subscribe to newsletter' }).check();`,
   });
 
   const response = await client.callTool({
@@ -106,18 +106,18 @@ await page.getByRole('checkbox', { name: 'Subscribe to newsletter' }).setChecked
     },
   });
   expect.soft(response).toHaveResponse({
-    snapshot: expect.stringMatching(/textbox "Name".*John Doe/),
+    inlineSnapshot: expect.stringMatching(/textbox "Name".*John Doe/),
   });
   expect.soft(response).toHaveResponse({
-    snapshot: expect.stringMatching(/textbox "Email".*john.doe@example.com/),
+    inlineSnapshot: expect.stringMatching(/textbox "Email".*john.doe@example.com/),
   });
   expect.soft(response).toHaveResponse({
-    snapshot: expect.stringMatching(/slider "Age".*"25"/),
+    inlineSnapshot: expect.stringMatching(/slider "Age".*"25"/),
   });
   expect.soft(response).toHaveResponse({
-    snapshot: expect.stringContaining('option \"United States\" [selected]'),
+    inlineSnapshot: expect.stringContaining('option \"United States\" [selected]'),
   });
   expect.soft(response).toHaveResponse({
-    snapshot: expect.stringContaining('checkbox \"Subscribe to newsletter\" [checked]'),
+    inlineSnapshot: expect.stringContaining('checkbox \"Subscribe to newsletter\" [checked]'),
   });
 });

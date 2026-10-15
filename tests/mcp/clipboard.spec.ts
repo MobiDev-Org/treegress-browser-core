@@ -17,9 +17,10 @@
 import { test, expect } from './fixtures';
 
 test('clipboard write without permission dialog', async ({ startClient, server, mcpBrowser }) => {
-  test.skip(mcpBrowser === 'firefox' || mcpBrowser === 'webkit', 'Clipboard permissions are fully supported only in Chromium');
+  test.skip(mcpBrowser === 'firefox', 'No such permissions (requires flag) in Firefox');
+  const permissions = mcpBrowser === 'webkit' ? 'clipboard-read' : 'clipboard-read,clipboard-write';
   const { client } = await startClient({
-    args: [`--grant-permissions=clipboard-read,clipboard-write`]
+    args: [`--grant-permissions=${permissions}`]
   });
   await client.callTool({
     name: 'browser_navigate',
@@ -35,6 +36,12 @@ test('clipboard write without permission dialog', async ({ startClient, server, 
   });
   expect(writeResult).toHaveResponse({
     result: '"Write successful"',
+  });
+  // Chromium 153+ only allows reading the clipboard once the page has been
+  // activated by a real input event, so interact with it first.
+  await client.callTool({
+    name: 'browser_press_key',
+    arguments: { key: 'a' },
   });
   const readResult = await client.callTool({
     name: 'browser_evaluate',

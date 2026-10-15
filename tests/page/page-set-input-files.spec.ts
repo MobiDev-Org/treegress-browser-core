@@ -145,7 +145,6 @@ test('should upload a file after popup', async ({ page, server, asset }) => {
 
 test('should upload large file', async ({ page, server, isAndroid, mode }, testInfo) => {
   test.skip(isAndroid);
-  test.skip(mode.startsWith('service'));
   test.slow();
 
   await page.goto(server.PREFIX + '/input/fileupload.html');
@@ -202,7 +201,6 @@ test('should throw an error if the file does not exist', async ({ page, server, 
 
 test('should upload large file with relative path', async ({ page, server, isAndroid, mode }, testInfo) => {
   test.skip(isAndroid);
-  test.skip(mode.startsWith('service'));
   test.slow();
 
   await page.goto(server.PREFIX + '/input/fileupload.html');
@@ -438,5 +436,5 @@ test('should preserve lastModified timestamp', async ({ page, asset }) => {
   // On Linux browser sometimes reduces the timestamp by 1ms: 1696272058110.0715  -> 1696272058109 or even
   // rounds it to seconds in WebKit: 1696272058110 -> 1696272058000.
   for (let i = 0; i < timestamps.length; i++)
-    expect(Math.abs(timestamps[i] - expectedTimestamps[i]), `expected: ${expectedTimestamps}; actual: ${timestamps}`).toBeLessThan(1000);
+    expect(Math.abs(timestamps[i] - expectedTimestamps[i]), `expected: ${expectedTimestamps}; actual: ${timestamps}`).toBeLessThanOrEqual(1000);
 });

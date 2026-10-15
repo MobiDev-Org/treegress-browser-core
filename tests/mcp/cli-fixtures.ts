@@ -14,99 +14,171 @@
  * limitations under the License.
  */
 
+import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
-import { test as baseTest } from './fixtures';
+import { test as baseTest, expect } from './fixtures';
 import { killProcessGroup } from '../config/commonFixtures';
+import { inheritAndCleanEnv } from '../config/utils';
 
+import type { Page, Browser } from 'playwright-core';
 import type { CommonFixtures } from '../config/commonFixtures';
 
 export { expect } from './fixtures';
 export const test = baseTest.extend<{
+  boundBrowser: Browser,
   cliEnv: Record<string, string>,
+  startDashboardServer: (options?: { cwd?: string, session?: string }) => Promise<Page>,
+  connectToDashboard: (bindTitle: string) => Promise<Browser>;
   cli: (...args: any[]) => Promise<{
     output: string,
     error: string,
     exitCode: number | undefined,
+    inlineSnapshot?: string,
     snapshot?: string,
     attachments?: { name: string, data: Buffer | null }[],
-    pid?: number,
+    daemonPid?: number,
+    dashboardPid?: number,
   }>;
 }>({
   cliEnv: async ({}, use) => {
     await use(cliEnv());
   },
+  startDashboardServer: async ({ childProcess, page }, use) => {
+    await use(async (options?: { cwd?: string, session?: string }) => {
+      const serverProcess = spawnDashboardServer(childProcess, options);
+      await serverProcess.waitForOutput('Listening on ');
+      await page.goto(serverProcess.output.match(/Listening on (http:\/\/\S+)/)![1]);
+      return page;
+    });
+  },
+  connectToDashboard: async ({ cli, playwright }, use, testInfo) => {
+    testInfo.slow();
+    await use(async (bindTitle: string) => {
+      let endpoint = '';
+      await expect(async () => {
+        const { output } = await cli('list', '--all', '--json');
+        const { servers } = JSON.parse(output);
+        const server = servers.find(s => s.title === bindTitle);
+        endpoint = server.endpoint;
+      }).toPass();
+      return await playwright.chromium.connect(endpoint);
+    });
+    await cli('show', '--kill');
+  },
+
   cli: async ({ mcpBrowser, mcpHeadless, childProcess }, use) => {
-    const sessions: { name: string, pid: number }[] = [];
     await fs.promises.mkdir(test.info().outputPath('.playwright'), { recursive: true });
+    const allPids: number[] = [];
 
     await use(async (...args: string[]) => {
       const cliArgs = args.filter(arg => typeof arg === 'string');
       const cliOptions = args.findLast(arg => typeof arg === 'object') || {};
-      return await runCli(childProcess, cliArgs, cliOptions, { mcpBrowser, mcpHeadless }, sessions);
+      const result = await test.step(
+          `cli ${cliArgs.join(' ')}`,
+          () => runCli(childProcess, cliArgs, cliOptions, { mcpBrowser, mcpHeadless })
+      );
+      if (result.daemonPid)
+        allPids.push(result.daemonPid);
+      if (result.dashboardPid)
+        allPids.push(result.dashboardPid);
+      return result;
     });
 
-    for (const session of sessions) {
-      await runCli(childProcess, ['--session=' + session.name, 'close'], {}, { mcpBrowser, mcpHeadless }, []).catch(e => {
-        if (!e.message.includes('is not running'))
-          throw e;
-      });
-      killProcessGroup(session.pid);
-    }
+    for (const pid of allPids)
+      killProcessGroup(pid);
 
-    const daemonDir = path.join(test.info().outputDir, 'daemon');
-    const userDataDirs = await fs.promises.readdir(daemonDir).catch(() => []);
-    for (const dir of userDataDirs.filter(f => f.startsWith('ud-')))
-      await fs.promises.rm(path.join(daemonDir, dir), { recursive: true, force: true }).catch(() => {});
+    const daemonDir = test.info().outputPath('daemon');
+    for (const dir of await fs.promises.readdir(daemonDir).catch<string[]>(() => [])) {
+      if (dir.startsWith('ud-')) {
+        await fs.promises.rm(path.join(daemonDir, dir), { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+    }
+  },
+  boundBrowser: async ({ mcpBrowser, playwright }, use) => {
+    const browserName = (mcpBrowser === 'chrome' || mcpBrowser === 'msedge') ? 'chromium' : mcpBrowser;
+    const channel = (mcpBrowser === 'chrome' || mcpBrowser === 'msedge') ? mcpBrowser : undefined;
+    const browser = await playwright[browserName].launch({ channel, headless: true });
+    for (const [name, value] of Object.entries(cliEnv()))
+      process.env[name] = value;
+    await browser.bind('default');
+    await use(browser);
+    for (const name of Object.keys(cliEnv()))
+      delete process.env[name];
+    await browser.close();
   },
 });
 
+export function spawnDashboardServer(childProcess: CommonFixtures['childProcess'], options?: { cwd?: string, session?: string }) {
+  const showArgs = options?.session ? [`-s=${options.session}`, 'show'] : ['show'];
+  return childProcess({
+    command: [process.execPath, require.resolve('../../packages/playwright-core/lib/tools/cli-client/cli.js'), ...showArgs, '--port=0'],
+    cwd: options?.cwd ?? test.info().outputPath(),
+    env: inheritAndCleanEnv(cliEnv()),
+  });
+}
+
 function cliEnv() {
   return {
-    PLAYWRIGHT_DAEMON_SESSION_DIR: test.info().outputPath('daemon'),
-    PLAYWRIGHT_DAEMON_SOCKETS_DIR: path.join(test.info().project.outputDir, 'daemon-sockets'),
+    PWTEST_SERVER_REGISTRY: test.info().outputPath('registry'),
+    PWTEST_DASHBOARD_SETTINGS_FILE: test.info().outputPath('dashboard.settings.json'),
+    PWTEST_DAEMON_SESSION_DIR: test.info().outputPath('daemon'),
+    PWTEST_SOCKETS_DIR: path.join(os.tmpdir(), 'ds-' + crypto.createHash('sha1').update(test.info().outputDir).digest('hex').slice(0, 16)),
+    PWTEST_CLI_CHANNEL_SCAN_DISABLED_FOR_TEST: '1',
+    // Treegress: upstream CLI specs assert aria snapshots.
+    PLAYWRIGHT_MCP_SNAPSHOT_ENGINE: 'aria',
   };
 }
 
-async function runCli(childProcess: CommonFixtures['childProcess'], args: string[], cliOptions: { cwd?: string, env?: Record<string, string> }, options: { mcpBrowser: string, mcpHeadless: boolean }, sessions: { name: string, pid: number }[]) {
-  const stepTitle = `cli ${args.join(' ')}`;
-  return await test.step(stepTitle, async () => {
-    const testInfo = test.info();
-    const cli = childProcess({
-      command: [process.execPath, require.resolve('../../packages/playwright-core/lib/cli/client/cli.js'), ...args],
-      cwd: cliOptions.cwd ?? testInfo.outputPath(),
-      env: {
-        ...process.env,
-        ...cliOptions.env,
-        ...cliEnv(),
-        PLAYWRIGHT_MCP_BROWSER: options.mcpBrowser,
-        PLAYWRIGHT_MCP_HEADLESS: String(options.mcpHeadless),
-        ...cliOptions.env,
-      },
-    });
-    await cli.exited.finally(async () => {
-      await testInfo.attach(stepTitle, { body: cli.output, contentType: 'text/plain' });
-    });
-
-    let snapshot: string | undefined;
-    if (cli.stdout.includes('### Snapshot'))
-      snapshot = await loadSnapshot(cli.stdout);
-    const attachments = loadAttachments(cli.stdout);
-
-    const matches = cli.stdout.includes('### Browser') ? cli.stdout.match(/Browser `(.+)` opened with pid (\d+)\./) : undefined;
-    const [, sessionName, pid] = matches ?? [];
-    if (sessionName && pid)
-      sessions.push({ name: sessionName, pid: +pid });
-    return {
-      exitCode: await cli.exitCode,
-      output: cli.stdout.trim(),
-      error: cli.stderr.trim(),
-      snapshot,
-      attachments,
-      pid: pid ? +pid : undefined,
-    };
+async function runCli(childProcess: CommonFixtures['childProcess'], args: string[], cliOptions: { cwd?: string, env?: Record<string, string>, bindTitle?: string }, options: { mcpBrowser: string, mcpHeadless: boolean }) {
+  const testInfo = test.info();
+  const cli = childProcess({
+    command: [process.execPath, require.resolve('../../packages/playwright-core/lib/tools/cli-client/cli.js'), ...args],
+    cwd: cliOptions.cwd ?? testInfo.outputPath(),
+    env: inheritAndCleanEnv({
+      ...cliEnv(),
+      PLAYWRIGHT_MCP_BROWSER: options.mcpBrowser,
+      PLAYWRIGHT_MCP_HEADLESS: String(options.mcpHeadless),
+      PWTEST_PRINT_DASHBOARD_PID_FOR_TEST: '1',
+      PWTEST_DASHBOARD_APP_BIND_TITLE: cliOptions.bindTitle,
+      ...cliOptions.env,
+    }),
   });
+
+  // Wait for the CLI to exit so stdout is complete before we parse it.
+  const exitCode = await cli.exitCode;
+
+  let snapshot: string | undefined;
+  let inlineSnapshot: string | undefined;
+  if (cli.stdout.includes('### Snapshot'))
+    ({ snapshot, inlineSnapshot } = await loadSnapshot(cli.stdout));
+  const attachments = loadAttachments(cli.stdout);
+
+  const browserMatches = cli.stdout.includes('### Browser') ? cli.stdout.match(/Browser `(.+)` opened with pid (\d+)\./) : undefined;
+  const daemonPid = browserMatches?.[2] ?? parseJsonPid(cli.stdout);
+  const dashboardMatches = cli.stdout.includes('### Dashboard') ? cli.stdout.match(/Dashboard opened with pid (\d+)\./) : undefined;
+  const dashboardPid = dashboardMatches?.[1];
+
+  return {
+    exitCode,
+    output: cli.stdout.trim(),
+    error: cli.stderr.trim(),
+    snapshot,
+    inlineSnapshot,
+    attachments,
+    daemonPid: daemonPid ? +daemonPid : undefined,
+    dashboardPid: dashboardPid ? +dashboardPid : undefined,
+  };
+}
+
+function parseJsonPid(stdout: string) {
+  try {
+    return JSON.parse(stdout).pid;
+  } catch {
+  }
 }
 
 function loadAttachments(output: string) {
@@ -126,16 +198,19 @@ function loadAttachments(output: string) {
   });
 }
 
-async function loadSnapshot(output: string) {
+async function loadSnapshot(output: string): Promise<{ snapshot?: string, inlineSnapshot?: string }> {
   const lines = output.split('\n');
   if (!lines.includes('### Snapshot'))
     throw new Error('Snapshot file not found');
-  const fileLine = lines[lines.indexOf('### Snapshot') + 1];
+  const snapshotIndex = lines.indexOf('### Snapshot') + 1;
+  const fileLine = lines[snapshotIndex];
+  if (fileLine.startsWith('```yaml'))
+    return { inlineSnapshot: lines.slice(snapshotIndex + 1, lines.indexOf('```', snapshotIndex)).join('\n') };
   const fileName = fileLine.match(/- \[(.+)\]\((.+)\)/)![2];
   try {
-    return await fs.promises.readFile(test.info().outputPath(fileName), 'utf8').catch(() => undefined);
+    return { snapshot: await fs.promises.readFile(test.info().outputPath(fileName), 'utf8').catch(() => undefined) };
   } catch (e) {
-    return '';
+    return {};
   }
 }
 
@@ -190,4 +265,46 @@ export async function daemonFolder() {
       return fullName;
   }
   return null;
+}
+
+export async function installSaveFilePickerMock(page: import('playwright-core').Page): Promise<() => Promise<Buffer>> {
+  await page.evaluate(() => {
+    (window as any).__testCaptureBytes = undefined as string | undefined;
+    (window as any).showSaveFilePicker = async () => ({
+      createWritable: async () => {
+        const chunks: Uint8Array[] = [];
+        return {
+          write: async (chunk: Blob | BufferSource) => {
+            const buf = chunk instanceof Blob
+              ? new Uint8Array(await chunk.arrayBuffer())
+              : new Uint8Array(chunk instanceof ArrayBuffer ? chunk : (chunk as ArrayBufferView).buffer);
+            chunks.push(buf);
+          },
+          close: async () => {
+            const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+            const merged = new Uint8Array(total);
+            let offset = 0;
+            for (const c of chunks) {
+              merged.set(c, offset);
+              offset += c.byteLength;
+            }
+            (window as any).__testCaptureBytes = (merged as any).toBase64();
+          },
+        };
+      },
+    });
+  });
+  return async () => {
+    await expect.poll(() => page.evaluate(() => !!(window as any).__testCaptureBytes), { timeout: 10000 }).toBe(true);
+    const b64: string = await page.evaluate(() => (window as any).__testCaptureBytes);
+    return Buffer.from(b64, 'base64');
+  };
+}
+
+export async function mockAbortingFilePicker(page: import('playwright-core').Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as any).showSaveFilePicker = async () => {
+      throw new DOMException('The user aborted a request.', 'AbortError');
+    };
+  });
 }

@@ -16,8 +16,13 @@
 
 import { serializeError } from '../util';
 
-import type { TestInfoErrorImpl } from '../common/ipc';
+import type { TestInfoError } from '../../types/test';
+import type { MatcherResultProperty } from '../matchers/matcherHint';
 
-export function testInfoError(error: Error | any): TestInfoErrorImpl {
-  return serializeError(error);
+export function testInfoError(error: Error | any): TestInfoError {
+  const result = serializeError(error);
+  const matcherResult = (error instanceof Error ? (error as any).matcherResult : undefined) as MatcherResultProperty | undefined;
+  if (matcherResult?.ariaSnapshot !== undefined)
+    result.errorContext = matcherResult.ariaSnapshot;
+  return result;
 }

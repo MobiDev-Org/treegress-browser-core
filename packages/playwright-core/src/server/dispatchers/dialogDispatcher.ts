@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -19,8 +19,8 @@ import { PageDispatcher } from './pageDispatcher';
 
 import type { Dialog } from '../dialog';
 import type { BrowserContextDispatcher } from './browserContextDispatcher';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 export class DialogDispatcher extends Dispatcher<Dialog, channels.DialogChannel, BrowserContextDispatcher | PageDispatcher> implements channels.DialogChannel {
   _type_Dialog = true;
@@ -37,10 +37,10 @@ export class DialogDispatcher extends Dispatcher<Dialog, channels.DialogChannel,
   }
 
   async accept(params: channels.DialogAcceptParams, progress: Progress): Promise<void> {
-    await progress.race(this._object.accept(params.promptText));
+    await this._object.accept(progress, params.promptText);
   }
 
   async dismiss(params: channels.DialogDismissParams, progress: Progress): Promise<void> {
-    await progress.race(this._object.dismiss());
+    await this._object.dismiss(progress);
   }
 }

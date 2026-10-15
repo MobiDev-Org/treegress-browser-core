@@ -17,7 +17,8 @@
 import fs from 'fs';
 import path from 'path';
 
-import { ZipFile } from 'playwright-core/lib/utils';
+import { isPathInside } from '@utils/fileUtils';
+import { ZipFile } from '@utils/zipFile';
 
 import {  currentBlobReportVersion } from './blob';
 import { Multiplexer } from './multiplexer';
@@ -28,7 +29,7 @@ import { relativeFilePath } from '../util';
 
 import type { ReporterDescription, TestAnnotation } from '../../types/test';
 import type { TestError } from '../../types/testReporter';
-import type { FullConfigInternal } from '../common/config';
+import type { FullConfigInternal } from '../common';
 import type { BlobReportMetadata, JsonAttachment, JsonConfig, JsonEvent, JsonFullResult, JsonLocation, JsonOnConfigureEvent, JsonOnEndEvent, JsonOnProjectEvent, JsonProject, JsonSuite, JsonTestCase } from '../isomorphic/teleReceiver';
 import type * as blobV1 from './versions/blobV1';
 
@@ -43,7 +44,9 @@ type ReportData = {
   fullResult: JsonFullResult;
 };
 
-export async function createMergedReport(config: FullConfigInternal, dir: string, reporterDescriptions: ReporterDescription[], rootDirOverride: string | undefined) {
+export type MergeResult = 'passed' | 'failed';
+
+export async function createMergedReport(config: FullConfigInternal, dir: string, reporterDescriptions: ReporterDescription[], rootDirOverride: string | undefined): Promise<MergeResult> {
   const reporters = await createReporters(config, 'merge', reporterDescriptions);
   const multiplexer = new Multiplexer(reporters);
   const stringPool = new StringInternPool();
@@ -109,6 +112,9 @@ export async function createMergedReport(config: FullConfigInternal, dir: string
     });
   }
   await dispatchEvents(eventData.epilogue);
+  // The merged report status is intentionally not surfaced as a failure - the
+  // merge command only fails when a reporter itself errors.
+  return multiplexer.hasReporterErrors() ? 'failed' : 'passed';
 }
 
 const commonEventNames = ['onBlobReportMetadata', 'onConfigure', 'onProject', 'onBegin', 'onEnd'];
@@ -494,11 +500,16 @@ class AttachmentPathPatcher {
   }
 
   private _patchAttachments(attachments: JsonAttachment[]) {
+    const resourceRoot = path.resolve(this._resourceDir);
     for (const attachment of attachments) {
       if (!attachment.path)
         continue;
-
-      attachment.path = path.join(this._resourceDir, attachment.path);
+      const joined = path.resolve(resourceRoot, attachment.path);
+      if (!isPathInside(resourceRoot, joined)) {
+        attachment.path = undefined;
+        continue;
+      }
+      attachment.path = joined;
     }
   }
 }

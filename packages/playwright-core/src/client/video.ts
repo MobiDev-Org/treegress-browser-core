@@ -18,32 +18,16 @@ import { Artifact } from './artifact';
 import { EventEmitter } from './eventEmitter';
 
 import type { Connection } from './connection';
-import type { Page } from './page';
 import type * as api from '../../types/types';
 
 export class Video extends EventEmitter implements api.Video {
   private _artifact: Artifact | undefined;
   private _isRemote = false;
-  private _page: Page;
 
-  constructor(page: Page, connection: Connection, artifact: Artifact | undefined) {
-    super(page._platform);
-    this._page = page;
+  constructor(connection: Connection, artifact: Artifact | undefined) {
+    super();
     this._isRemote = connection.isRemote();
     this._artifact = artifact;
-  }
-
-  async start(options: { size?: { width: number, height: number } } = {}): Promise<void> {
-    const result = await this._page._channel.videoStart(options);
-    this._artifact = Artifact.from(result.artifact);
-  }
-
-  async stop(options: { path?: string } = {}): Promise<void> {
-    await this._page._wrapApiCall(async () => {
-      await this._page._channel.videoStop();
-      if (options.path)
-        await this.saveAs(options.path);
-    });
   }
 
   async path(): Promise<string> {

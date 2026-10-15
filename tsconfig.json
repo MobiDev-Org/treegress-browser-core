@@ -10,14 +10,15 @@
          - @foo/* is for importing types only,
          - .../lib/* means require dependency
       */
-      "@devtools/*": ["./packages/devtools/src/*"],
+      "@dashboard/*": ["./packages/dashboard/src/*"],
+      "@trace-viewer/*": ["./packages/trace-viewer/src/*"],
       "@html-reporter/*": ["./packages/html-reporter/src/*"],
       "@injected/*": ["./packages/injected/src/*"],
-      "@isomorphic/*": ["./packages/playwright-core/src/utils/isomorphic/*"],
+      "@isomorphic/*": ["./packages/isomorphic/*"],
+      "@utils/*": ["./packages/utils/*"],
       "@protocol/*": ["./packages/protocol/src/*"],
       "@recorder/*": ["./packages/recorder/src/*"],
       "@testIsomorphic/*": ["./packages/playwright/src/isomorphic/*"],
-      "@trace/*": ["./packages/trace/src/*"],
       "@web/*": ["./packages/web/src/*"],
       "playwright-core/lib/*": ["./packages/playwright-core/src/*"],
       "playwright/lib/*": ["./packages/playwright/src/*"],
@@ -37,8 +38,11 @@
     "skipLibCheck": true,
   },
   "compileOnSave": true,
+  "files": ["packages/html-reporter/tests/stories.d.ts"],
   "include": ["packages"],
   "exclude": [
     "packages/*/lib",
+    "packages/extension",
+    "packages/playwright-core/src/tools/skills",
   ]
 }

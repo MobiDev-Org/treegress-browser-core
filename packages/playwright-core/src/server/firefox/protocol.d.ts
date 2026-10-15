@@ -136,7 +136,7 @@ export namespace Protocol {
         username: string;
         password: string;
         origin?: string;
-      }|null;
+      }[]|null;
     };
     export type setHTTPCredentialsReturnValue = void;
     export type setRequestInterceptionParameters = {
@@ -214,6 +214,11 @@ export namespace Protocol {
           height: number;
         };
         deviceScaleFactor?: number;
+        screenSize?: {
+          width: number;
+          height: number;
+        };
+        isMobile?: boolean;
       }|null;
     };
     export type setDefaultViewportReturnValue = void;
@@ -343,6 +348,11 @@ export namespace Protocol {
         height: number;
       };
       deviceScaleFactor?: number;
+      screenSize?: {
+        width: number;
+        height: number;
+      };
+      isMobile?: boolean;
     };
     export type DOMQuad = {
       p1: {
@@ -392,6 +402,11 @@ export namespace Protocol {
       frameId: string;
       message: string;
       stack: string;
+      location: {
+        columnNumber: number;
+        lineNumber: number;
+        url: string;
+      };
     }
     export type frameAttachedPayload = {
       frameId: string;
@@ -481,12 +496,14 @@ export namespace Protocol {
       wsid: string;
       opcode: number;
       data: string;
+      timestamp: number;
     }
     export type webSocketFrameReceivedPayload = {
       frameId: string;
       wsid: string;
       opcode: number;
       data: string;
+      timestamp: number;
     }
     export type screencastFramePayload = {
       data: string;
@@ -515,6 +532,12 @@ export namespace Protocol {
         width: number;
         height: number;
       }|null;
+      deviceScaleFactor?: number;
+      screenSize?: {
+        width: number;
+        height: number;
+      };
+      isMobile?: boolean;
     };
     export type setViewportSizeReturnValue = void;
     export type setZoomParameters = {
@@ -599,7 +622,7 @@ export namespace Protocol {
       }|null;
     };
     export type screenshotParameters = {
-      mimeType: ("image/png"|"image/jpeg");
+      mimeType: ("image/png"|"image/jpeg"|"image/webp");
       clip: {
         x: number;
         y: number;
@@ -935,6 +958,7 @@ export namespace Protocol {
     }
     export type setRequestInterceptionParameters = {
       enabled: boolean;
+      bypassServiceWorker?: boolean;
     };
     export type setRequestInterceptionReturnValue = void;
     export type setExtraHTTPHeadersParameters = {

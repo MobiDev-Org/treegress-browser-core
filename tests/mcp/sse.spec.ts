@@ -20,8 +20,9 @@ import { ChildProcess, spawn } from 'child_process';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { test as baseTest, expect, mcpServerPath, formatLog } from './fixtures';
+import { inheritAndCleanEnv } from '../config/utils';
 
-import type { Config } from '../../packages/playwright-core/src/mcp/config.d';
+import type { Config } from '../../packages/playwright-core/src/tools/mcp/config.d';
 
 const test = baseTest.extend<{ serverEndpoint: (options?: { args?: string[], noPort?: boolean }) => Promise<{ url: URL, stderr: () => string }> }>({
   serverEndpoint: async ({ mcpHeadless }, use, testInfo) => {
@@ -39,12 +40,11 @@ const test = baseTest.extend<{ serverEndpoint: (options?: { args?: string[], noP
         ...(options?.args || []),
       ], {
         stdio: 'pipe',
-        env: {
-          ...process.env,
+        env: inheritAndCleanEnv({
           DEBUG: 'pw:mcp:test',
           DEBUG_COLORS: '0',
           DEBUG_HIDE_DATE: '1',
-        },
+        }),
         cwd: testInfo.outputPath(),
       });
       let stderr = '';
@@ -111,6 +111,7 @@ test('sse transport browser lifecycle (isolated)', async ({ serverEndpoint, serv
     'delete SSE session': 2,
     'create context': 2,
     'create browser (isolated)': 2,
+    'connect to shared browser': 2,
     'close browser': 2,
   });
 });
@@ -125,6 +126,10 @@ test('sse transport browser lifecycle (isolated, multiclient)', async ({ serverE
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   });
+  await client1.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => { localStorage.a = 42; }' },
+  });
 
   const transport2 = new SSEClientTransport(new URL('/sse', url));
   const client2 = new Client({ name: 'test', version: '1.0.0' });
@@ -132,6 +137,12 @@ test('sse transport browser lifecycle (isolated, multiclient)', async ({ serverE
   await client2.callTool({
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
+  });
+  expect(await client2.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => localStorage.a' },
+  })).toHaveResponse({
+    result: 'undefined',
   });
   await client1.close();
 
@@ -150,38 +161,10 @@ test('sse transport browser lifecycle (isolated, multiclient)', async ({ serverE
     'create SSE session': 3,
     'delete SSE session': 3,
     'create context': 3,
-    'create browser (isolated)': 3,
-    'close browser': 3,
-  });
-});
-
-test('sse transport browser lifecycle (persistent)', async ({ serverEndpoint, server }) => {
-  const { url, stderr } = await serverEndpoint();
-
-  const transport1 = new SSEClientTransport(new URL('/sse', url));
-  const client1 = new Client({ name: 'test', version: '1.0.0' });
-  await client1.connect(transport1);
-  await client1.callTool({
-    name: 'browser_navigate',
-    arguments: { url: server.HELLO_WORLD },
-  });
-  await client1.close();
-
-  const transport2 = new SSEClientTransport(new URL('/sse', url));
-  const client2 = new Client({ name: 'test', version: '1.0.0' });
-  await client2.connect(transport2);
-  await client2.callTool({
-    name: 'browser_navigate',
-    arguments: { url: server.HELLO_WORLD },
-  });
-  await client2.close();
-
-  await expect.poll(() => formatLog(stderr())).toEqual({
-    'create SSE session': 2,
-    'delete SSE session': 2,
-    'create context': 2,
-    'create browser (persistent)': 2,
-    'close browser': 2,
+    'create browser (isolated)': 1,
+    'connect to shared browser': 3,
+    'close context': 2,
+    'close browser': 1,
   });
 });
 
@@ -208,6 +191,46 @@ test('sse transport browser lifecycle (persistent, multiclient)', async ({ serve
 
   await client1.close();
   await client2.close();
+});
+
+test('sse transport browser lifecycle (persistent)', async ({ serverEndpoint, server }) => {
+  const { url, stderr } = await serverEndpoint();
+
+  const transport1 = new SSEClientTransport(new URL('/sse', url));
+  const client1 = new Client({ name: 'test', version: '1.0.0' });
+  await client1.connect(transport1);
+  await client1.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+  await client1.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => { localStorage.a = 42; }' },
+  });
+  await client1.close();
+
+  const transport2 = new SSEClientTransport(new URL('/sse', url));
+  const client2 = new Client({ name: 'test', version: '1.0.0' });
+  await client2.connect(transport2);
+  await client2.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+  expect(await client2.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => localStorage.a' },
+  })).toHaveResponse({
+    result: '"42"',
+  });
+  await client2.close();
+
+  await expect.poll(() => formatLog(stderr())).toEqual({
+    'create SSE session': 2,
+    'delete SSE session': 2,
+    'create context': 2,
+    'create browser (persistent)': 2,
+    'close browser': 2,
+  });
 });
 
 test('sse transport shared context', async ({ serverEndpoint, server }) => {
@@ -250,7 +273,9 @@ test('sse transport shared context', async ({ serverEndpoint, server }) => {
     'create SSE session': 2,
     'delete SSE session': 2,
     'create browser (persistent)': 1,
+    'connect to shared browser': 2,
     'create context': 2,
+    'disconnect from shared browser': 1,
     'close browser': 1,
   });
 });

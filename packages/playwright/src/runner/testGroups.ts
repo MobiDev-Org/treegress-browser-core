@@ -14,17 +14,20 @@
  * limitations under the License.
  */
 
-import type { Suite, TestCase } from '../common/test';
+import { calculateSha1 } from '@utils/crypto';
+
+import type { test } from '../common';
 
 export type TestGroup = {
   workerHash: string;
   requireFile: string;
   repeatEachIndex: number;
   projectId: string;
-  tests: TestCase[];
+  tests: test.TestCase[];
+  locks: string[];
 };
 
-export function createTestGroups(projectSuite: Suite, expectedParallelism: number): TestGroup[] {
+export function createTestGroups(projectSuite: test.Suite, expectedParallelism: number): TestGroup[] {
   // This function groups tests that can be run together.
   // Tests cannot be run together when:
   // - They belong to different projects - requires different workers.
@@ -47,17 +50,18 @@ export function createTestGroups(projectSuite: Suite, expectedParallelism: numbe
     //   We'll divide them into equally-sized groups later.
     // - Tests belonging to serial suites inside parallel suites.
     //   These should run as a serial group, each group is independent, key === serial suite.
-    parallel: Map<Suite | TestCase, TestGroup>,
+    parallel: Map<test.Suite | test.TestCase, TestGroup>,
     parallelWithHooks: TestGroup,
   }>>();
 
-  const createGroup = (test: TestCase): TestGroup => {
+  const createGroup = (test: test.TestCase): TestGroup => {
     return {
       workerHash: test._workerHash,
       requireFile: test._requireFile,
       repeatEachIndex: test.repeatEachIndex,
       projectId: test._projectId,
       tests: [],
+      locks: [],
     };
   };
 
@@ -79,9 +83,9 @@ export function createTestGroups(projectSuite: Suite, expectedParallelism: numbe
 
     // Note that a parallel suite cannot be inside a serial suite. This is enforced in TestType.
     let insideParallel = false;
-    let outerMostSequentialSuite: Suite | undefined;
+    let outerMostSequentialSuite: test.Suite | undefined;
     let hasAllHooks = false;
-    for (let parent: Suite | undefined = test.parent; parent; parent = parent.parent) {
+    for (let parent: test.Suite | undefined = test.parent; parent; parent = parent.parent) {
       if (parent._parallelMode === 'serial' || parent._parallelMode === 'default')
         outerMostSequentialSuite = parent;
       insideParallel = insideParallel || parent._parallelMode === 'parallel';
@@ -127,7 +131,21 @@ export function createTestGroups(projectSuite: Suite, expectedParallelism: numbe
       }
     }
   }
+
+  for (const group of result) {
+    const locks = new Set<string>();
+    for (const test of group.tests) {
+      for (const lock of test._locks)
+        locks.add(lock);
+    }
+    group.locks = [...locks];
+  }
   return result;
+}
+
+export function shuffleTestGroups(testGroups: TestGroup[], seed: string) {
+  const keys = new Map(testGroups.map(group => [group, calculateSha1(seed + '\x1e' + group.tests[0].id)]));
+  testGroups.sort((a, b) => keys.get(a)!.localeCompare(keys.get(b)!));
 }
 
 export function filterForShard(shard: { total: number, current: number }, weights: number[] | undefined, testGroups: TestGroup[]): Set<TestGroup> {
@@ -142,10 +160,12 @@ export function filterForShard(shard: { total: number, current: number }, weight
   //
   // Shards are still balanced by the number of tests, not files,
   // even in the case of non-paralleled files.
-
-  let shardableTotal = 0;
-  for (const group of testGroups)
-    shardableTotal += group.tests.length;
+  //
+  // Statically skipped tests take no time, so they are not counted.
+  const activeSizes = testGroups.map(group => group.tests.filter(test => test.expectedStatus !== 'skipped').length);
+  // If all tests are skipped, balance them as usual.
+  const groupSizes = activeSizes.some(Boolean) ? activeSizes : testGroups.map(group => group.tests.length);
+  const shardableTotal = groupSizes.reduce((a, b) => a + b, 0);
 
   // Each shard gets some tests.
   const shardSizes = weights.map(w => Math.floor(w * shardableTotal / totalWeight));
@@ -162,12 +182,14 @@ export function filterForShard(shard: { total: number, current: number }, weight
 
   let current = 0;
   const result = new Set<TestGroup>();
-  for (const group of testGroups) {
+  testGroups.forEach((group, index) => {
     // Any test group goes to the shard that contains the first test of this group.
-    // So, this shard gets any group that starts at [from; to)
-    if (current >= from && current < to)
+    // So, this shard gets any group that starts at [from; to).
+    // Fully skipped groups go along with the preceding group.
+    const position = groupSizes[index] ? current : Math.max(current - 1, 0);
+    if (position >= from && position < to)
       result.add(group);
-    current += group.tests.length;
-  }
+    current += groupSizes[index];
+  });
   return result;
 }

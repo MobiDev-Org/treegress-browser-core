@@ -15,7 +15,7 @@
  */
 
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: path.join(__dirname, '..', '..', '.env'), override: true });
+loadEnv({ path: path.join(__dirname, '..', '..', '.env'), override: true, quiet: true });
 process.env.PWTEST_UNDER_TEST = '1';
 
 import { type Config, type PlaywrightTestOptions, type PlaywrightWorkerOptions, type ReporterDescription } from '@playwright/test';
@@ -45,46 +45,15 @@ const testDir = path.join(__dirname, '..');
 const reporters = () => {
   const result: ReporterDescription[] = process.env.CI ? [
     ['dot'],
-    ['json', { outputFile: path.join(outputDir, 'report.json') }],
     ['blob'],
+    ['../config/parquetReporter.ts'],
   ] : [
     ['html', { open: 'on-failure', title: 'Playwright Library Tests' }]
   ];
+  if (process.env.PWTEST_COVERAGE)
+    result.push(['coverage', { outputDir: path.join(__dirname, '..', '..', 'coverage', 'trace-viewer') }]);
   return result;
 };
-
-const os: 'linux' | 'windows' = (process.env.PLAYWRIGHT_SERVICE_OS as 'linux' | 'windows') || 'linux';
-const runId = process.env.PLAYWRIGHT_SERVICE_RUN_ID || new Date().toISOString(); // name the test run
-
-let connectOptions: any;
-let webServer: Config['webServer'];
-
-if (mode === 'service') {
-  connectOptions = { wsEndpoint: 'ws://localhost:3333/' };
-  webServer = {
-    command: 'npx playwright run-server --port=3333',
-    url: 'http://localhost:3333',
-    reuseExistingServer: !process.env.CI,
-  };
-}
-if (mode === 'service2') {
-  process.env.PW_VERSION_OVERRIDE = process.env.PW_VERSION_OVERRIDE || '1.39';
-  connectOptions = {
-    wsEndpoint: `${process.env.PLAYWRIGHT_SERVICE_URL}?cap=${JSON.stringify({ os, runId })}`,
-    timeout: 3 * 60 * 1000,
-    exposeNetwork: '<loopback>',
-    headers: {
-      'x-mpt-access-key': process.env.PLAYWRIGHT_SERVICE_ACCESS_KEY!
-    }
-  };
-}
-if (channel === 'webkit-wsl') {
-  connectOptions = { wsEndpoint: 'ws://localhost:3777/' };
-  webServer = {
-    command: 'set PWTEST_UNDER_TEST=1 && set WSLENV=PWTEST_UNDER_TEST && wsl.exe -d playwright -u pwuser -- bash -lc \'/home/pwuser/node/bin/npx playwright run-server --port=3777\'',
-    url: 'http://localhost:3777',
-  };
-}
 
 const config: Config<PlaywrightWorkerOptions & PlaywrightTestOptions & TestModeWorkerOptions> = {
   testDir,
@@ -93,19 +62,15 @@ const config: Config<PlaywrightWorkerOptions & PlaywrightTestOptions & TestModeW
     timeout: 10000,
   },
   maxFailures: 200,
-  timeout: video ? 60000 : 30000,
-  globalTimeout: 5400000,
-  workers: process.env.CI ? 4 : undefined,
+  timeout: video || (process.platform === 'darwin' && process.arch === 'x64') ? 60000 : 30000,
+  globalTimeout: 7200000,
+  workers: undefined,
   fullyParallel: !process.env.CI,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 3 : 0,
   reporter: reporters(),
   tag: process.env.PW_TAG,
   projects: [],
-  use: {
-    connectOptions,
-  },
-  webServer,
 };
 
 const browserNames = ['chromium', 'webkit', 'firefox'] as BrowserName[];

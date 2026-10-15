@@ -152,6 +152,57 @@ export default defineConfig({
 | [`property: TestOptions.trace`] | Playwright can produce test traces while running the tests. Later on, you can view the trace and get detailed information about Playwright execution by opening [Trace Viewer](./trace-viewer.md). Options include: `'off'`, `'on'`, `'retain-on-failure'` and `'on-first-retry'`  |
 | [`property: TestOptions.video`] | Playwright can record [videos](./videos.md) for your tests. Options include: `'off'`, `'on'`, `'retain-on-failure'` and `'on-first-retry'` |
 
+#### Trace modes
+
+The `trace` option supports several modes that differ in **which runs are recorded** and **which recordings are kept** after the test finishes. The initial run of a test is the "first run"; subsequent runs caused by [retries](./test-retries.md) are "retries".
+
+| Mode | Records a trace on | Keeps the trace when |
+| :- | :- | :- |
+| `'off'` | never | — |
+| `'on'` | every run | always |
+| `'retain-on-failure'` | every run | that run failed |
+| `'retain-on-first-failure'` | first run only | the first run failed |
+| `'retain-on-failure-and-retries'` | every run | that run failed, or it is a retry |
+| `'on-first-retry'` | first retry only | always |
+| `'on-all-retries'` | every retry | always |
+
+The following table shows which traces are kept in a few common scenarios, assuming `retries: 2` is configured:
+
+| Mode | Passes on first run | Fails, then passes on retry | Fails on every run |
+| :- | :- | :- | :- |
+| `'off'` | — | — | — |
+| `'on'` | first run | first run + retry | all three runs |
+| `'retain-on-failure'` | — | first run | all three runs |
+| `'retain-on-first-failure'` | — | first run | first run |
+| `'retain-on-failure-and-retries'` | — | first run + retry | all three runs |
+| `'on-first-retry'` | — | first retry | first retry |
+| `'on-all-retries'` | — | first retry | both retries |
+
+#### Video modes
+
+The `video` option supports the same set of modes as `trace`, and they record and keep recordings using the same rules.
+
+| Mode | Records a video on | Keeps the video when |
+| :- | :- | :- |
+| `'off'` | never | — |
+| `'on'` | every run | always |
+| `'retain-on-failure'` | every run | that run failed |
+| `'retain-on-first-failure'` | first run only | the first run failed |
+| `'retain-on-failure-and-retries'` | every run | that run failed, or it is a retry |
+| `'on-first-retry'` | first retry only | always |
+| `'on-all-retries'` | every retry | always |
+
+The following table shows which videos are kept in a few common scenarios, assuming `retries: 2` is configured:
+
+| Mode | Passes on first run | Fails, then passes on retry | Fails on every run |
+| :- | :- | :- | :- |
+| `'off'` | — | — | — |
+| `'on'` | first run | first run + retry | all three runs |
+| `'retain-on-failure'` | — | first run | all three runs |
+| `'retain-on-first-failure'` | — | first run | first run |
+| `'retain-on-failure-and-retries'` | — | first run + retry | all three runs |
+| `'on-first-retry'` | — | first retry | first retry |
+| `'on-all-retries'` | — | first retry | both retries |
 
 ### Other Options
 
@@ -210,7 +261,7 @@ However, most common ones like `headless` or `viewport` are available directly i
 
 ### Explicit Context Creation and Option Inheritance
 
-If using the built-in `browser` fixture, calling [`method: Browser.newContext`] will create a context with options inherited from the config:
+While a test or hook runs, every browser context created through the Playwright instance used by the test runner inherits context options from the `use` section.  This includes contexts created with the built-in `browser` fixture, a separately launched browser, [`method: BrowserType.launchPersistentContext`], or a direct `playwright-core` import that resolves to the same instance.  Explicit context options take precedence:
 
 ```js title="playwright.config.ts"
 import { defineConfig } from '@playwright/test';

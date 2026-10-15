@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
+import { debugLogger } from '@utils/debugLogger';
+import { monotonicTime } from '@isomorphic/time';
+import { Semaphore } from '@isomorphic/semaphore';
 import { DispatcherConnection, PlaywrightDispatcher, RootDispatcher } from '../server';
 import { AndroidDevice } from '../server/android/android';
 import { Browser } from '../server/browser';
 import { DebugControllerDispatcher } from '../server/dispatchers/debugControllerDispatcher';
-import { startProfiling, stopProfiling } from '../server/utils/profiler';
-import { monotonicTime, Semaphore } from '../utils';
-import { debugLogger } from '../server/utils/debugLogger';
 import { PlaywrightDispatcherOptions } from '../server/dispatchers/playwrightDispatcher';
 
 import type { DispatcherScope, Playwright } from '../server';
@@ -36,15 +36,13 @@ export class PlaywrightConnection {
   private _dispatcherConnection: DispatcherConnection;
   private _cleanups: (() => Promise<void>)[] = [];
   private _id: string;
-  private _disconnected = false;
+  private _onDisconnectPromise: Promise<void> | undefined;
   private _root: DispatcherScope;
-  private _profileName: string;
 
   constructor(semaphore: Semaphore, transport: ServerTransport, controller: boolean, playwright: Playwright, initialize: () => Promise<PlaywrightInitializeResult>, id: string) {
     this._transport = transport;
     this._semaphore = semaphore;
     this._id = id;
-    this._profileName = new Date().toISOString();
 
     const lock = this._semaphore.acquire();
 
@@ -63,7 +61,14 @@ export class PlaywrightConnection {
     transport.on('message', async (message: string) => {
       await lock;
       const messageString = Buffer.from(message).toString();
-      const jsonMessage = JSON.parse(messageString);
+      let jsonMessage: any;
+      try {
+        jsonMessage = JSON.parse(messageString);
+      } catch (e) {
+        debugLogger.log('server', `[${this._id}] failed to parse message: ${e}`);
+        this.close({ code: 1007, reason: 'Malformed message' });
+        return;
+      }
       if (debugLogger.isEnabled('server:channel'))
         debugLogger.log('server:channel', `[${this._id}] ${monotonicTime() * 1000} ◀ RECV ${messageString}`);
       if (debugLogger.isEnabled('server:metadata'))
@@ -81,8 +86,6 @@ export class PlaywrightConnection {
     }
 
     this._root = new RootDispatcher(this._dispatcherConnection, async (scope, params) => {
-      await startProfiling();
-
       const options = await initialize();
       if (options.preLaunchedBrowser) {
         const browser = options.preLaunchedBrowser;
@@ -109,15 +112,19 @@ export class PlaywrightConnection {
     });
   }
 
-  private async _onDisconnect(error?: Error) {
-    this._disconnected = true;
+  private _onDisconnect(error?: Error): Promise<void> {
+    if (!this._onDisconnectPromise)
+      this._onDisconnectPromise = this._doDisconnect(error);
+    return this._onDisconnectPromise;
+  }
+
+  private async _doDisconnect(error?: Error) {
     debugLogger.log('server', `[${this._id}] disconnected. error: ${error}`);
     await this._root.stopPendingOperations(new Error('Disconnected')).catch(() => {});
     this._root._dispose();
     debugLogger.log('server', `[${this._id}] starting cleanup`);
     for (const cleanup of this._cleanups)
       await cleanup().catch(() => {});
-    await stopProfiling(this._profileName);
     this._semaphore.release();
     debugLogger.log('server', `[${this._id}] finished cleanup`);
   }
@@ -134,12 +141,13 @@ export class PlaywrightConnection {
   }
 
   async close(reason?: { code: number, reason: string }) {
-    if (this._disconnected)
-      return;
-    debugLogger.log('server', `[${this._id}] force closing connection: ${reason?.reason || ''} (${reason?.code || 0})`);
-    try {
-      this._transport.close(reason);
-    } catch (e) {
+    if (!this._onDisconnectPromise) {
+      debugLogger.log('server', `[${this._id}] force closing connection: ${reason?.reason || ''} (${reason?.code || 0})`);
+      try {
+        this._transport.close(reason);
+      } catch (e) {
+      }
     }
+    await this._onDisconnect();
   }
 }

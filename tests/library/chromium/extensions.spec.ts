@@ -42,6 +42,54 @@ it.skip(({ isHeadlessShell }) => isHeadlessShell, 'Headless Shell has no support
 it.describe('MV3', () => {
   it.skip(({ channel }) => channel?.startsWith('chrome'), '--load-extension is not supported in Chrome anymore. https://groups.google.com/a/chromium.org/g/chromium-extensions/c/1-g8EFx2BBY/m/S0ET5wPjCAAJ');
 
+  it('should support service worker stop and restart lifecycle', {
+    annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/39475' }
+  }, async ({ launchPersistentContext, asset }) => {
+    const extensionPath = asset('extension-mv3-sw-lifecycle');
+    const context = await launchPersistentContext(extensionPath);
+
+    const serviceWorkers = context.serviceWorkers();
+    const sw1 = serviceWorkers.length ? serviceWorkers[0] : await context.waitForEvent('serviceworker');
+    const startTime1 = await sw1.evaluate(() => (globalThis as any).startTime);
+
+    // stopWorker keeps the same CDP target alive, matching Chrome's natural idle suspension behavior.
+    const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+
+    const waitForCdpEvent = <T>(event: string, predicate: (params: any) => T | undefined): Promise<T> => {
+      return new Promise<T>(resolve => {
+        const handler = (params: any) => {
+          const result = predicate(params);
+          if (result !== undefined) {
+            cdp.off(event as any, handler);
+            resolve(result);
+          }
+        };
+        cdp.on(event as any, handler);
+      });
+    };
+
+    const versionPromise = waitForCdpEvent('ServiceWorker.workerVersionUpdated', ({ versions }: any) => versions[0]?.versionId as string | undefined);
+    const scopePromise = waitForCdpEvent('ServiceWorker.workerRegistrationUpdated', ({ registrations }: any) => registrations[0]?.scopeURL as string | undefined);
+    await cdp.send('ServiceWorker.enable');
+    const versionId = await versionPromise;
+    const scopeURL = await scopePromise;
+
+    const stoppedPromise = waitForCdpEvent('ServiceWorker.workerVersionUpdated', ({ versions }: any) => versions[0]?.runningStatus === 'stopped' ? true : undefined);
+    await cdp.send('ServiceWorker.stopWorker', { versionId });
+    await stoppedPromise;
+
+    const runningPromise = waitForCdpEvent('ServiceWorker.workerVersionUpdated', ({ versions }: any) => versions[0]?.runningStatus === 'running' ? true : undefined);
+    await cdp.send('ServiceWorker.startWorker', { scopeURL });
+    await runningPromise;
+
+    const startTime2 = await sw1.evaluate(() => (globalThis as any).startTime);
+    expect(startTime2).toBeGreaterThan(startTime1);
+    expect(context.serviceWorkers()).toStrictEqual([sw1]); // same object, no new event
+
+    await context.close();
+  });
+
   it('should give access to the service worker', async ({ launchPersistentContext, asset }) => {
     const extensionPath = asset('extension-mv3-simple');
     const context = await launchPersistentContext(extensionPath);
@@ -114,6 +162,23 @@ it.describe('MV3', () => {
     await page.goto(server.EMPTY_PAGE);
     const message = await consolePromise;
     expect(message.text()).toContain('Test console log from a third-party execution context');
+    await context.close();
+  });
+
+  it('should use custom userAgent in service worker fetch requests', async ({ launchPersistentContext, asset, server }) => {
+    server.setRoute('/ua-echo', (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(req.headers['user-agent']);
+    });
+    const extensionPath = asset('extension-mv3-simple');
+    const context = await launchPersistentContext(extensionPath, { userAgent: 'MyTestAgent/1.0' });
+    const serviceWorkers = context.serviceWorkers();
+    const sw = serviceWorkers.length ? serviceWorkers[0] : await context.waitForEvent('serviceworker');
+    const userAgent = await sw.evaluate(async url => {
+      const response = await fetch(url);
+      return response.text();
+    }, server.PREFIX + '/ua-echo');
+    expect(userAgent).toBe('MyTestAgent/1.0');
     await context.close();
   });
 });

@@ -695,10 +695,11 @@ test('static modifiers should be added in serial mode', async ({ runInlineTest }
   expect(result.passed).toBe(0);
   expect(result.skipped).toBe(2);
   expect(result.didNotRun).toBe(1);
-  expect(result.report.suites[0].specs[0].tests[0].annotations).toEqual([{ type: 'slow', location: { file: expect.any(String), line: 6, column: 14 } }]);
-  expect(result.report.suites[0].specs[1].tests[0].annotations).toEqual([{ type: 'fixme', location: { file: expect.any(String), line: 9, column: 12 } }]);
-  expect(result.report.suites[0].specs[2].tests[0].annotations).toEqual([{ type: 'skip', location: { file: expect.any(String), line: 11, column: 12 } }]);
-  expect(result.report.suites[0].specs[3].tests[0].annotations).toEqual([]);
+  const serial = { type: 'serial', location: { file: expect.any(String), line: 0, column: 0 } };
+  expect(result.report.suites[0].specs[0].tests[0].annotations).toEqual([serial, { type: 'slow', location: { file: expect.any(String), line: 6, column: 14 } }]);
+  expect(result.report.suites[0].specs[1].tests[0].annotations).toEqual([serial, { type: 'fixme', location: { file: expect.any(String), line: 9, column: 12 } }]);
+  expect(result.report.suites[0].specs[2].tests[0].annotations).toEqual([serial, { type: 'skip', location: { file: expect.any(String), line: 11, column: 12 } }]);
+  expect(result.report.suites[0].specs[3].tests[0].annotations).toEqual([serial]);
 });
 
 test('should contain only one slow modifier', async ({ runInlineTest }) => {
@@ -755,4 +756,55 @@ test('should skip beforeEach hooks upon modifiers', async ({ runInlineTest }) =>
   expect(result.exitCode).toBe(0);
   expect(result.passed).toBe(1);
   expect(result.skipped).toBe(1);
+});
+
+test('test.abort should fail the test immediately', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('aborted', async () => {
+        test.abort('boom');
+        // Should not be reached.
+        expect(1).toBe(2);
+      });
+    `,
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  expect(result.output).toContain('Test aborted: boom');
+});
+
+test('test.abort from a fixture should fail the test', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.test.ts': `
+      import { test as base, expect } from '@playwright/test';
+      const test = base.extend({
+        guarded: async ({}, use) => {
+          test.abort('not allowed');
+          await use(1);
+        },
+      });
+      test('aborted from fixture', async ({ guarded }) => {
+        expect(guarded).toBe(1);
+      });
+    `,
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  expect(result.output).toContain('Test aborted: not allowed');
+});
+
+test('test.slow should be idempotent', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('slow test', async ({}) => {
+        test.slow();
+        test.slow();
+        expect(test.info().timeout).toBe(90000);
+      });
+    `,
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
 });

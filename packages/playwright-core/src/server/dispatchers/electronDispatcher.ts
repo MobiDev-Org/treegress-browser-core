@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -23,8 +23,8 @@ import type { RootDispatcher } from './dispatcher';
 import type { PageDispatcher } from './pageDispatcher';
 import type { ConsoleMessage } from '../console';
 import type { Electron } from '../electron/electron';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 
 export class ElectronDispatcher extends Dispatcher<Electron, channels.ElectronChannel, RootDispatcher> implements channels.ElectronChannel {
@@ -71,18 +71,18 @@ export class ElectronApplicationDispatcher extends Dispatcher<ElectronApplicatio
   }
 
   async browserWindow(params: channels.ElectronApplicationBrowserWindowParams, progress: Progress): Promise<channels.ElectronApplicationBrowserWindowResult> {
-    const handle = await progress.race(this._object.browserWindow((params.page as PageDispatcher).page()));
+    const handle = await this._object.browserWindow(progress, (params.page as PageDispatcher).page());
     return { handle: JSHandleDispatcher.fromJSHandle(this, handle) };
   }
 
   async evaluateExpression(params: channels.ElectronApplicationEvaluateExpressionParams, progress: Progress): Promise<channels.ElectronApplicationEvaluateExpressionResult> {
     const handle = await progress.race(this._object._nodeElectronHandlePromise);
-    return { value: serializeResult(await progress.race(handle.evaluateExpression(params.expression, { isFunction: params.isFunction }, parseArgument(params.arg)))) };
+    return { value: serializeResult(await handle.evaluateExpression(progress, params.expression, { isFunction: params.isFunction }, parseArgument(params.arg))) };
   }
 
   async evaluateExpressionHandle(params: channels.ElectronApplicationEvaluateExpressionHandleParams, progress: Progress): Promise<channels.ElectronApplicationEvaluateExpressionHandleResult> {
     const handle = await progress.race(this._object._nodeElectronHandlePromise);
-    const result = await progress.race(handle.evaluateExpressionHandle(params.expression, { isFunction: params.isFunction }, parseArgument(params.arg)));
+    const result = await handle.evaluateExpressionHandle(progress, params.expression, { isFunction: params.isFunction }, parseArgument(params.arg));
     return { handle: JSHandleDispatcher.fromJSHandle(this, result) };
   }
 

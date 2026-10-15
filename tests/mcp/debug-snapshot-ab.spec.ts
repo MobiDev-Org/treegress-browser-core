@@ -19,7 +19,7 @@ import { parseResponse, test, expect } from './fixtures';
 
 test.describe('debug snapshot A/B: custom-dom vs aria', () => {
   test.skip(({ mcpBrowser }) => mcpBrowser !== 'chromium', 'Run on Chromium first.');
-  test.use({ mcpCaps: ['testing'] });
+  test.use({ mcpCaps: ['testing'], mcpSnapshotEngine: 'dom' });
 
   test('save both custom-dom and aria snapshots for the same page', async ({ client, server }, testInfo) => {
     // server.setContent('/', `

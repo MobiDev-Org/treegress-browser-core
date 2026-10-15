@@ -4,21 +4,25 @@
 This API is used for the Web API testing. You can use it to trigger API endpoints, configure micro-services, prepare
 environment or the service to your e2e test.
 
-Each Playwright browser context has associated with it [APIRequestContext] instance which shares cookie storage with
-the browser context and can be accessed via [`property: BrowserContext.request`] or [`property: Page.request`].
-It is also possible to create a new APIRequestContext instance manually by calling [`method: APIRequest.newContext`].
+Each Playwright browser context has an associated [APIRequestContext], accessible via
+[`property: BrowserContext.request`] or [`property: Page.request`] (these return the
+**same instance** — `page.request` is a shortcut for `page.context().request`).
+You can also create a standalone, isolated instance with [`method: APIRequest.newContext`].
 
 **Cookie management**
 
-[APIRequestContext] returned by [`property: BrowserContext.request`] and [`property: Page.request`] shares cookie
-storage with the corresponding [BrowserContext]. Each API request will have `Cookie` header populated with the
-values from the browser context. If the API response contains `Set-Cookie` header it will automatically update
-[BrowserContext] cookies and requests made from the page will pick them up. This means that if you log in using
-this API, your e2e test will be logged in and vice versa.
+The [APIRequestContext] returned by [`property: BrowserContext.request`] and
+[`property: Page.request`] uses the same cookie jar as its [BrowserContext]:
 
-If you want API requests to not interfere with the browser cookies you should create a new [APIRequestContext] by
-calling [`method: APIRequest.newContext`]. Such `APIRequestContext` object will have its own isolated cookie
-storage.
+- Every outgoing API request **automatically includes** the context's cookies in the
+  `Cookie` header — you do not need to read cookies from the context and attach them manually.
+- Any `Set-Cookie` headers in API responses are written back to the [BrowserContext],
+  so subsequent page navigations and API calls pick them up.
+- Logging in via the API logs in the browser, and vice versa.
+
+If you want API requests that do **not** share cookies with the browser, create an
+isolated context via [`method: APIRequest.newContext`]. Such `APIRequestContext`
+object will have its own isolated cookie storage.
 
 ```python async
 import os
@@ -120,6 +124,119 @@ with sync_playwright() as p:
     assert await response.body() == '{"status": "ok"}'
 ```
 
+## async method: APIRequestContext.addCookies
+* since: v1.64
+
+Adds cookies into this request context. They will be sent with matching subsequent requests. For [`property: BrowserContext.request`]
+and [`property: Page.request`], this is equivalent to calling [`method: BrowserContext.addCookies`] on the corresponding browser context.
+
+**Usage**
+
+```js
+await request.addCookies([cookieObject1, cookieObject2]);
+```
+
+```java
+request.addCookies(Arrays.asList(cookieObject1, cookieObject2));
+```
+
+```python async
+await request.add_cookies([cookie_object1, cookie_object2])
+```
+
+```python sync
+request.add_cookies([cookie_object1, cookie_object2])
+```
+
+```csharp
+await request.AddCookiesAsync(new[] { cookie1, cookie2 });
+```
+
+### param: APIRequestContext.addCookies.cookies = %%-add-cookies-param-%%
+* since: v1.64
+
+## async method: APIRequestContext.clearCookies
+* since: v1.64
+
+Removes cookies from this request context. Accepts optional filter. For [`property: BrowserContext.request`]
+and [`property: Page.request`], this is equivalent to calling [`method: BrowserContext.clearCookies`] on the corresponding browser context.
+
+**Usage**
+
+```js
+await request.clearCookies();
+await request.clearCookies({ name: 'session-id' });
+await request.clearCookies({ domain: 'my-origin.com' });
+await request.clearCookies({ domain: /.*my-origin\.com/ });
+await request.clearCookies({ path: '/api/v1' });
+await request.clearCookies({ name: 'session-id', domain: 'my-origin.com' });
+```
+
+```java
+request.clearCookies();
+request.clearCookies(new APIRequestContext.ClearCookiesOptions().setName("session-id"));
+request.clearCookies(new APIRequestContext.ClearCookiesOptions().setDomain("my-origin.com"));
+request.clearCookies(new APIRequestContext.ClearCookiesOptions().setPath("/api/v1"));
+request.clearCookies(new APIRequestContext.ClearCookiesOptions()
+                         .setName("session-id")
+                         .setDomain("my-origin.com"));
+```
+
+```python async
+await request.clear_cookies()
+await request.clear_cookies(name="session-id")
+await request.clear_cookies(domain="my-origin.com")
+await request.clear_cookies(path="/api/v1")
+await request.clear_cookies(name="session-id", domain="my-origin.com")
+```
+
+```python sync
+request.clear_cookies()
+request.clear_cookies(name="session-id")
+request.clear_cookies(domain="my-origin.com")
+request.clear_cookies(path="/api/v1")
+request.clear_cookies(name="session-id", domain="my-origin.com")
+```
+
+```csharp
+await request.ClearCookiesAsync();
+await request.ClearCookiesAsync(new() { Name = "session-id" });
+await request.ClearCookiesAsync(new() { Domain = "my-origin.com" });
+await request.ClearCookiesAsync(new() { Path = "/api/v1" });
+await request.ClearCookiesAsync(new() { Name = "session-id", Domain = "my-origin.com" });
+```
+
+### option: APIRequestContext.clearCookies.name = %%-clear-cookies-option-name-%%
+* since: v1.64
+
+### option: APIRequestContext.clearCookies.domain = %%-clear-cookies-option-domain-%%
+* since: v1.64
+
+### option: APIRequestContext.clearCookies.path = %%-clear-cookies-option-path-%%
+* since: v1.64
+
+## async method: APIRequestContext.cookies
+* since: v1.64
+- returns: <[Array]<[Object]>>
+  * alias: Cookie
+  * alias-csharp: BrowserContextCookiesResult
+  - `name` <[string]>
+  - `value` <[string]>
+  - `domain` <[string]>
+  - `path` <[string]>
+  - `expires` <[float]> Unix time in seconds.
+  - `httpOnly` <[boolean]>
+  - `secure` <[boolean]>
+  - `sameSite` <[SameSiteAttribute]<"Strict"|"Lax"|"None">>
+  - `partitionKey` ?<[string]>
+
+If no URLs are specified, this method returns all cookies. If URLs are specified, only cookies that affect those URLs
+are returned. For [`property: BrowserContext.request`] and [`property: Page.request`], this is equivalent to calling
+[`method: BrowserContext.cookies`] on the corresponding browser context.
+
+### param: APIRequestContext.cookies.urls = %%-cookies-param-urls-%%
+* since: v1.64
+
 ## method: APIRequestContext.createFormData
 * since: v1.23
 * langs: csharp
@@ -179,6 +296,8 @@ context cookies from the response. The method will automatically follow redirect
 
 ### option: APIRequestContext.delete.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
+
+### option: APIRequestContext.delete.signal = %%-input-signal-%%
 
 ### option: APIRequestContext.delete.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
@@ -357,6 +476,8 @@ If set changes the fetch method (e.g. [PUT](https://developer.mozilla.org/en-US/
 ### option: APIRequestContext.fetch.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
 
+### option: APIRequestContext.fetch.signal = %%-input-signal-%%
+
 ### option: APIRequestContext.fetch.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
 
@@ -470,6 +591,8 @@ await request.GetAsync("https://example.com/api/getText", new() { Params = query
 ### option: APIRequestContext.get.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
 
+### option: APIRequestContext.get.signal = %%-input-signal-%%
+
 ### option: APIRequestContext.get.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
 
@@ -535,6 +658,8 @@ context cookies from the response. The method will automatically follow redirect
 ### option: APIRequestContext.head.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
 
+### option: APIRequestContext.head.signal = %%-input-signal-%%
+
 ### option: APIRequestContext.head.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
 
@@ -599,6 +724,8 @@ context cookies from the response. The method will automatically follow redirect
 
 ### option: APIRequestContext.patch.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
+
+### option: APIRequestContext.patch.signal = %%-input-signal-%%
 
 ### option: APIRequestContext.patch.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
@@ -786,6 +913,8 @@ await request.PostAsync("https://example.com/api/uploadScript", new() { Multipar
 ### option: APIRequestContext.post.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
 
+### option: APIRequestContext.post.signal = %%-input-signal-%%
+
 ### option: APIRequestContext.post.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
 
@@ -851,6 +980,8 @@ context cookies from the response. The method will automatically follow redirect
 ### option: APIRequestContext.put.timeout = %%-js-python-csharp-fetch-option-timeout-%%
 * since: v1.16
 
+### option: APIRequestContext.put.signal = %%-input-signal-%%
+
 ### option: APIRequestContext.put.failOnStatusCode = %%-js-python-csharp-fetch-option-failonstatuscode-%%
 * since: v1.16
 
@@ -896,3 +1027,15 @@ Returns storage state for this request context, contains current cookies and loc
 - `indexedDB` ?<boolean>
 
 Set to `true` to include IndexedDB in the storage state snapshot.
+
+### option: APIRequestContext.storageState.opfs
+* since: v1.63
+- `opfs` ?<boolean>
+
+Set to `true` to include the origin private file system in the storage state snapshot.
+
+## property: APIRequestContext.tracing
+* since: v1.60
+- type: <[Tracing]>
+
+Tracing recorder for requests made through this API request context.

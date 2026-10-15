@@ -43,6 +43,7 @@ test('ini config sets timeouts and console level', async ({ startClient }) => {
       console.level = error
       timeouts.action = 12345
       timeouts.navigation = 54321
+      timeouts.idle = 6789
     `,
     noTimeoutForTest: true,
   });
@@ -52,6 +53,7 @@ test('ini config sets timeouts and console level', async ({ startClient }) => {
   expect(config.console.level).toBe('error');
   expect(config.timeouts.action).toBe(12345);
   expect(config.timeouts.navigation).toBe(54321);
+  expect(config.timeouts.idle).toBe(6789);
 });
 
 test('ini config sets browser launch options', async ({ startClient }) => {
@@ -105,7 +107,7 @@ test('ini config boolean values', async ({ startClient }) => {
   const { client } = await startClient({
     config: `
       capabilities = config
-      saveTrace = true
+      saveSession = true
       browser.contextOptions.bypassCSP = true
       browser.contextOptions.javaScriptEnabled = false
     `,
@@ -113,7 +115,7 @@ test('ini config boolean values', async ({ startClient }) => {
 
   const result = await client.callTool({ name: 'browser_get_config' });
   const config = JSON.parse(parseResponse(result).result);
-  expect(config.saveTrace).toBe(true);
+  expect(config.saveSession).toBe(true);
   expect(config.browser.contextOptions.bypassCSP).toBe(true);
   expect(config.browser.contextOptions.javaScriptEnabled).toBe(false);
 });

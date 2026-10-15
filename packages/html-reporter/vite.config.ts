@@ -17,21 +17,28 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { bundle } from './bundle';
+import { storyTypes } from './tests/storyTypes';
+import packageJSON from './package.json';
 import path from 'path';
+import { istanbul } from '../../utils/build/viteIstanbul';
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: '',
   plugins: [
     react(),
-    bundle()
+    bundle(),
+    storyTypes({ prefix: packageJSON.name, src: path.resolve(__dirname, 'src'), outFile: path.resolve(__dirname, 'tests/stories.d.ts') }),
+    ...(process.env.PWTEST_COVERAGE ? [istanbul()] : []),
   ],
   resolve: {
     alias: {
       '@web': path.resolve(__dirname, '../web/src'),
+      '@isomorphic': path.resolve(__dirname, '../isomorphic'),
     },
   },
   build: {
-    outDir: path.resolve(__dirname, 'dist'),
+    outDir: path.resolve(__dirname, '../playwright-core/lib/vite/htmlReport'),
     emptyOutDir: true,
     assetsInlineLimit: 100000000,
     chunkSizeWarningLimit: 100000000,
@@ -40,6 +47,8 @@ export default defineConfig({
       output: {
         manualChunks: undefined,
         inlineDynamicImports: true,
+        entryFileNames: 'report.js',
+        assetFileNames: (assetInfo) => assetInfo.names.some(n => n.endsWith('.css')) ? 'report.css' : '[name][extname]',
       },
     },
   },

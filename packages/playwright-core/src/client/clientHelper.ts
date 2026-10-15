@@ -15,9 +15,11 @@
  * limitations under the License.
  */
 
-import { isString } from '../utils/isomorphic/rtti';
+import fs from 'fs';
 
-import type { Platform } from './platform';
+import { isString } from '@isomorphic/rtti';
+import { kBindingsControllerProperty, kFunctionBindingPrefix, serializeAsCallArgument } from '@isomorphic/utilityScriptSerializers';
+import { createGuid } from '@utils/crypto';
 
 export function envObjectToArray(env: NodeJS.ProcessEnv): { name: string, value: string }[] {
   const result: { name: string, value: string }[] = [];
@@ -28,7 +30,7 @@ export function envObjectToArray(env: NodeJS.ProcessEnv): { name: string, value:
   return result;
 }
 
-export async function evaluationScript(platform: Platform, fun: Function | string | { path?: string, content?: string }, arg?: any, addSourceUrl: boolean = true): Promise<string> {
+export async function evaluationScript(fun: Function | string | { path?: string, content?: string }, arg?: any, addSourceUrl: boolean = true): Promise<string> {
   if (typeof fun === 'function') {
     const source = fun.toString();
     const argString = Object.is(arg, undefined) ? 'undefined' : JSON.stringify(arg);
@@ -41,12 +43,28 @@ export async function evaluationScript(platform: Platform, fun: Function | strin
   if (fun.content !== undefined)
     return fun.content;
   if (fun.path !== undefined) {
-    let source = await platform.fs().promises.readFile(fun.path, 'utf8');
+    let source = await fs.promises.readFile(fun.path, 'utf8');
     if (addSourceUrl)
       source = addSourceUrlToScript(source, fun.path);
     return source;
   }
   throw new Error('Either path or content property must be present');
+}
+
+export async function initScriptSourceWithExposedFunctions(fun: Function, arg: any, expose: (name: string, callback: Function) => Promise<void>): Promise<string> {
+  const exposePromises: Promise<void>[] = [];
+  const serialized = serializeAsCallArgument(arg, value => {
+    if (typeof value === 'function') {
+      const name = kFunctionBindingPrefix + createGuid();
+      exposePromises.push(expose(name, value));
+      return { fn: name };
+    }
+    return { fallThrough: value };
+  });
+  await Promise.all(exposePromises);
+  // Bindings backing the functions are registered through their own init scripts
+  // that are guaranteed to run first, so the controller is available here.
+  return `(${fun.toString()})(globalThis['${kBindingsControllerProperty}'].parseInitScriptArg(${JSON.stringify(serialized)}))`;
 }
 
 export function addSourceUrlToScript(source: string, path: string): string {

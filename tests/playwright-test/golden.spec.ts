@@ -17,7 +17,7 @@
 import colors from 'colors/safe';
 import * as fs from 'fs';
 import * as path from 'path';
-import { test, expect, createWhiteImage, paintBlackPixels } from './playwright-test-fixtures';
+import { test, expect, createWebpImage, createWhiteImage, paintBlackPixels } from './playwright-test-fixtures';
 
 const files = {
   'helper.ts': `
@@ -159,6 +159,25 @@ test('should generate separate actual results for repeating names', async ({ run
       'path': 'test-results/a-is-a-test/bar/baz-1-actual.txt'
     }
   ]);
+});
+
+test('should not attach a missing expected snapshot when update-snapshots is none', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test.afterEach(async ({}, testInfo) => {
+        console.log('## ' + JSON.stringify(testInfo.attachments.map(a => a.name)));
+      });
+      test('is a test', ({}) => {
+        expect.soft('a').toMatchSnapshot('foo.txt');
+      });
+    `
+  }, { 'update-snapshots': 'none' });
+  expect(result.exitCode).toBe(1);
+  const names = result.output.split('\n').filter(l => l.startsWith('## ')).map(l => JSON.parse(l.substring(3)))[0];
+  expect(names).toContain('foo-actual.txt');
+  expect(names).not.toContain('foo-expected.txt');
 });
 
 test('should compile with different option combinations', async ({ runTSC }) => {
@@ -341,7 +360,7 @@ test('should update snapshot with the update-snapshots flag', async ({ runInline
   expect(data.toString()).toBe(ACTUAL_SNAPSHOT);
 });
 
-for (const updateSnapshots of ['all', 'changed', 'missing', 'none']) {
+for (const updateSnapshots of ['all', 'changed', 'missing', 'none', 'default']) {
   test(`should update snapshot with the update-snapshots=${updateSnapshots} (config)`, async ({ runInlineTest }, testInfo) => {
     const result = await runInlineTest({
       'playwright.config.ts': `export default { updateSnapshots: '${updateSnapshots}' };`,
@@ -429,6 +448,62 @@ test('should silently write missing expectations locally with the update-snapsho
   expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
   const data = fs.readFileSync(snapshotOutputPath);
   expect(data.toString()).toBe(ACTUAL_SNAPSHOT);
+});
+
+test('should pass when writing missing expectations with the update-snapshots=missing flag', async ({ runInlineTest }, testInfo) => {
+  const ACTUAL_SNAPSHOT = 'Hello world new';
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test('is a test', ({}) => {
+        expect('${ACTUAL_SNAPSHOT}').toMatchSnapshot('snapshot.txt');
+      });
+    `
+  }, { 'update-snapshots': 'missing' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('a.spec.js-snapshots/snapshot.txt');
+  expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
+  expect(fs.readFileSync(snapshotOutputPath, 'utf-8')).toBe(ACTUAL_SNAPSHOT);
+});
+
+test('should fail when writing missing expectations with the update-snapshots=default flag', async ({ runInlineTest }, testInfo) => {
+  const ACTUAL_SNAPSHOT = 'Hello world new';
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test('is a test', ({}) => {
+        expect('${ACTUAL_SNAPSHOT}').toMatchSnapshot('snapshot.txt');
+      });
+    `
+  }, { 'update-snapshots': 'default' });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('a.spec.js-snapshots/snapshot.txt');
+  expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
+  expect(fs.readFileSync(snapshotOutputPath, 'utf-8')).toBe(ACTUAL_SNAPSHOT);
+});
+
+test('should still fail on a mismatching expectation with the update-snapshots=missing flag', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js-snapshots/snapshot.txt': 'Hello world',
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test('is a test', ({}) => {
+        expect('Hello world updated').toMatchSnapshot('snapshot.txt');
+      });
+    `
+  }, { 'update-snapshots': 'missing' });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('a.spec.js-snapshots/snapshot.txt');
+  expect(fs.readFileSync(snapshotOutputPath, 'utf-8')).toBe('Hello world');
 });
 
 test('should silently write missing expectations locally with the update-snapshots flag for negated matcher', async ({ runInlineTest }, testInfo) => {
@@ -537,7 +612,8 @@ test('should compare binary', async ({ runInlineTest }) => {
 });
 
 test('should respect maxDiffPixels option', async ({ runInlineTest }) => {
-  const width = 20, height = 20;
+  const width = 20;
+  const height = 20;
   const BAD_PIXELS = 120;
   const image1 = createWhiteImage(width, height);
   const image2 = paintBlackPixels(image1, BAD_PIXELS);
@@ -589,7 +665,8 @@ test('should respect maxDiffPixels option', async ({ runInlineTest }) => {
 });
 
 test('should respect maxDiffPixelRatio option', async ({ runInlineTest }) => {
-  const width = 20, height = 20;
+  const width = 20;
+  const height = 20;
   const BAD_RATIO = 0.25;
   const BAD_PIXELS = Math.floor(width * height * BAD_RATIO);
   const image1 = createWhiteImage(width, height);
@@ -677,6 +754,59 @@ test('should compare different PNG images', async ({ runInlineTest }, testInfo) 
   expect(fs.existsSync(expectedSnapshotArtifactPath)).toBe(true);
   expect(fs.existsSync(actualSnapshotArtifactPath)).toBe(true);
   expect(fs.existsSync(diffSnapshotArtifactPath)).toBe(true);
+});
+
+test('should compare WEBP images', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js-snapshots/snapshot.webp': createWebpImage(1, 1, 255, 255, 255),
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test('is a test', async ({ page }) => {
+        expect(await page.screenshot({ type: 'webp', clip: { x: 0, y: 0, width: 1, height: 1 } })).toMatchSnapshot('snapshot.webp');
+      });
+    `
+  });
+  expect(result.exitCode).toBe(0);
+});
+
+test('should compare different WEBP images', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js-snapshots/snapshot.webp': createWebpImage(1, 1, 255, 0, 0),
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test('is a test', ({}) => {
+        expect(Buffer.from([${createWebpImage(1, 1, 0, 0, 255).join(',')}])).toMatchSnapshot('snapshot.webp');
+      });
+    `
+  });
+
+  const outputText = result.output;
+  expect(result.exitCode).toBe(1);
+  expect(outputText).toContain('Error: expect(Buffer).toMatchSnapshot(expected)');
+  expect(outputText).toContain('1 pixels (ratio 1.00 of all image pixels) are different.');
+  const expectedSnapshotArtifactPath = testInfo.outputPath('test-results', 'a-is-a-test', 'snapshot-expected.webp');
+  const actualSnapshotArtifactPath = testInfo.outputPath('test-results', 'a-is-a-test', 'snapshot-actual.webp');
+  const diffSnapshotArtifactPath = testInfo.outputPath('test-results', 'a-is-a-test', 'snapshot-diff.webp');
+  expect(fs.existsSync(expectedSnapshotArtifactPath)).toBe(true);
+  expect(fs.existsSync(actualSnapshotArtifactPath)).toBe(true);
+  expect(fs.existsSync(diffSnapshotArtifactPath)).toBe(true);
+});
+
+test('should use webp extension for anonymous webp snapshots', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...files,
+    'a.spec.js': `
+      const { test, expect } = require('./helper');
+      test('is a test', async ({ page }) => {
+        expect(await page.screenshot({ type: 'webp' })).toMatchSnapshot();
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-1-actual.webp'))).toBe(true);
+  expect(fs.existsSync(testInfo.outputPath('a.spec.js-snapshots', 'is-a-test-1.webp'))).toBe(true);
 });
 
 test('should correctly handle different JPEG image signatures', async ({ runInlineTest }, testInfo) => {

@@ -15,6 +15,7 @@
  */
 
 import { contextTest as it, expect } from '../../config/browserTest';
+import { attachFrame } from '../../config/utils';
 import type { Frame, Browser } from '@playwright/test';
 
 it.use({
@@ -43,6 +44,34 @@ it('should handle oopif detach', async function({ page, browser, server }) {
   expect(detachedFrame).toBe(frame);
 });
 
+it('should remove workers of a detached oopif', async function({ page, browser, server }) {
+  await page.goto(server.EMPTY_PAGE);
+  const [worker] = await Promise.all([
+    page.waitForEvent('worker'),
+    attachFrame(page, 'frame1', server.CROSS_PROCESS_PREFIX + '/worker/worker.html'),
+  ]);
+  await assertOOPIFCount(browser, 1);
+  expect(page.workers().length).toBe(1);
+  await Promise.all([
+    worker.waitForEvent('close'),
+    page.goto(server.PREFIX + '/title.html'),
+  ]);
+  expect(page.workers().length).toBe(0);
+});
+
+it('should not hang in unrouteAll when oopif worker is gone', async function({ page, context, browser, server }) {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42278' });
+  await context.route('**/*', route => route.continue());
+  await page.goto(server.EMPTY_PAGE);
+  await Promise.all([
+    page.waitForEvent('worker'),
+    attachFrame(page, 'frame1', server.CROSS_PROCESS_PREFIX + '/worker/worker.html'),
+  ]);
+  await assertOOPIFCount(browser, 1);
+  await page.goto(server.CROSS_PROCESS_PREFIX + '/title.html');
+  await context.unrouteAll();
+});
+
 it('should handle remote -> local -> remote transitions', async function({ page, browser, server }) {
   await page.goto(server.PREFIX + '/dynamic-oopif.html');
   expect(page.frames().length).toBe(2);
@@ -62,9 +91,7 @@ it('should handle remote -> local -> remote transitions', async function({ page,
   await assertOOPIFCount(browser, 1);
 });
 
-it('should get the proper viewport', async ({ page, browser, server }) => {
-  it.fixme();
-
+it.fixme('should get the proper viewport', async ({ page, browser, server }) => {
   expect(page.viewportSize()).toEqual({ width: 1280, height: 720 });
   await page.goto(server.PREFIX + '/dynamic-oopif.html');
   expect(page.frames().length).toBe(2);
@@ -371,13 +398,32 @@ it('should intercept response body from oopif', async function({ page, browser, 
   expect(await response.text()).toBeTruthy();
 });
 
-it('should allow to re-connect to OOPIFs with CDP when iframes were there already', async ({ browserType, server, browserMajorVersion }) => {
+it('should navigate a local frame to oopif with frame.goto', async ({ page, browser, server }) => {
+  await page.goto(server.PREFIX + '/frames/one-frame.html');
+  await assertOOPIFCount(browser, 0);
+  const frame = page.frames()[1];
+  expect(frame.url()).toBe(server.PREFIX + '/frames/frame.html');
+
+  const navigations: string[] = [];
+  page.on('framenavigated', f => navigations.push(f.url()));
+
+  const response = await frame.goto(server.CROSS_PROCESS_PREFIX + '/grid.html');
+  await assertOOPIFCount(browser, 1);
+  expect(response!.url()).toBe(server.CROSS_PROCESS_PREFIX + '/grid.html');
+  expect(response!.frame()).toBe(frame);
+  expect(frame.url()).toBe(server.CROSS_PROCESS_PREFIX + '/grid.html');
+  expect(await frame.evaluate(() => '' + location.href)).toBe(server.CROSS_PROCESS_PREFIX + '/grid.html');
+  expect(navigations).toEqual([server.CROSS_PROCESS_PREFIX + '/grid.html']);
+  expect(page.frames().length).toBe(2);
+});
+
+it('should allow to re-connect to OOPIFs with CDP when iframes were there already', async ({ browserType, server }) => {
   it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/36095' });
   it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/17656' });
-  it.skip(browserMajorVersion < 141, 'old chromium does not have TargetInfo.parentFrameId');
+  it.skip(!!process.env.PWTEST_CHANNEL, 'Test default channel only');
 
   const cdpPort = 10123 + it.info().parallelIndex * 4;
-  const hostBrowser = await browserType.launch({ cdpPort } as any);
+  const hostBrowser = await browserType.launch({ channel: 'chromium', args: ['--remote-debugging-port=' + cdpPort] });
   const hostPage = await hostBrowser.newPage();
   await hostPage.goto(server.PREFIX + '/dynamic-oopif.html');
 
@@ -386,6 +432,61 @@ it('should allow to re-connect to OOPIFs with CDP when iframes were there alread
   expect(page.frames().length).toBe(2);
   await assertOOPIFCount(browser, 1);
   expect(await page.frames()[1].evaluate(() => '' + location.href)).toBe(server.CROSS_PROCESS_PREFIX + '/grid.html');
+  await browser.close();
+  await hostBrowser.close();
+});
+
+it('should report the whole frame tree when connecting over CDP to nested OOPIFs', async ({ browserType, server }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42955' });
+  it.skip(!!process.env.PWTEST_CHANNEL, 'Test default channel only');
+
+  // top > cross-site iframe (oopif) > same-process child iframe > sandboxed srcdoc iframe (oopif).
+  server.setRoute('/nested-top.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<h1 id=top>TOP</h1><iframe src="${server.CROSS_PROCESS_PREFIX}/nested-b.html"></iframe>`);
+  });
+  server.setRoute('/nested-b.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<iframe src="/nested-c.html"></iframe>`);
+  });
+  server.setRoute('/nested-c.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<iframe sandbox="allow-scripts" srcdoc="<p>D</p>"></iframe>`);
+  });
+
+  const cdpPort = 10123 + it.info().parallelIndex * 4;
+  const hostBrowser = await browserType.launch({
+    channel: 'chromium',
+    args: ['--remote-debugging-port=' + cdpPort, '--site-per-process', '--enable-features=IsolateSandboxedIframes'],
+  });
+  const hostPage = await hostBrowser.newPage();
+  await hostPage.goto(server.PREFIX + '/nested-top.html');
+
+  const browser = await browserType.connectOverCDP(`http://localhost:${cdpPort}`);
+  await assertOOPIFCount(browser, 2);
+  const page = browser.contexts()[0].pages()[0];
+
+  const expectedTree = [
+    server.PREFIX + '/nested-top.html',
+    '    ' + server.CROSS_PROCESS_PREFIX + '/nested-b.html',
+    '        ' + server.CROSS_PROCESS_PREFIX + '/nested-c.html',
+    '            about:srcdoc',
+  ];
+  const dumpFrames = async (frame: Frame, indent = ''): Promise<string[]> => {
+    expect(await frame.evaluate(() => '' + location.href)).toBe(frame.url());
+    const result = [indent + frame.url()];
+    for (const child of frame.childFrames())
+      result.push(...await dumpFrames(child, indent + '    '));
+    return result;
+  };
+  expect(await dumpFrames(page.mainFrame())).toEqual(expectedTree);
+  expect(page.frames().length).toBe(4);
+
+  expect(page.url()).toBe(server.PREFIX + '/nested-top.html');
+  expect(await page.evaluate(() => window.top === window)).toBe(true);
+  await expect(page.locator('#top')).toHaveText('TOP');
+  await expect(page.frameLocator('iframe').frameLocator('iframe').frameLocator('iframe').locator('p')).toHaveText('D');
+
   await browser.close();
   await hostBrowser.close();
 });

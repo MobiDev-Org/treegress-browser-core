@@ -15,14 +15,19 @@
  */
 import net from 'net';
 import path from 'path';
+import { stripVTControlCharacters } from 'util';
 
-import { launchProcess, isURLAvailable, monotonicTime, raceAgainstDeadline, ManualPromise } from 'playwright-core/lib/utils';
-import { colors } from 'playwright-core/lib/utils';
-import { debug } from 'playwright-core/lib/utilsBundle';
+import colors from 'colors/safe';
+import debug from 'debug';
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { monotonicTime } from '@isomorphic/time';
+import { raceAgainstDeadline } from '@isomorphic/timeoutRunner';
+import { isURLAvailable } from '@utils/network';
+import { launchProcess } from '@utils/processLauncher';
 
 import type { TestRunnerPlugin } from '.';
 import type { FullConfig } from '../../types/testReporter';
-import type { FullConfigInternal } from '../common/config';
+import type { FullConfigInternal } from '../common';
 import type { ReporterV2 } from '../reporters/reporterV2';
 
 export type WebServerPluginOptions = {
@@ -168,7 +173,7 @@ export class WebServerPlugin implements TestRunnerPlugin {
       launchedProcess[stdio]!.on('data', data => {
         if (!this._options.wait?.[stdio] || stdioWaitCollectors[stdio] === undefined)
           return;
-        stdioWaitCollectors[stdio] += data.toString();
+        stdioWaitCollectors[stdio] += stripVTControlCharacters(data.toString());
         this._options.wait[stdio].lastIndex = 0;
         const result = this._options.wait[stdio].exec(stdioWaitCollectors[stdio]);
         if (result) {
@@ -217,7 +222,17 @@ async function isPortUsed(port: number): Promise<boolean> {
           resolve(true);
         });
   });
-  return await innerIsPortUsed('127.0.0.1') || await innerIsPortUsed('::1');
+  return new Promise<boolean>(resolve => {
+    let pending = 2;
+    const onResult = (result: boolean) => {
+      if (result)
+        resolve(true);
+      else if (--pending === 0)
+        resolve(false);
+    };
+    void innerIsPortUsed('127.0.0.1').then(onResult);
+    void innerIsPortUsed('::1').then(onResult);
+  });
 }
 
 async function waitFor(waitFn: () => Promise<boolean>, cancellationToken: { canceled: boolean }) {

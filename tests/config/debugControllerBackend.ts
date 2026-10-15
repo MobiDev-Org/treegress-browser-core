@@ -16,7 +16,7 @@
 
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
-import type * as channels from '@protocol/channels';
+import type * as channels from '../../packages/playwright-core/src/client/channels';
 
 export type ProtocolRequest = {
   id: number;
@@ -145,7 +145,7 @@ export class Backend extends EventEmitter {
   }
 
   async initialize() {
-    await this.channel.initialize({ codegenId: 'playwright-test', sdkLanguage: 'javascript' });
+    await this.channel.initialize({ codegenId: 'playwright-test', sdkLanguage: 'javascript' }, undefined);
   }
 
   async close() {

@@ -45,6 +45,7 @@ export type TreeViewProps<T> = {
   treeState: TreeState,
   setTreeState: (treeState: TreeState) => void,
   autoExpandDepth?: number,
+  revealSelectedKey?: number,
 };
 
 const scrollPositions = new Map<string, number>();
@@ -66,6 +67,7 @@ export function TreeView<T extends TreeItem>({
   noItemsMessage,
   dataTestId,
   autoExpandDepth,
+  revealSelectedKey,
 }: TreeViewProps<T>) {
   const treeItems = React.useMemo(() => {
     return indexTree<T>(rootItem, selectedItem, treeState.expandedItems, autoExpandDepth || 0, isVisible);
@@ -73,7 +75,6 @@ export function TreeView<T extends TreeItem>({
 
   const itemListRef = React.useRef<HTMLDivElement>(null);
   const [highlightedItem, setHighlightedItem] = React.useState<any>();
-  const [isKeyboardNavigation, setIsKeyboardNavigation] = React.useState(false);
 
   React.useEffect(() => {
     onHighlighted?.(highlightedItem);
@@ -94,6 +95,14 @@ export function TreeView<T extends TreeItem>({
     if (itemListRef.current)
       itemListRef.current.scrollTop = scrollPositions.get(name) || 0;
   }, [name]);
+
+  React.useEffect(() => {
+    if (revealSelectedKey === undefined)
+      return;
+    const selectedEl = itemListRef.current?.querySelector('[aria-selected="true"]');
+    if (selectedEl)
+      scrollIntoViewIfNeeded(selectedEl);
+  }, [revealSelectedKey]);
 
   const toggleExpanded = React.useCallback((item: T) => {
     const { expanded } = treeItems.get(item)!;
@@ -132,7 +141,8 @@ export function TreeView<T extends TreeItem>({
       role={treeItems.size > 0 ? 'tree' : undefined}
       tabIndex={0}
       onKeyDown={event => {
-        if (selectedItem && event.key === 'Enter') {
+        // Enter is handled by the focused button inside the row, if any.
+        if (selectedItem && event.key === 'Enter' && event.target === event.currentTarget) {
           onAccepted?.(selectedItem);
           return;
         }
@@ -180,12 +190,9 @@ export function TreeView<T extends TreeItem>({
           }
         }
 
-        // scrollIntoViewIfNeeded(element || undefined);
         onHighlighted?.(undefined);
-        if (newSelectedItem) {
-          setIsKeyboardNavigation(true);
+        if (newSelectedItem)
           onSelected?.(newSelectedItem);
-        }
         setHighlightedItem(undefined);
       }}
       ref={itemListRef}
@@ -207,9 +214,7 @@ export function TreeView<T extends TreeItem>({
           setHighlightedItem={setHighlightedItem}
           render={render}
           icon={icon}
-          title={title}
-          isKeyboardNavigation={isKeyboardNavigation}
-          setIsKeyboardNavigation={setIsKeyboardNavigation} />;
+          title={title} />;
       })}
     </div>
   </div>;
@@ -229,8 +234,6 @@ type TreeItemHeaderProps<T> = {
   render: (item: T) => React.ReactNode,
   title?: (item: T) => string,
   icon?: (item: T) => string | undefined,
-  isKeyboardNavigation: boolean,
-  setIsKeyboardNavigation: (value: boolean) => void,
 };
 
 export function TreeItemHeader<T extends TreeItem>({
@@ -246,18 +249,14 @@ export function TreeItemHeader<T extends TreeItem>({
   toggleSubtree,
   render,
   title,
-  icon,
-  isKeyboardNavigation,
-  setIsKeyboardNavigation }: TreeItemHeaderProps<T>) {
+  icon }: TreeItemHeaderProps<T>) {
   const groupId = React.useId();
   const itemRef = React.useRef(null);
 
   React.useEffect(() => {
-    if (selectedItem === item && isKeyboardNavigation && itemRef.current) {
+    if (selectedItem?.id === item.id && itemRef.current)
       scrollIntoViewIfNeeded(itemRef.current);
-      setIsKeyboardNavigation(false);
-    }
-  }, [item, selectedItem, isKeyboardNavigation, setIsKeyboardNavigation]);
+  }, [item.id, selectedItem?.id]);
 
   const itemData = treeItems.get(item)!;
   const indentation = itemData.depth;
@@ -320,9 +319,7 @@ export function TreeItemHeader<T extends TreeItem>({
           setHighlightedItem={setHighlightedItem}
           render={render}
           title={title}
-          icon={icon}
-          isKeyboardNavigation={isKeyboardNavigation}
-          setIsKeyboardNavigation={setIsKeyboardNavigation} />;
+          icon={icon} />;
       })}
     </div>}
   </div>;

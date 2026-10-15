@@ -14,15 +14,13 @@
  * limitations under the License.
  */
 
-// @ts-ignore
-import { asLocator } from 'playwright-core/lib/utils';
 
 import { test as it, expect } from './pageTest';
 import { unshift } from '../config/utils';
+import type { Page } from 'playwright-core';
 
-async function snapshotForAI(page: any, options?: { timeout?: number, mode?: 'full' | 'incremental', track?: string }): Promise<string> {
-  const snapshot = await page._snapshotForAI(options);
-  return options?.mode === 'incremental' ? snapshot.incremental : snapshot.full;
+async function snapshotForAI(page: Page, options?: Omit<Parameters<Page['ariaSnapshot']>[0], 'mode'>): Promise<string> {
+  return await page.ariaSnapshot({ ...options, mode: 'ai' });
 }
 
 it('should generate refs', async ({ page }) => {
@@ -39,11 +37,11 @@ it('should generate refs', async ({ page }) => {
       - button "Two" [ref=e3]
       - button "Three" [ref=e4]
   `);
-  await expect(page.locator('aria-ref=e2')).toHaveText('One');
-  await expect(page.locator('aria-ref=e3')).toHaveText('Two');
-  await expect(page.locator('aria-ref=e4')).toHaveText('Three');
+  await expect(page.getByRef('e2')).toHaveText('One');
+  await expect(page.getByRef('e3')).toHaveText('Two');
+  await expect(page.getByRef('e4')).toHaveText('Three');
 
-  await page.locator('aria-ref=e3').evaluate((e: HTMLElement) => {
+  await page.getByRef('e3').evaluate((e: HTMLElement) => {
     e.textContent = 'Not Two';
   });
 
@@ -69,50 +67,109 @@ it('should list iframes', async ({ page }) => {
   expect(frameSnapshot).toEqual('- heading "World" [level=1]');
 });
 
+it('should snapshot a locator inside an iframe', async ({ page }) => {
+  await page.setContent(`
+    <h1>Main Page</h1>
+    <iframe srcdoc="<ul><li>Item 1</li><li>Item 2</li></ul>"></iframe>
+  `);
+
+  const list = page.frames()[1].locator('ul');
+  const snapshot = await list.ariaSnapshot({ mode: 'ai' });
+  expect(snapshot).toContainYaml(`
+    - list [ref=f1e1]:
+      - listitem [ref=f1e2]: Item 1
+      - listitem [ref=f1e3]: Item 2
+  `);
+});
+
+it('should limit depth across iframe boundary', async ({ page }) => {
+  await page.setContent(`
+    <nav>
+      <iframe srcdoc="<ul><li><button>Deep</button></li></ul>"></iframe>
+    </nav>
+  `);
+
+  const snapshot = await snapshotForAI(page, { depth: 3 });
+  expect(snapshot).toContainYaml(`
+    - navigation [ref=e2]:
+      - iframe [ref=e3]:
+        - list [ref=f1e2]:
+          - listitem [ref=f1e3]
+  `);
+  expect(snapshot).not.toContain('button');
+});
+
 it('should stitch all frame snapshots', async ({ page, server }) => {
   await page.goto(server.PREFIX + '/frames/nested-frames.html');
   const snapshot = await snapshotForAI(page);
   expect(snapshot).toContainYaml(`
     - generic [active] [ref=e1]:
       - iframe [ref=e2]:
-        - generic [active] [ref=f1e1]:
+        - generic [ref=f1e1]:
           - iframe [ref=f1e2]:
-            - generic [ref=f3e2]: Hi, I'm frame
+            - generic [ref=f3e1]: Hi, I'm frame
           - iframe [ref=f1e3]:
-            - generic [ref=f4e2]: Hi, I'm frame
+            - generic [ref=f4e1]: Hi, I'm frame
       - iframe [ref=e3]:
-        - generic [ref=f2e2]: Hi, I'm frame
+        - generic [ref=f2e1]: Hi, I'm frame
   `);
 
-  const href = await page.locator('aria-ref=e1').evaluate(e => e.ownerDocument.defaultView.location.href);
+  const href = await page.getByRef('e1').evaluate(e => e.ownerDocument.defaultView.location.href);
   expect(href).toBe(server.PREFIX + '/frames/nested-frames.html');
 
-  const href2 = await page.locator('aria-ref=f1e2').evaluate(e => e.ownerDocument.defaultView.location.href);
+  const href2 = await page.getByRef('f1e2').evaluate(e => e.ownerDocument.defaultView.location.href);
   expect(href2).toBe(server.PREFIX + '/frames/two-frames.html');
 
-  const href3 = await page.locator('aria-ref=f4e2').evaluate(e => e.ownerDocument.defaultView.location.href);
+  const href3 = await page.getByRef('f4e2').evaluate(e => e.ownerDocument.defaultView.location.href);
   expect(href3).toBe(server.PREFIX + '/frames/frame.html');
 
   {
-    const { resolvedSelector } = await (page.locator('aria-ref=e1') as any)._resolveSelector();
-    const sourceCode = asLocator('javascript', resolvedSelector);
-    expect(sourceCode).toBe(`locator('body')`);
+    const resolved = await page.getByRef('e1').normalize();
+    expect(resolved.toString()).toBe(`locator('body')`);
   }
   {
-    const { resolvedSelector } = await (page.locator('aria-ref=f4e2') as any)._resolveSelector();
-    const sourceCode = asLocator('javascript', resolvedSelector);
-    expect(sourceCode).toBe(`locator('iframe[name="2frames"]').contentFrame().locator('iframe[name="dos"]').contentFrame().getByText('Hi, I\\'m frame')`);
+    const resolved = await page.getByRef('f4e2').normalize();
+    expect(resolved.toString()).toBe(`locator('iframe[name="2frames"]').contentFrame().locator('iframe[name="dos"]').contentFrame().getByText('Hi, I\\'m frame')`);
   }
   {
     // Should tolerate .describe().
-    const { resolvedSelector } = await (page.locator('aria-ref=f3e2').describe('foo bar') as any)._resolveSelector();
-    const sourceCode = asLocator('javascript', resolvedSelector);
-    expect(sourceCode).toBe(`locator('iframe[name=\"2frames\"]').contentFrame().locator('iframe[name=\"uno\"]').contentFrame().getByText('Hi, I\\'m frame')`);
+    const resolved = await page.getByRef('f3e2').describe('foo bar').normalize();
+    expect(resolved.toString()).toBe(`locator('iframe[name=\"2frames\"]').contentFrame().locator('iframe[name=\"uno\"]').contentFrame().getByText('Hi, I\\'m frame')`);
   }
   {
-    const error = await (page.locator('aria-ref=e1000') as any)._resolveSelector().catch(e => e);
+    const error = await page.getByRef('e1000').normalize().catch(e => e);
     expect(error.message).toContain(`No element matching aria-ref=e1000`);
   }
+});
+
+it('should re-number refs across navigations but not same-document navigations', async ({ page, server }) => {
+  server.setRoute('/one.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<button>One</button>');
+  });
+  server.setRoute('/two.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<button>Two</button>');
+  });
+
+  // The first committed document keeps the base seq, so the main frame has no prefix.
+  await page.goto(server.PREFIX + '/one.html');
+  const oneRef = (await snapshotForAI(page)).match(/button "One" \[ref=(e\d+)\]/)![1];
+  await expect(page.getByRef(oneRef)).toHaveText('One');
+
+  // Cross-document navigation re-numbers the main frame, so its refs gain a frame prefix.
+  await page.goto(server.PREFIX + '/two.html');
+  const twoRef = (await snapshotForAI(page)).match(/button "Two" \[ref=(f\d+e\d+)\]/)![1];
+  await expect(page.getByRef(twoRef)).toHaveText('Two');
+
+  // The stale ref from the previous document must not resolve against the new one.
+  const error = await page.getByRef(oneRef).normalize().catch(e => e);
+  expect(error.message).toContain(`No element matching aria-ref=${oneRef}`);
+
+  // Same-document navigation keeps refs intact.
+  await page.evaluate(() => history.pushState({}, '', '/pushed.html'));
+  expect(await snapshotForAI(page)).toContain(`button "Two" [ref=${twoRef}]`);
+  await expect(page.getByRef(twoRef)).toHaveText('Two');
 });
 
 it('should persist iframe references', async ({ page }) => {
@@ -140,7 +197,7 @@ it('should persist iframe references', async ({ page }) => {
         - iframe [ref=e6]:
           - button "button2" [ref=f2e2]
   `);
-  await expect(page.locator('aria-ref=f2e2')).toHaveText('button2');
+  await expect(page.getByRef('f2e2')).toHaveText('button2');
 
   await page.evaluate(() => {
     const frame = document.createElement('iframe');
@@ -156,8 +213,8 @@ it('should persist iframe references', async ({ page }) => {
         - iframe [ref=e6]:
           - button "button2" [ref=f2e2]
   `);
-  await expect(page.locator('aria-ref=f3e2')).toHaveText('button1');
-  await expect(page.locator('aria-ref=f2e2')).toHaveText('button2');
+  await expect(page.getByRef('f3e2')).toHaveText('button1');
+  await expect(page.getByRef('f2e2')).toHaveText('button2');
 });
 
 it('should not generate refs for elements with pointer-events:none', async ({ page }) => {
@@ -283,12 +340,212 @@ it('should not nest cursor pointer hints', async ({ page }) => {
   `);
 
   const snapshot = await snapshotForAI(page);
+  // The link's name is redundant - "Link with a button" prints as text and "Button" as the button -
+  // so it is dropped even though the node is clickable.
   expect(snapshot).toContainYaml(`
-    - link \"Link with a button Button\" [ref=e2] [cursor=pointer]:
+    - link [ref=e2] [cursor=pointer]:
       - /url: about:blank
       - text: Link with a button
       - button "Button" [ref=e3]
   `);
+});
+
+it('should omit names that just repeat printed descendant nodes', async ({ page }) => {
+  await page.setContent(`
+    <h3><a style="cursor: pointer" href="/issues/1">Clipboard API</a></h3>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - heading [level=3] [ref=e2]:
+      - link "Clipboard API" [ref=e3] [cursor=pointer]:
+        - /url: /issues/1
+  `);
+});
+
+it('should omit redundant name when a contributing wrapper is collapsed', async ({ page }) => {
+  // The flex span contributes to the heading's name, but is then removed from the tree as a
+  // single-child generic wrapper. Its contribution is fully represented by the link, so the
+  // heading's name is still redundant.
+  await page.setContent(`
+    <h3><span style="display: flex"><a style="cursor: pointer" href="/issues/1">Clipboard API</a></span></h3>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - heading [level=3] [ref=e2]:
+      - link "Clipboard API" [ref=e4] [cursor=pointer]:
+        - /url: /issues/1
+  `);
+});
+
+it('should omit redundant name when a contributor is a skipped leaf generic', async ({ page }) => {
+  // The outer span is not collapsed (its child is an element, not text), so it becomes a leaf
+  // generic node that contributes to both names. The link's rendered name covers it, which in turn
+  // makes the heading's name redundant.
+  await page.setContent(`
+    <h3><a style="cursor: pointer" href="/issues/1"><span><span>Clipboard API</span></span></a></h3>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - heading [level=3] [ref=e2]:
+      - link "Clipboard API" [ref=e3] [cursor=pointer]:
+        - /url: /issues/1
+  `);
+});
+
+it('should keep the name when the contributing wrapper collapses into repeating text', async ({ page }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41985' });
+  // The outer span is marked as represented while it still wraps the icon. Once the nameless
+  // image is dropped, the span collapses into a lone text repeating the button's name and removes
+  // itself, so the button must keep the name derived from it.
+  await page.setContent(`
+    <button>
+      <span>
+        <span>
+          <svg focusable="false" tabindex="-1" aria-hidden="true" viewBox="0 0 448 512">
+            <path d="M416 208H272V64c0-17.67-14.33-32-32-32h-32c-17.67 0-32 14.33-32 32v144H32c-17.67 0-32 14.33-32 32v32c0 17.67 14.33 32 32 32h144v144c0 17.67 14.33 32 32 32h32c17.67 0 32-14.33 32-32V304h144c17.67 0 32-14.33 32-32v-32c0-17.67-14.33-32-32-32z"/>
+          </svg>
+        </span>
+        <span>Add New Item</span>
+      </span>
+    </button>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - button "Add New Item" [ref=e2]
+  `);
+});
+
+it('should keep names not derived from printed nodes', async ({ page }) => {
+  await page.setContent(`
+    <h3 aria-label="Clipboard API issue"><a style="cursor: pointer" href="/issues/1">Clipboard API</a></h3>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - heading "Clipboard API issue" [level=3] [ref=e2]:
+      - link "Clipboard API" [ref=e3] [cursor=pointer]:
+        - /url: /issues/1
+  `);
+});
+
+it('should omit images without an accessible name', async ({ page }) => {
+  await page.setContent(`
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=">
+    <img alt="A cat" src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=">
+    <img style="cursor: pointer" src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=">
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  // A nameless image that cannot be clicked carries no information and is omitted.
+  expect(snapshot).toContainYaml(`
+    - generic [active] [ref=e1]:
+      - img "A cat" [ref=e3]
+      - img [ref=e4] [cursor=pointer]
+  `);
+  expect(snapshot).not.toContain('[ref=e2]');
+});
+
+it('should omit a nameless image nested inside a link', async ({ page }) => {
+  // The decorative image has no name, so it is dropped even though it sits inside a clickable link.
+  await page.setContent(`
+    <a style="cursor: pointer" href="/issue/1">Open issue <img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="></a>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - link "Open issue" [ref=e2] [cursor=pointer]:
+      - /url: /issue/1
+  `);
+  expect(snapshot).not.toContain('img');
+});
+
+it('should keep icon-only clickable elements', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42013' },
+}, async ({ page }) => {
+  const icon = `<svg viewBox="0 0 1024 1024"><use xlink:href="#icon"></use></svg>`;
+  await page.setContent(`
+    <div style="cursor: pointer" aria-haspopup="true"><i>${icon}</i></div>
+    <img style="cursor: pointer" src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=">
+    <a style="cursor: pointer" href="/target">${icon}</a>
+    <div onclick="void 0">${icon}</div>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - generic [active] [ref=e1]:
+      - generic [ref=e2] [cursor=pointer]
+      - img [ref=e5] [cursor=pointer]
+      - link [ref=e6] [cursor=pointer]:
+        - /url: /target
+  `);
+});
+
+it('should omit leaf generic whose text is already in an ancestor name', async ({ page }) => {
+  // The inner element is block so it survives as its own generic node (an inline single-text span
+  // would be collapsed into the link instead). It inherits the link's pointer cursor.
+  await page.setContent(`
+    <a style="cursor: pointer" href="/issues/15860"><div>[Feature] a dedicated clipboard API</div></a>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  // The link keeps its name, and the inner leaf generic that the name was computed from is dropped
+  // because its text is already shown by the name.
+  expect(snapshot).toContainYaml(`
+    - link "[Feature] a dedicated clipboard API" [ref=e2] [cursor=pointer]:
+      - /url: /issues/15860
+  `);
+  expect(snapshot).not.toContain('[ref=e3]');
+});
+
+it('should omit name-repeating generic behind a wrapper', async ({ page }) => {
+  // The leaf generic that repeats the link's name sits inside a nameless wrapper. Its text is
+  // first inlined into the wrapper, which then faces the link and removes itself.
+  await page.setContent(`
+    <a style="cursor: pointer" href="/labels"><span style="display: inline-block"><span style="display: inline-block"><span>P3-collecting-feedback</span></span></span></a>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - link "P3-collecting-feedback" [ref=e2] [cursor=pointer]:
+      - /url: /labels
+  `);
+  expect(snapshot.split('P3-collecting-feedback')).toHaveLength(2);
+});
+
+it('should resolve refs of distilled-away nodes', async ({ page }) => {
+  await page.setContent(`
+    <a style="cursor: pointer" href="/issues/15860"><div>[Feature] a dedicated clipboard API</div></a>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  // The inner leaf generic is distilled away, but its ref still resolves to the element.
+  expect(snapshot).not.toContain('[ref=e3]');
+  await expect(page.getByRef('e3')).toHaveText('[Feature] a dedicated clipboard API');
+});
+
+it('should not distill snapshots outside of ai mode', async ({ page }) => {
+  await page.setContent(`
+    <h3><a href="/issues/1">Clipboard API</a></h3>
+  `);
+
+  // The heading name would be dropped as redundant in ai mode; matching mode keeps it.
+  await expect(page.locator('body')).toMatchAriaSnapshot(`
+    - heading "Clipboard API" [level=3]:
+      - link "Clipboard API":
+        - /url: /issues/1
+  `);
+});
+
+it('should truncate data url in link', async ({ page }) => {
+  const base64 = Buffer.from('<p>hello</p>').toString('base64');
+  await page.setContent(`<a href="data:text/html;base64,${base64}">a link</a>`);
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContain('/url: data:text/html;base64,…');
+  expect(snapshot).not.toContain(base64);
 });
 
 it('should gracefully fallback when child frame cant be captured', async ({ page, server }) => {
@@ -310,9 +567,8 @@ it('should auto-wait for navigation', async ({ page, server }) => {
     page.evaluate(() => window.location.reload()),
     snapshotForAI(page)
   ]);
-  expect(snapshot).toContainYaml(`
-    - generic [ref=e2]: Hi, I'm frame
-  `);
+  // The snapshot races the reload, which may re-number the main frame, so accept any ref.
+  expect(snapshot).toMatch(/- generic \[active\] \[ref=(?:f\d+)?e\d+\]: Hi, I'm frame/);
 });
 
 it('should auto-wait for blocking CSS', async ({ page, server }) => {
@@ -457,6 +713,94 @@ it('should support many properties on iframes', async ({ page }) => {
   `);
 });
 
+it('should snapshot frameset pages', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41784' } }, async ({ page, server }) => {
+  server.setRoute('/frameset.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<frameset rows="50%,50%"><frameset cols="50%,50%"><frame src="/frame-one.html"><frame src="/frame-two.html"></frameset><frame src="/frame-three.html"></frameset>`);
+  });
+  for (const name of ['one', 'two', 'three']) {
+    server.setRoute(`/frame-${name}.html`, (req, res) => {
+      res.setHeader('Content-Type', 'text/html');
+      res.end(`<button>Button ${name}</button>`);
+    });
+  }
+  await page.goto(server.PREFIX + '/frameset.html');
+
+  const snapshot = await snapshotForAI(page, { timeout: 3000 });
+  expect(snapshot).toContainYaml(`
+    - generic [active] [ref=e1]:
+      - generic [ref=e2]:
+        - iframe [ref=e3]:
+          - button "Button one" [ref=f1e2]
+        - iframe [ref=e4]:
+          - button "Button two" [ref=f2e2]
+      - iframe [ref=e5]:
+        - button "Button three" [ref=f3e2]
+  `);
+  await expect(page.getByRef('f2e2')).toHaveText('Button two');
+});
+
+it('should snapshot a locator inside a frameset frame', async ({ page, server }) => {
+  await page.goto(server.PREFIX + '/frames/frameset.html');
+
+  const snapshot = await page.frames()[1].locator('body').ariaSnapshot({ mode: 'ai' });
+  expect(snapshot).toContainYaml(`
+    - generic [ref=f1e1]: Hi, I'm frame
+  `);
+
+  await expect(page.getByRef('f1e1')).toHaveText(`Hi, I'm frame`);
+  const resolved = await page.getByRef('f1e1').normalize();
+  expect(resolved.toString()).toBe(`locator('frame').first().contentFrame().locator('body')`);
+});
+
+it('should stitch iframes inside a frameset frame', async ({ page, server }) => {
+  server.setRoute('/frameset-with-iframe.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<frameset><frame src="/frame-with-iframe.html"></frameset>`);
+  });
+  server.setRoute('/frame-with-iframe.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<button>In frame</button><iframe srcdoc="<button>In iframe</button>"></iframe>`);
+  });
+  await page.goto(server.PREFIX + '/frameset-with-iframe.html');
+
+  expect(await snapshotForAI(page)).toContainYaml(`
+    - iframe [ref=e2]:
+      - generic [ref=f1e1]:
+        - button "In frame" [ref=f1e2]
+        - iframe [ref=f1e3]:
+          - button "In iframe" [ref=f2e2]
+  `);
+  await expect(page.getByRef('f1e2')).toHaveText('In frame');
+  await expect(page.getByRef('f2e2')).toHaveText('In iframe');
+
+  const resolved = await page.getByRef('f2e2').normalize();
+  expect(resolved.toString()).toBe(`locator('frame').contentFrame().locator('iframe').contentFrame().getByRole('button', { name: 'In iframe' })`);
+});
+
+it('should stitch nested frameset documents', async ({ page, server }) => {
+  server.setRoute('/outer-frameset.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<frameset><frame src="/inner-frameset.html"></frameset>`);
+  });
+  server.setRoute('/inner-frameset.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<frameset><frameset><frame src="/leaf.html"></frameset></frameset>`);
+  });
+  server.setRoute('/leaf.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<button>Leaf button</button>`);
+  });
+  await page.goto(server.PREFIX + '/outer-frameset.html');
+
+  expect(await snapshotForAI(page)).toContainYaml(`
+    - iframe [ref=e2]:
+      - iframe [ref=f1e3]:
+        - button "Leaf button" [ref=f2e2]
+  `);
+  await expect(page.getByRef('f2e2')).toHaveText('Leaf button');
+});
+
 it('should collapse inline generic nodes', async ({ page }) => {
   await page.setContent(`
     <ul>
@@ -487,6 +831,37 @@ it('should collapse inline generic nodes', async ({ page }) => {
   `);
 });
 
+it('should inline single leaf generic child into parent generic', async ({ page }) => {
+  // The nameless images are distilled away, so each wrapper is left with a single leaf generic
+  // child, whose text is inlined into the wrapper - recursively for the second one.
+  await page.setContent(`
+    <div><img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="><div>Status: Open.</div></div>
+    <div><img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="><div><img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="><div>Nested twice.</div></div></div>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - generic [active] [ref=e1]:
+      - generic [ref=e2]: "Status: Open."
+      - generic [ref=e5]: Nested twice.
+  `);
+});
+
+it('should inline a deeply nested generic', async ({ page }) => {
+  // Every wrapper contains a nameless image (distilled away) plus a single generic child, so the
+  // text bubbles up the whole chain - all the way into the body.
+  const img = `<img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=">`;
+  await page.setContent(`
+    <div>${img}<div>${img}<div>${img}<div>${img}<div>Deeply nested.</div></div></div></div></div>
+  `);
+
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - generic [active] [ref=e1]: Deeply nested.
+  `);
+  expect(snapshot).not.toContain('img');
+});
+
 it('should not remove generic nodes with title', async ({ page }) => {
   await page.setContent(`<div title="Element title">Element content</div>`);
 
@@ -496,251 +871,118 @@ it('should not remove generic nodes with title', async ({ page }) => {
   `);
 });
 
-it('should create incremental snapshots on multiple tracks', async ({ page }) => {
-  await page.setContent(`<ul><li><button>a button</button></li><li><span>a span</span></li><li id=hidden-li style="display:none">some text</li></ul>`);
-
-  expect(await snapshotForAI(page, { track: 'first', mode: 'full' })).toContainYaml(`
-    - list [ref=e2]:
-      - listitem [ref=e3]:
-        - button "a button" [ref=e4]
-      - listitem [ref=e5]: a span
-  `);
-  expect(await snapshotForAI(page, { track: 'second', mode: 'full' })).toContainYaml(`
-    - list [ref=e2]:
-      - listitem [ref=e3]:
-        - button "a button" [ref=e4]
-      - listitem [ref=e5]: a span
-  `);
-  expect(await snapshotForAI(page, { track: 'first', mode: 'incremental' })).toContainYaml(`
-  `);
-
-  await page.evaluate(() => {
-    document.querySelector('span').textContent = 'changed span';
-    document.getElementById('hidden-li').style.display = 'inline';
-  });
-  expect(await snapshotForAI(page, { track: 'first', mode: 'incremental' })).toContainYaml(`
-    - <changed> list [ref=e2]:
-      - ref=e3 [unchanged]
-      - listitem [ref=e5]: changed span
-      - listitem [ref=e6]: some text
-  `);
-
-  await page.evaluate(() => {
-    document.querySelector('span').textContent = 'a span';
-    document.getElementById('hidden-li').style.display = 'none';
-  });
-  expect(await snapshotForAI(page, { track: 'first', mode: 'incremental' })).toContainYaml(`
-    - <changed> list [ref=e2]:
-      - ref=e3 [unchanged]
-      - listitem [ref=e5]: a span
-  `);
-  expect(await snapshotForAI(page, { track: 'second', mode: 'incremental' })).toContainYaml(`
-  `);
-
-  expect(await snapshotForAI(page, { track: 'second', mode: 'full' })).toContainYaml(`
-    - list [ref=e2]:
-      - listitem [ref=e3]:
-        - button "a button" [ref=e4]
-      - listitem [ref=e5]: a span
-  `);
-});
-
-it('should create incremental snapshot for attribute change', async ({ page }) => {
-  await page.setContent(`<button>a button</button>`);
-  await page.evaluate(() => document.querySelector('button').focus());
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - button "a button" [active] [ref=e2]
-  `);
-
-  await page.evaluate(() => document.querySelector('button').blur());
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> button "a button" [ref=e2]
-  `);
-});
-
-it('should create incremental snapshot for child removal', async ({ page }) => {
-  await page.setContent(`<li><button>a button</button><span>some text</span></li>`);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - listitem [ref=e2]:
-      - button "a button" [ref=e3]
-      - text: some text
-  `);
-
-  await page.evaluate(() => document.querySelector('span').remove());
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> listitem [ref=e2]:
-      - ref=e3 [unchanged]
-  `);
-});
-
-it('should create incremental snapshot for child addition', async ({ page }) => {
-  await page.setContent(`<li><button>a button</button><span style="display:none">some text</span></li>`);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - listitem [ref=e2]:
-      - button "a button" [ref=e3]
-  `);
-
-  await page.evaluate(() => document.querySelector('span').style.display = 'inline');
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> listitem [ref=e2]:
-      - ref=e3 [unchanged]
-      - text: some text
-  `);
-});
-
-it('should create incremental snapshot for prop change', async ({ page }) => {
-  await page.setContent(`<a href="about:blank" style="cursor:pointer">a link</a>`);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - link "a link" [ref=e2] [cursor=pointer]:
-      - /url: about:blank
-  `);
-
-  await page.evaluate(() => document.querySelector('a').setAttribute('href', 'https://playwright.dev'));
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> link "a link" [ref=e2] [cursor=pointer]:
-      - /url: https://playwright.dev
-  `);
-});
-
-it('should create incremental snapshot for cursor change', async ({ page }) => {
-  await page.setContent(`<a href="about:blank" style="cursor:pointer">a link</a>`);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - link "a link" [ref=e2] [cursor=pointer]:
-      - /url: about:blank
-  `);
-
-  await page.evaluate(() => document.querySelector('a').style.cursor = 'default');
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> link "a link" [ref=e2]:
-      - /url: about:blank
-  `);
-});
-
-it('should create incremental snapshot for name change', async ({ page }) => {
-  await page.setContent(`<button><span>a button</span></button>`);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - button "a button" [ref=e2]
-  `);
-
-  await page.evaluate(() => document.querySelector('span').textContent = 'new button');
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> button "new button" [ref=e3]
-  `);
-});
-
-it('should create incremental snapshot for text change', async ({ page }) => {
-  await page.setContent(`<li><span>an item</span></li>`);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - listitem [ref=e2]: an item
-  `);
-
-  await page.evaluate(() => document.querySelector('span').textContent = 'new text');
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> listitem [ref=e2]: new text
-  `);
-});
-
-it('should produce incremental snapshot for iframes', async ({ page }) => {
-  await page.setContent(`
-    <iframe srcdoc="
-      <li>
-        <span style='display:none'>outer text</span>
-        <button>a button</button>
-        <iframe src='data:text/html,<li>inner text</li>' style='display:none'></iframe>
-      </li>
-    "></iframe>
-  `);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - iframe [ref=e2]:
-      - listitem [ref=f1e2]:
-        - button "a button" [ref=f1e3]
-  `);
-
-  await page.frames()[1].evaluate(() => {
-    document.querySelector('span').style.display = 'block';
-    document.querySelector('iframe').style.display = 'block';
-  });
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> listitem [ref=f1e2]:
-      - generic [ref=f1e4]: outer text
-      - ref=f1e3 [unchanged]
-      - iframe [ref=f1e5]
-    - <changed> iframe [ref=f1e5]:
-      - listitem [ref=f2e2]: inner text
-  `);
-});
-
-it('should create multiple chunks in incremental snapshot', async ({ page }) => {
+it('should limit depth', async ({ page }) => {
   await page.setContent(`
     <ul>
-      <li><span>item1</span></li>
-      <li><span>item2</span></li>
-      <li><div role=group><span>item3</span></div></li>
-      <ul>
-        <li id=to-remove>to be removed</li>
-        <li>one more</li>
-      </ul>
+      <li>item1</li>
+      <a href="about:blank" style="cursor:pointer">link</a>
+      <li>
+        <ul id=target>
+          <li>item2</li>
+          <li>
+            <ul>
+              <li>item3</li>
+            </ul>
+          </li>
+        </ul>
+      </li>
     </ul>
   `);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
+
+  const snapshot1 = await snapshotForAI(page, { depth: 1 });
+  expect(snapshot1).toContainYaml(`
     - list [ref=e2]:
       - listitem [ref=e3]: item1
-      - listitem [ref=e4]: item2
+      - link "link" [ref=e4] [cursor=pointer]:
+        - /url: about:blank
+      - listitem [ref=e5]
+  `);
+
+  const snapshot2 = await snapshotForAI(page, { depth: 3 });
+  expect(snapshot2).toContainYaml(`
+    - list [ref=e2]:
+      - listitem [ref=e3]: item1
+      - link "link" [ref=e4] [cursor=pointer]:
+        - /url: about:blank
       - listitem [ref=e5]:
-        - group [ref=e6]: item3
-      - list [ref=e7]:
-        - listitem [ref=e8]: to be removed
-        - listitem [ref=e9]: one more
+        - list [ref=e6]:
+          - listitem [ref=e7]: item2
+          - listitem [ref=e8]
   `);
 
-  await page.evaluate(() => {
-    const spans = document.querySelectorAll('span');
-    spans[0].textContent = 'new item1';
-    spans[2].textContent = 'new item3';
-    const button = document.createElement('button');
-    button.textContent = 'button';
-    spans[2].parentElement.appendChild(button);
-    document.querySelector('#to-remove').remove();
-  });
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> listitem [ref=e3]: new item1
-    - <changed> group [ref=e6]:
-      - text: new item3
-      - button "button" [ref=e10]
-    - <changed> list [ref=e7]:
-      - ref=e9 [unchanged]
-  `);
-});
-
-it('should not create incremental snapshots without tracks', async ({ page }) => {
-  await page.setContent(`<ul><li><button>a button</button></li><li><span>a span</span></li><li id=hidden-li style="display:none">some text</li></ul>`);
-
-  expect(await snapshotForAI(page, { mode: 'full' })).toContainYaml(`
+  const snapshot3 = await snapshotForAI(page, { depth: 100 });
+  expect(snapshot3).toContainYaml(`
     - list [ref=e2]:
-      - listitem [ref=e3]:
-        - button "a button" [ref=e4]
-      - listitem [ref=e5]: a span
+      - listitem [ref=e3]: item1
+      - link "link" [ref=e4] [cursor=pointer]:
+        - /url: about:blank
+      - listitem [ref=e5]:
+        - list [ref=e6]:
+          - listitem [ref=e7]: item2
+          - listitem [ref=e8]:
+            - list [ref=e9]:
+              - listitem [ref=e10]: item3
   `);
-  expect(await snapshotForAI(page, { mode: 'incremental' })).toBe(undefined);
+
+  const snapshot4 = await page.locator('#target').ariaSnapshot({ mode: 'ai', depth: 1 });
+  expect(snapshot4).toContainYaml(`
+    - list [ref=e6]:
+      - listitem [ref=e7]: item2
+      - listitem [ref=e8]
+  `);
 });
 
-it('should create incremental snapshot for children swap', async ({ page }) => {
+it('should annotate aria-hidden elements', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42223' } }, async ({ page }) => {
   await page.setContent(`
-    <ul>
-      <li>item 1</li>
-      <li>item 2</li>
-    </ul>
-  `);
-  expect(await snapshotForAI(page, { track: 'track', mode: 'full' })).toContainYaml(`
-    - list [ref=e2]:
-      - listitem [ref=e3]: item 1
-      - listitem [ref=e4]: item 2
+    <h2>Visible heading</h2>
+    <div aria-hidden="true">
+      <h1>Hidden heading</h1>
+      <p>Hidden content</p>
+    </div>
+    <h2>After hidden</h2>
   `);
 
-  await page.evaluate(() => document.querySelector('ul').appendChild(document.querySelector('li')));
-  expect(await snapshotForAI(page, { track: 'track', mode: 'incremental' })).toContainYaml(`
-    - <changed> list [ref=e2]:
-      - ref=e4 [unchanged]
-      - ref=e3 [unchanged]
+  expect(await snapshotForAI(page)).toContainYaml(`
+    - generic [active] [ref=e1]:
+      - heading "Visible heading" [level=2] [ref=e2]
+      - generic [aria-hidden] [ref=e3]:
+        - heading [level=1] [ref=e4]: Hidden heading
+        - paragraph [ref=e5]: Hidden content
+      - heading "After hidden" [level=2] [ref=e6]
   `);
+
+  // Default snapshot excludes aria-hidden elements entirely.
+  const defaultSnapshot = await page.locator('body').ariaSnapshot();
+  expect(defaultSnapshot).not.toContain('Hidden content');
+});
+
+it('should only annotate the top element in a hidden subtree', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42223' } }, async ({ page }) => {
+  await page.setContent(`
+    <div aria-hidden="true">
+      <h1>Heading</h1>
+      <p>Paragraph</p>
+    </div>
+  `);
+
+  // Only the element with aria-hidden="true" gets the annotation, not its descendants.
+  expect(await snapshotForAI(page)).toContainYaml(`
+    - generic [aria-hidden] [ref=e2]:
+      - heading [level=1] [ref=e3]: Heading
+      - paragraph [ref=e4]: Paragraph
+  `);
+});
+
+it('should not include hidden iframes', async ({ page }) => {
+  await page.setContent(`
+    <iframe name="visible" srcdoc="<button>Visible</button>"></iframe>
+    <iframe name="hidden" style="visibility: hidden" srcdoc="<button>Hidden</button>"></iframe>
+    <iframe name="none" style="display: none" srcdoc="<button>None</button>"></iframe>
+  `);
+  const snapshot = await snapshotForAI(page);
+  expect(snapshot).toContainYaml(`
+    - iframe [ref=e2]:
+      - button "Visible" [ref=f1e2]
+  `);
+  expect(snapshot).not.toContain('Hidden');
+  expect(snapshot).not.toContain('None');
 });

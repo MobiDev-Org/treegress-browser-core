@@ -15,26 +15,32 @@
  */
 
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: path.join(__dirname, '..', '..', '.env') });
+loadEnv({ path: path.join(__dirname, '..', '..', '.env'), quiet: true });
+process.env.PWTEST_UNDER_TEST = '1';
 
 import { defineConfig, type ReporterDescription } from './stable-test-runner';
 import * as path from 'path';
 
-const outputDir = path.join(__dirname, '..', '..', 'test-results');
 const reporters = () => {
   const result: ReporterDescription[] = process.env.CI ? [
     ['dot'],
-    ['json', { outputFile: path.join(outputDir, 'report.json') }],
     ['blob', { outputDir: path.join(__dirname, '..', '..', 'blob-report') }],
+    ['../config/parquetReporter.ts'],
   ] : [
     ['list']
   ];
+  if (process.env.PWTEST_COVERAGE)
+    result.push(['coverage', { outputDir: path.join(__dirname, '..', '..', 'coverage', 'html-reporter') }]);
   return result;
 };
 export default defineConfig({
   timeout: 30000,
+  use: {
+    // Coverage of the html reporter and trace viewer pages, built with PWTEST_COVERAGE=1.
+    trace: process.env.PWTEST_COVERAGE ? { mode: 'on', snapshots: false, screenshots: false, _coverage: true } as any : 'off',
+  },
   forbidOnly: !!process.env.CI,
-  workers: process.env.CI ? 3 : undefined,
+  workers: undefined,
   snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
   projects: [
     {

@@ -16,7 +16,7 @@
 
 import path from 'path';
 
-import { createGuid } from 'playwright-core/lib/utils';
+import { createGuid } from '@utils/crypto';
 
 import { serializeRegexPatterns } from '../isomorphic/teleReceiver';
 
@@ -135,10 +135,17 @@ export class TeleReporterEmitter implements ReporterV2 {
     });
   }
 
-  onError(error: reporterTypes.TestError): void {
+  onError(error: reporterTypes.TestError, workerInfo?: reporterTypes.WorkerInfo): void {
     this._messageSink({
       method: 'onError',
-      params: { error }
+      params: {
+        error,
+        workerInfo: workerInfo ? {
+          workerIndex: workerInfo.workerIndex,
+          parallelIndex: workerInfo.parallelIndex,
+          projectName: workerInfo.project.name,
+        } : undefined,
+      },
     });
   }
 
@@ -193,6 +200,7 @@ export class TeleReporterEmitter implements ReporterV2 {
       globalTeardown: config.globalTeardown,
       tags: config.tags,
       webServer: config.webServer,
+      failOnFlakyTests: config.failOnFlakyTests,
     };
   }
 
@@ -308,7 +316,9 @@ export class TeleReporterEmitter implements ReporterV2 {
       id: (step as any)[this._idSymbol],
       parentStepId: (step.parent as any)?.[this._idSymbol],
       title: step.title,
+      subtitle: step.subtitle,
       category: step.category,
+      params: step.params,
       startTime: +step.startTime,
       location: this._relativeLocation(step.location),
     };

@@ -24,7 +24,7 @@
   text-overflow: ellipsis;
 }
 
-.action-title-selector {
+.action-title-subtitle {
   text-overflow: ellipsis;
   overflow: hidden;
   color: var(--vscode-tab-inactiveForeground);
@@ -49,10 +49,20 @@
   color: var(--vscode-foreground);
 }
 
-.action-location > span {
+.action-location > button {
   margin: 0 4px;
   cursor: pointer;
   text-decoration: underline;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.action-location > button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .action-duration {
@@ -72,21 +82,6 @@
   display: flex;
   align-items: center;
   padding-right: 3px;
-}
-
-.action-icons {
-  flex: none;
-  display: flex;
-  flex-direction: row;
-  cursor: pointer;
-  height: 20px;
-  position: relative;
-  top: 1px;
-  border-bottom: 1px solid transparent;
-}
-
-.action-icons:hover {
-  border-bottom: 1px solid var(--vscode-sideBarTitle-foreground);
 }
 
 .action-error {
@@ -118,10 +113,8 @@
 }
 
 .action-list-show-all {
-  display: flex;
-  cursor: pointer;
+  align-self: flex-start;
   height: 28px;
-  align-items: center;
 }
 
 .action-list-container {

@@ -145,8 +145,6 @@ browserTest.describe('page screenshot', () => {
     annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/4038' },
   }, async ({ browserName, headless, platform, contextFactory, channel }) => {
     browserTest.fixme(browserName === 'chromium' && !headless && platform === 'linux', 'Chromium has gpu problems on linux with large screenshots');
-    // TODO: figure this out. https://github.com/microsoft/playwright/issues/38476
-    browserTest.fixme(platform === 'darwin' && browserName === 'chromium', 'SwiftShader is forced on Mac, and does not render below 8192px');
     browserTest.slow(true, 'Large screenshot is slow');
 
     const context = await contextFactory();
@@ -210,6 +208,20 @@ browserTest.describe('page screenshot', () => {
     expect(pixel(0, 0).b).toBeLessThan(128);
     expect(pixel(0, 999).r).toBeLessThan(128);
     expect(pixel(0, 999).b).toBeGreaterThan(128);
+  });
+
+  browserTest('should not hang when event loop is blocked', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/36702' } }, async ({ page, trace, mode }) => {
+    browserTest.skip(trace === 'on', 'taking a snapshot hangs when the page is blocked');
+    browserTest.skip(mode === 'driver', 'test hooks are not available in driver mode');
+    browserTest.setTimeout(5000);
+    const __testHookBeforeScreenshot = async () => {
+      page.evaluate(() => {
+        console.log('blocked');
+        while (true) {}
+      }).catch(() => {});
+      await page.waitForEvent('console', e => e.text() === 'blocked');
+    };
+    await expect(page.screenshot({ fullPage: true, timeout: 200, __testHookBeforeScreenshot } as any)).rejects.toThrow(/page.screenshot: Timeout 200ms exceeded/);
   });
 });
 

@@ -19,7 +19,7 @@ import type { ChildProcess } from 'child_process';
 import { execSync, spawn } from 'child_process';
 import net from 'net';
 import fs from 'fs';
-import { stripAnsi } from './utils';
+import { inheritAndCleanEnv, stripAnsi } from './utils';
 
 type TestChildParams = {
   command: string[],
@@ -111,10 +111,7 @@ export class TestChildProcess {
     const command = params.shell ? params.command.join(' ') : params.command[0];
     const args = params.shell ? [] : params.command.slice(1);
     this.process = spawn(command, args, {
-      env: {
-        ...process.env,
-        ...params.env,
-      },
+      env: inheritAndCleanEnv(params.env),
       cwd: params.cwd,
       shell: params.shell,
       // On non-windows platforms, `detached: true` makes child process a leader of a new
@@ -236,6 +233,7 @@ export function killProcessGroup(pid: number, signal: 'SIGINT' | 'SIGKILL' = 'SI
 export type CommonFixtures = {
   childProcess: (params: TestChildParams) => TestChildProcess;
   waitForPort: (port: number) => Promise<void>;
+  findFreePort: () => Promise<number>;
 };
 
 export type CommonWorkerFixtures = {
@@ -288,6 +286,20 @@ export const commonFixtures: Fixtures<CommonFixtures, CommonWorkerFixtures> = {
       }
     });
     token.canceled = true;
+  },
+
+  findFreePort: async ({}, use) => {
+    await use(async () => {
+      return new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address() as net.AddressInfo;
+          server.close(() => resolve(port));
+        });
+        server.on('error', reject);
+
+      });
+    });
   },
 };
 

@@ -16,13 +16,13 @@
 
 import os from 'os';
 
-import { wrapInASCIIBox } from '../utils/ascii';
+import { wrapInASCIIBox } from '@utils/ascii';
+import { RecentLogsCollector } from '@utils/debugLogger';
 import { BrowserType, kNoXServerRunningError } from '../browserType';
 import { BidiBrowser } from './bidiBrowser';
 import { kBrowserCloseMessageId } from './bidiConnection';
 import { chromiumSwitches } from '../chromium/chromiumSwitches';
-import { RecentLogsCollector } from '../utils/debugLogger';
-import { waitForReadyState } from '../chromium/chromium';
+import { profileInUseError, waitForReadyState } from '../chromium/chromium';
 import { shouldProxyLoopback } from '../chromium/crBrowser';
 
 import type { BrowserOptions } from '../browser';
@@ -40,17 +40,15 @@ export class BidiChromium extends BrowserType {
     // Chrome doesn't support Bidi, we create Bidi over CDP which is used by Chrome driver.
     // bidiOverCdp depends on chromium-bidi which we only have in devDependencies, so
     // we load bidiOverCdp dynamically.
-    const bidiTransport = await require('./bidiOverCdp').connectBidiOverCdp(transport);
+    const bidiOverCdp = require('./bidiOverCdp');
+    const bidiTransport = await bidiOverCdp.connectBidiOverCdp(transport);
     (transport as any)[kBidiOverCdpWrapper] = bidiTransport;
     try {
       return BidiBrowser.connect(this.attribution.playwright, bidiTransport, options);
     } catch (e) {
-      if (browserLogsCollector.recentLogs().some(log => log.includes('Failed to create a ProcessSingleton for your profile directory.'))) {
-        throw new Error(
-            'Failed to create a ProcessSingleton for your profile directory. ' +
-            'This usually means that the profile is already in use by another instance of Chromium.'
-        );
-      }
+      const error = profileInUseError(browserLogsCollector.recentLogs());
+      if (error)
+        throw error;
       throw e;
     }
   }
@@ -101,7 +99,7 @@ export class BidiChromium extends BrowserType {
   }
 
   override async waitForReadyState(options: types.LaunchOptions, browserLogsCollector: RecentLogsCollector): Promise<{ wsEndpoint?: string }> {
-    return waitForReadyState({ ...options, cdpPort: 0 }, browserLogsCollector);
+    return waitForReadyState({ ...options, args: ['--remote-debugging-port=0'] }, browserLogsCollector);
   }
 
   private _innerDefaultArgs(options: types.LaunchOptions): string[] {
@@ -113,7 +111,7 @@ export class BidiChromium extends BrowserType {
       throw new Error('Playwright manages remote debugging connection itself.');
     if (args.find(arg => !arg.startsWith('-')))
       throw new Error('Arguments can not specify page to be opened');
-    const chromeArguments = [...chromiumSwitches(options.assistantMode)];
+    const chromeArguments = [...chromiumSwitches()];
 
     if (os.platform() === 'darwin') {
       // See https://issues.chromium.org/issues/40277080

@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -16,12 +16,13 @@
 
 import { BrowserContextDispatcher } from './browserContextDispatcher';
 import { BrowserDispatcher } from './browserDispatcher';
+import { WorkerDispatcher } from './pageDispatcher';
 import { Dispatcher } from './dispatcher';
 
 import type { BrowserType } from '../browserType';
 import type { RootDispatcher } from './dispatcher';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 export class BrowserTypeDispatcher extends Dispatcher<BrowserType, channels.BrowserTypeChannel, RootDispatcher> implements channels.BrowserTypeChannel {
   _type_BrowserType = true;
@@ -56,7 +57,7 @@ export class BrowserTypeDispatcher extends Dispatcher<BrowserType, channels.Brow
     if (this._denyLaunch)
       throw new Error(`Launching more browsers is not allowed.`);
 
-    const browser = await this._object.connectOverCDP(progress, params.endpointURL, params);
+    const browser = await this._object.connectOverCDP(progress, params);
     const browserDispatcher = new BrowserDispatcher(this, browser);
     return {
       browser: browserDispatcher,
@@ -64,12 +65,10 @@ export class BrowserTypeDispatcher extends Dispatcher<BrowserType, channels.Brow
     };
   }
 
-  async connectOverCDPTransport(params: channels.BrowserTypeConnectOverCDPTransportParams, progress: Progress): Promise<channels.BrowserTypeConnectOverCDPTransportResult> {
+  async connectToWorker(params: channels.BrowserTypeConnectToWorkerParams, progress: Progress): Promise<channels.BrowserTypeConnectToWorkerResult> {
     if (this._denyLaunch)
       throw new Error(`Launching more browsers is not allowed.`);
-
-    const browser = await this._object.connectOverCDPTransport(progress, params.transport as any);
-    const browserDispatcher = new BrowserDispatcher(this, browser);
-    return { browser: browserDispatcher, defaultContext: browser._defaultContext ? BrowserContextDispatcher.from(browserDispatcher, browser._defaultContext) : undefined };
+    const worker = await this._object.connectToWorker(progress, params.endpoint);
+    return { worker: new WorkerDispatcher(this, worker) };
   }
 }

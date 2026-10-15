@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { parseResponse, test, expect } from './fixtures';
+import { test, expect } from './fixtures';
 
 test('should respect --snapshot-mode=full', async ({ startClient, server }) => {
   server.setContent('/', `<button>Button 1</button>`, 'text/html');
@@ -31,7 +31,7 @@ test('should respect --snapshot-mode=full', async ({ startClient, server }) => {
       url: server.PREFIX,
     },
   })).toHaveResponse({
-    snapshot: expect.stringContaining(`button "Button 1" [ref=e2]`),
+    snapshot: expect.stringContaining(`- button "Button 1" [ref=e2]`),
   });
 
   await client.callTool({
@@ -48,47 +48,9 @@ test('should respect --snapshot-mode=full', async ({ startClient, server }) => {
   expect(await client.callTool({
     name: 'browser_snapshot',
   })).toHaveResponse({
-    snapshot: expect.stringMatching(/button "Button 1" \[ref=e2\][\s\S]*button "Button 2" \[ref=e3\]/),
+    inlineSnapshot: expect.stringContaining(`- button "Button 1" [ref=e2]
+  - button "Button 2" [ref=e3]`),
   });
-});
-
-test('should respect --snapshot-mode=incremental', async ({ startClient, server, mcpBrowser }) => {
-  test.fixme(mcpBrowser === 'webkit', 'Active handling?');
-  server.setContent('/', `<button>Button 1</button>`, 'text/html');
-
-  const { client } = await startClient({
-    args: ['--snapshot-mode=incremental'],
-  });
-
-  expect(await client.callTool({
-    name: 'browser_navigate',
-    arguments: {
-      url: server.PREFIX,
-    },
-  })).toHaveResponse({
-    snapshot: expect.stringContaining(`button "Button 1" [ref=e2]`),
-  });
-
-  await client.callTool({
-    name: 'browser_evaluate',
-    arguments: {
-      function: `async () => {
-        const button2 = document.createElement('button');
-        button2.textContent = 'Button 2';
-        document.body.appendChild(button2);
-      }`,
-    },
-  });
-
-  const clickResponse = await client.callTool({
-    name: 'browser_click',
-    arguments: {
-      element: 'Button 2',
-      ref: 'e3',
-    },
-  });
-  const clickSnapshot = parseResponse(clickResponse).snapshot || '';
-  expect(clickSnapshot).toContain(`button "Button 2" [active] [ref=e3]`);
 });
 
 test('should respect --snapshot-mode=none', async ({ startClient, server }) => {
@@ -131,6 +93,32 @@ test('should not inline console messages with --snapshot-mode=none', async ({ st
 
   expect(response).not.toHaveResponse({
     events: expect.stringContaining('error message'),
+  });
+});
+
+test('should respect --snapshot-boxes', async ({ startClient, server }) => {
+  server.setContent('/', `
+    <style>body { margin: 0; }</style>
+    <button style="position:absolute;left:100px;top:50px;width:80px;height:40px;margin:0;padding:0;border:0;">click</button>
+  `, 'text/html');
+
+  const { client } = await startClient({
+    args: ['--snapshot-boxes'],
+  });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: {
+      url: server.PREFIX,
+    },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`- button "click" [ref=e1] [box=100,50,80,40]`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+  })).toHaveResponse({
+    inlineSnapshot: expect.stringContaining(`- button "click" [ref=e1] [box=100,50,80,40]`),
   });
 });
 

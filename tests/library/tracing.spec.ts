@@ -15,12 +15,11 @@
  */
 
 import fs from 'fs';
-import { jpegjs } from 'playwright-core/lib/utilsBundle';
+import { PNG, jpegjs } from 'playwright-core/lib/utilsBundle';
 import path from 'path';
 import { browserTest, contextTest as test, expect } from '../config/browserTest';
 import { parseTraceRaw } from '../config/utils';
-import type { StackFrame } from '@protocol/channels';
-import type { ActionTraceEvent } from '../../packages/trace/src/trace';
+import type { StackFrame, ActionTraceEvent } from '../../packages/isomorphic/trace/trace';
 import { artifactsFolderName } from '../../packages/playwright/src/isomorphic/folders';
 import { rafraf } from '../page/pageTest';
 
@@ -43,14 +42,14 @@ test('should collect trace with resources, but no js', async ({ context, page, s
   const { events, actions } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
   expect(events[0].type).toBe('context-options');
   expect(actions).toEqual([
-    'Navigate to "/frames/frame.html"',
+    `Navigate ${server.HOST}/frames/frame.html`,
     'Set content',
-    'Click',
+    `Click locator('text="Click"')`,
     'Mouse move',
     'Double click',
     'Insert "abc"',
-    'Navigate to "/input/fileupload.html"',
-    'Set input files',
+    `Navigate ${server.HOST}/input/fileupload.html`,
+    `Set input files locator('input[type="file"]')`,
     'Wait for timeout',
     'Close page',
   ]);
@@ -59,10 +58,10 @@ test('should collect trace with resources, but no js', async ({ context, page, s
   expect(events.some(e => e.type === 'screencast-frame')).toBeTruthy();
   const style = events.find(e => e.type === 'resource-snapshot' && e.snapshot.request.url.endsWith('style.css'));
   expect(style).toBeTruthy();
-  expect(style.snapshot.response.content._sha1).toBeTruthy();
+  expect(style.snapshot.response.content._file).toBeTruthy();
   const script = events.find(e => e.type === 'resource-snapshot' && e.snapshot.request.url.endsWith('script.js'));
   expect(script).toBeTruthy();
-  expect(script.snapshot.response.content._sha1).toBe(undefined);
+  expect(script.snapshot.response.content._file).toBe(undefined);
 });
 
 test('should use the correct title for event driven callbacks', async ({ context, page, server }, testInfo) => {
@@ -86,9 +85,9 @@ test('should use the correct title for event driven callbacks', async ({ context
   expect(events[0].type).toBe('context-options');
   expect(actions).toEqual([
     'Route requests',
-    'Navigate to "/empty.html"',
+    `Navigate ${server.HOST}/empty.html`,
     'Continue request',
-    'Navigate to "/grid.html"',
+    `Navigate ${server.HOST}/grid.html`,
     'Evaluate',
     'Reload',
     'Evaluate',
@@ -107,6 +106,52 @@ test('should not collect snapshots by default', async ({ context, page, server }
   const { events } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
   expect(events.some(e => e.type === 'frame-snapshot')).toBeFalsy();
   expect(events.some(e => e.type === 'resource-snapshot')).toBeFalsy();
+});
+
+test('should not collect action screenshots and aria snapshots by default', async ({ context, page, server }, testInfo) => {
+  await context.tracing.start({ snapshots: true });
+  await page.goto(server.PREFIX + '/input/button.html');
+  await page.click('button');
+  await context.tracing.stop({ path: testInfo.outputPath('trace.zip') });
+
+  const { events } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
+  expect(events.some(e => e.type === 'screenshot')).toBeFalsy();
+  expect(events.some(e => e.type === 'aria-snapshot')).toBeFalsy();
+});
+
+test('should collect action screenshots', async ({ context, page, server }, testInfo) => {
+  await context.tracing.start({ snapshots: { screen: true } });
+  await page.goto(server.PREFIX + '/input/button.html');
+  await page.click('button');
+  await context.tracing.stop({ path: testInfo.outputPath('trace.zip') });
+
+  const { events, resources } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
+  const clickCallId = events.find(e => e.type === 'before' && e.method === 'click').callId;
+  const screenshots = events.filter(e => e.type === 'screenshot' && e.callId === clickCallId);
+  expect(screenshots.map(e => e.phase)).toEqual(['before', 'action', 'after']);
+  for (const screenshot of screenshots) {
+    expect(screenshot.file).toBe(`screenshots/${clickCallId}-${screenshot.phase}.png`);
+    const buffer = resources.get(screenshot.file);
+    expect(PNG.sync.read(buffer).width).toBeGreaterThan(0);
+  }
+});
+
+test('should collect aria snapshots', async ({ context, page, server }, testInfo) => {
+  await context.tracing.start({ snapshots: { aria: true } });
+  await page.goto(server.PREFIX + '/input/button.html');
+  await page.click('button');
+  await context.tracing.stop({ path: testInfo.outputPath('trace.zip') });
+
+  const { events, resources } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
+  const clickCallId = events.find(e => e.type === 'before' && e.method === 'click').callId;
+  const ariaSnapshots = events.filter(e => e.type === 'aria-snapshot' && e.callId === clickCallId);
+  expect(ariaSnapshots.map(e => e.phase)).toEqual(['before', 'action', 'after']);
+  const hasButton = nodes => nodes.some(node => typeof node === 'object' && (node.role === 'button' && node.name === 'Click target' || hasButton(node.children ?? [])));
+  for (const ariaSnapshot of ariaSnapshots) {
+    expect(ariaSnapshot.file).toBe(`aria/${clickCallId}-${ariaSnapshot.phase}.json`);
+    const snapshot = JSON.parse(resources.get(ariaSnapshot.file).toString());
+    expect(hasButton(snapshot)).toBe(true);
+  }
 });
 
 test('can call tracing.group/groupEnd at any time and auto-close', async ({ context, page, server }, testInfo) => {
@@ -136,10 +181,11 @@ test('should not include buffers in the trace', async ({ context, page, server }
   await page.goto(server.PREFIX + '/empty.html');
   await page.screenshot();
   await context.tracing.stop({ path: testInfo.outputPath('trace.zip') });
-  const { actionObjects } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
+  const { events, actionObjects } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
   const screenshotEvent = actionObjects.find(a => a.method === 'screenshot');
-  expect(screenshotEvent.beforeSnapshot).toBeTruthy();
-  expect(screenshotEvent.afterSnapshot).toBeTruthy();
+  const phases = events.filter(e => e.type === 'frame-snapshot' && e.snapshot.callId === screenshotEvent.callId).map(e => e.snapshot.phase);
+  expect(phases).toContain('before');
+  expect(phases).toContain('after');
   expect(screenshotEvent.result).toEqual({
     'binary': '<Buffer>',
   });
@@ -156,23 +202,39 @@ test('should exclude internal pages', async ({ browserName, context, page, serve
   const trace = await parseTraceRaw(testInfo.outputPath('trace.zip'));
   const pageIds = new Set();
   trace.events.forEach(e => {
-    const pageId = e.pageId;
+    const pageId = e.pageId ?? e.params?.pageId;
     if (pageId)
       pageIds.add(pageId);
   });
   expect(pageIds.size).toBe(1);
 });
 
-test('should include context API requests', async ({ context, page, server }, testInfo) => {
+test('should record context API request trace independently', async ({ context, page, server }, testInfo) => {
+  const browserTracePath = testInfo.outputPath('browser-trace.zip');
+  const apiTracePath = testInfo.outputPath('api-trace.zip');
+  const apiURL = server.PREFIX + '/simple.json';
+  expect(context.request.tracing).not.toBe(context.tracing);
+
   await context.tracing.start({ snapshots: true });
-  await page.request.post(server.PREFIX + '/simple.json', { data: { foo: 'bar' } });
-  await context.tracing.stop({ path: testInfo.outputPath('trace.zip') });
-  const { events, actions } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
-  expect(actions).toContain('POST "/simple.json"');
-  const harEntry = events.find(e => e.type === 'resource-snapshot');
-  expect(harEntry).toBeTruthy();
-  expect(harEntry.snapshot.request.url).toBe(server.PREFIX + '/simple.json');
-  expect(harEntry.snapshot.response.status).toBe(200);
+  await context.request.tracing.start({ snapshots: true });
+  await page.goto(server.PREFIX + '/one-style.html');
+  await page.request.post(apiURL, { data: { foo: 'bar' } });
+  await context.tracing.stop({ path: browserTracePath });
+  await context.request.tracing.stop({ path: apiTracePath });
+
+  const browserTrace = await parseTraceRaw(browserTracePath);
+  expect(browserTrace.actions).toContain(`Navigate ${server.HOST}/one-style.html`);
+  expect(browserTrace.actions).not.toContain(`POST ${server.HOST}/simple.json`);
+  expect(browserTrace.events.some(event => event.type === 'resource-snapshot' && event.snapshot.request.url.endsWith('/simple.json'))).toBe(false);
+  expect(browserTrace.events.some(event => event.type === 'resource-snapshot' && event.snapshot.request.url.endsWith('/one-style.html'))).toBe(true);
+
+  const apiTrace = await parseTraceRaw(apiTracePath);
+  expect(apiTrace.actions).toContain(`POST ${server.HOST}/simple.json`);
+  expect(apiTrace.actions).not.toContain(`Navigate ${server.HOST}/one-style.html`);
+  const apiAction = apiTrace.actionObjects.find(action => action.class === 'APIRequestContext' && action.method === 'fetch')!;
+  expect(relativeStack(apiAction, apiTrace.stacks)).toEqual(['tracing.spec.ts']);
+  expect(apiTrace.events.filter(event => event.type === 'resource-snapshot').map(event => event.snapshot.request.url)).toEqual([apiURL]);
+  expect(apiTrace.events.filter(event => event.type === 'resource-snapshot').map(event => event.snapshot._apiRequestRef)).toEqual([expect.stringMatching(/^request-context@/)]);
 });
 
 test('should collect two traces', async ({ context, page, server }, testInfo) => {
@@ -191,9 +253,9 @@ test('should collect two traces', async ({ context, page, server }, testInfo) =>
     const { events, actions } = await parseTraceRaw(testInfo.outputPath('trace1.zip'));
     expect(events[0].type).toBe('context-options');
     expect(actions).toEqual([
-      'Navigate to "/empty.html"',
+      `Navigate ${server.HOST}/empty.html`,
       'Set content',
-      'Click',
+      `Click locator('text="Click"')`,
     ]);
   }
 
@@ -201,15 +263,13 @@ test('should collect two traces', async ({ context, page, server }, testInfo) =>
     const { events, actions } = await parseTraceRaw(testInfo.outputPath('trace2.zip'));
     expect(events[0].type).toBe('context-options');
     expect(actions).toEqual([
-      'Double click',
+      `Double click locator('text="Click"')`,
       'Close page',
     ]);
   }
 });
 
 test('should respect tracesDir and name', async ({ browserType, server, mode }, testInfo) => {
-  test.skip(mode.startsWith('service'), 'Service ignores tracesDir');
-
   const tracesDir = testInfo.outputPath('traces');
   const browser = await browserType.launch({ tracesDir });
   const context = await browser.newContext();
@@ -237,7 +297,7 @@ test('should respect tracesDir and name', async ({ browserType, server, mode }, 
 
   {
     const { resources, actions } = await parseTraceRaw(testInfo.outputPath('trace1.zip'));
-    expect(actions).toEqual(['Navigate to "/one-style.html"']);
+    expect(actions).toEqual([`Navigate ${server.HOST}/one-style.html`]);
     expect(resourceNames(resources)).toEqual([
       'resources/XXX.css',
       'resources/XXX.html',
@@ -249,7 +309,7 @@ test('should respect tracesDir and name', async ({ browserType, server, mode }, 
 
   {
     const { resources, actions } = await parseTraceRaw(testInfo.outputPath('trace2.zip'));
-    expect(actions).toEqual(['Navigate to "/har.html"']);
+    expect(actions).toEqual([`Navigate ${server.HOST}/har.html`]);
     expect(resourceNames(resources)).toEqual([
       'resources/XXX.css',
       'resources/XXX.html',
@@ -294,7 +354,7 @@ test('should not include trace resources from the previous chunks', async ({ con
     expect(names.filter(n => n.endsWith('.html')).length).toBe(1);
     jpegs = names.filter(n => n.endsWith('.jpeg'));
     // 1 source file for the test.
-    expect(names.filter(n => n.endsWith('.txt')).length).toBe(1);
+    expect(names.filter(n => n.startsWith('src/')).length).toBe(1);
   }
 
   {
@@ -305,7 +365,7 @@ test('should not include trace resources from the previous chunks', async ({ con
     // screenshots from the previous chunk should not be preserved.
     expect(names.filter(n => jpegs.includes(n)).length).toBe(0);
     // 0 source files for the second test.
-    expect(names.filter(n => n.endsWith('.txt')).length).toBe(0);
+    expect(names.filter(n => n.startsWith('src/')).length).toBe(0);
   }
 });
 
@@ -340,8 +400,9 @@ test('should collect sources', async ({ context, page, server }, testInfo) => {
   await context.tracing.stop({ path: testInfo.outputPath('trace1.zip') });
 
   const { resources } = await parseTraceRaw(testInfo.outputPath('trace1.zip'));
-  const sourceNames = Array.from(resources.keys()).filter(k => k.endsWith('.txt'));
+  const sourceNames = Array.from(resources.keys()).filter(k => k.startsWith('src/'));
   expect(sourceNames.length).toBe(1);
+  expect(sourceNames[0]).toMatch(/^src\/[0-9a-f]{40}\.ts$/);
   const sourceFile = resources.get(sourceNames[0]);
   const thisFile = await fs.promises.readFile(__filename);
   expect(sourceFile).toEqual(thisFile);
@@ -356,6 +417,46 @@ test('should record network failures', async ({ context, page, server }, testInf
   const { events } = await parseTraceRaw(testInfo.outputPath('trace1.zip'));
   const requestEvent = events.find(e => e.type === 'resource-snapshot' && !!e.snapshot.response._failureText);
   expect(requestEvent).toBeTruthy();
+  expect(requestEvent.snapshot._monotonicTime).toBeGreaterThan(0);
+  expect(requestEvent.snapshot.time).toBeGreaterThanOrEqual(0);
+});
+
+test('should recover tracing after a failed stop', async ({ context, page, server }, testInfo) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42423' });
+  await context.tracing.start();
+  // Saving fails: a parent of the destination is a file, not a directory.
+  const blocker = testInfo.outputPath('blocker');
+  await fs.promises.writeFile(blocker, '');
+  await expect(context.tracing.stop({ path: path.join(blocker, 'trace1.zip') })).rejects.toThrow(/ENOTDIR|ENOENT|EEXIST/);
+
+  // The failed stop must not wedge tracing for the rest of the context lifetime.
+  await context.tracing.start();
+  await page.goto(server.PREFIX + '/input/button.html');
+  await page.click('button');
+  await context.tracing.stop({ path: testInfo.outputPath('trace2.zip') });
+
+  const { events, actions } = await parseTraceRaw(testInfo.outputPath('trace2.zip'));
+  expect(events[0].type).toBe('context-options');
+  expect(actions).toContain(`Click locator('button')`);
+});
+
+test('should release the stack session when saving the trace fails', async ({ browserType }, testInfo) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42423' });
+  // Override the test runner's tracesDir, so that the stack session owns a temporary directory.
+  const browser = await browserType.launch({ tracesDir: undefined });
+  try {
+    const context = await browser.newContext();
+    await context.tracing.start();
+    const stacksDir = path.dirname((context.tracing as any)._stacksId);
+    expect(fs.existsSync(stacksDir)).toBe(true);
+
+    const blocker = testInfo.outputPath('blocker');
+    await fs.promises.writeFile(blocker, '');
+    await expect(context.tracing.stop({ path: path.join(blocker, 'trace.zip') })).rejects.toThrow(/ENOTDIR|ENOENT|EEXIST/);
+    expect(fs.existsSync(stacksDir)).toBe(false);
+  } finally {
+    await browser.close();
+  }
 });
 
 test('should not crash when browser closes mid-trace', async ({ browserType, server }, testInfo) => {
@@ -458,16 +559,16 @@ for (const params of [
 
     // Check all frame sizes.
     for (const frame of frames) {
-      expect(frame.width).toBe(params.width);
-      expect(frame.height).toBe(params.height);
-      const buffer = resources.get('resources/' + frame.sha1);
+      expect.soft(frame.width).toBe(params.width);
+      expect.soft(frame.height).toBe(params.height);
+      const buffer = resources.get(frame.file);
       const image = jpegjs.decode(buffer);
-      expect(image.width).toBe(previewWidth);
-      expect(image.height).toBe(previewHeight);
+      expect.soft(image.width).toBe(previewWidth);
+      expect.soft(image.height).toBe(previewHeight);
     }
 
     const frame = frames[frames.length - 1]; // pick last frame.
-    const buffer = resources.get('resources/' + frame.sha1);
+    const buffer = resources.get(frame.file);
     const image = jpegjs.decode(buffer);
     expect(image.data.byteLength).toBe(previewWidth * previewHeight * 4);
     expectRed(image.data, previewWidth * previewHeight * 4 / 2 + previewWidth * 4 / 2); // center is red
@@ -487,7 +588,7 @@ test('should include interrupted actions', async ({ context, page, server }, tes
   await context.close();
 
   const { actions } = await parseTraceRaw(testInfo.outputPath('trace.zip'));
-  expect(actions).toContain('Click');
+  expect(actions).toContain(`Click locator('text="ClickNoButton"')`);
 });
 
 test('should throw when starting with different options', async ({ context }) => {
@@ -503,6 +604,23 @@ test('should throw when stopping without start', async ({ context }, testInfo) =
 
 test('should not throw when stopping without start but not exporting', async ({ context }, testInfo) => {
   await context.tracing.stop();
+});
+
+test('start should return a disposable that discards the trace', async ({ context, page, server }, testInfo) => {
+  const disposable = await context.tracing.start();
+  await page.goto(server.EMPTY_PAGE);
+  await disposable.dispose();
+  const error = await context.tracing.stop({ path: testInfo.outputPath('trace.zip') }).catch(e => e);
+  expect(error.message).toContain('Must start tracing before stopping');
+});
+
+test('startChunk should return a disposable that discards the chunk', async ({ context, page, server }, testInfo) => {
+  await context.tracing.start();
+  const disposable = await context.tracing.startChunk();
+  await page.goto(server.EMPTY_PAGE);
+  await disposable.dispose();
+  const error = await context.tracing.stopChunk({ path: testInfo.outputPath('trace.zip') }).catch(e => e);
+  expect(error.message).toContain('Must start tracing before stopping');
 });
 
 test('should work with multiple chunks', async ({ context, page, server }, testInfo) => {
@@ -528,8 +646,8 @@ test('should work with multiple chunks', async ({ context, page, server }, testI
   expect(trace1.events[0].type).toBe('context-options');
   expect(trace1.actions).toEqual([
     'Set content',
-    'Click',
-    'Click',
+    `Click locator('text="Click"')`,
+    `Click locator('text="ClickNoButton"')`,
     'Evaluate',
   ]);
   expect(trace1.events.some(e => e.type === 'frame-snapshot')).toBeTruthy();
@@ -538,7 +656,7 @@ test('should work with multiple chunks', async ({ context, page, server }, testI
   const trace2 = await parseTraceRaw(testInfo.outputPath('trace2.zip'));
   expect(trace2.events[0].type).toBe('context-options');
   expect(trace2.actions).toEqual([
-    'Hover',
+    `Hover locator('text="Click"')`,
   ]);
   expect(trace2.events.some(e => e.type === 'frame-snapshot')).toBeTruthy();
   expect(trace2.events.some(e => e.type === 'resource-snapshot' && e.snapshot.request.url.endsWith('style.css'))).toBeTruthy();
@@ -586,7 +704,7 @@ test('should ignore iframes in head', async ({ context, page, server }, testInfo
   await context.tracing.stopChunk({ path: testInfo.outputPath('trace.zip') });
 
   const trace = await parseTraceRaw(testInfo.outputPath('trace.zip'));
-  expect(trace.actions).toEqual(['Click']);
+  expect(trace.actions).toEqual([`Click locator('button')`]);
   expect(trace.events.find(e => e.type === 'frame-snapshot')).toBeTruthy();
   expect(trace.events.find(e => e.type === 'frame-snapshot' && JSON.stringify(e.snapshot.html).includes('IFRAME'))).toBeFalsy();
 });
@@ -633,11 +751,11 @@ test('should hide internal stack frames in expect', async ({ context, page }, te
 });
 
 test('should record global request trace', async ({ request, context, server }, testInfo) => {
-  await (request as any)._tracing.start({ snapshots: true });
+  await request.tracing.start({ snapshots: true });
   const url = server.PREFIX + '/simple.json';
   await request.get(url);
   const tracePath = testInfo.outputPath('trace.zip');
-  await (request as any)._tracing.stop({ path: tracePath });
+  await request.tracing.stop({ path: tracePath });
 
   const trace = await parseTraceRaw(tracePath);
   const actions = trace.events.filter(e => e.type === 'resource-snapshot');
@@ -661,8 +779,8 @@ test('should record global request trace', async ({ request, context, server }, 
 test('should store global request traces separately', async ({ request, server, playwright, browserName, mode }, testInfo) => {
   const request2 = await playwright.request.newContext();
   await Promise.all([
-    (request as any)._tracing.start({ snapshots: true }),
-    (request2 as any)._tracing.start({ snapshots: true })
+    request.tracing.start({ snapshots: true }),
+    request2.tracing.start({ snapshots: true })
   ]);
   const url = server.PREFIX + '/simple.json';
   await Promise.all([
@@ -672,8 +790,8 @@ test('should store global request traces separately', async ({ request, server, 
   const tracePath = testInfo.outputPath('trace.zip');
   const trace2Path = testInfo.outputPath('trace2.zip');
   await Promise.all([
-    (request as any)._tracing.stop({ path: tracePath }),
-    (request2 as any)._tracing.stop({ path: trace2Path })
+    request.tracing.stop({ path: tracePath }),
+    request2.tracing.stop({ path: trace2Path })
   ]);
   {
     const trace = await parseTraceRaw(tracePath);
@@ -697,19 +815,19 @@ test('should store global request traces separately', async ({ request, server, 
 
 test('should store postData for global request', async ({ request, server }, testInfo) => {
   testInfo.annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/15031' });
-  await (request as any)._tracing.start({ snapshots: true });
+  await request.tracing.start({ snapshots: true });
   const url = server.PREFIX + '/simple.json';
   await request.post(url, {
     data: 'test'
   });
   const tracePath = testInfo.outputPath('trace.zip');
-  await (request as any)._tracing.stop({ path: tracePath });
+  await request.tracing.stop({ path: tracePath });
 
   const trace = await parseTraceRaw(tracePath);
   const actions = trace.events.filter(e => e.type === 'resource-snapshot');
   expect(actions).toHaveLength(1);
   const req = actions[0].snapshot.request;
-  expect(req.postData?._sha1).toBeTruthy();
+  expect(req.postData?._file).toBeTruthy();
   expect(req).toEqual(expect.objectContaining({
     method: 'POST',
     url
@@ -717,7 +835,6 @@ test('should store postData for global request', async ({ request, server }, tes
 });
 
 test('should not flush console events', async ({ context, page, mode }, testInfo) => {
-  test.skip(mode.startsWith('service'), 'Uses artifactsFolderName');
   const testId = test.info().testId;
   await context.tracing.start({ name: testId });
   const promise = new Promise<void>(f => {
@@ -782,8 +899,6 @@ test('should flush console events on tracing stop', async ({ context, page }, te
 });
 
 test('should not emit after w/o before', async ({ browserType, mode }, testInfo) => {
-  test.skip(mode.startsWith('service'), 'Service ignores tracesDir');
-
   const tracesDir = testInfo.outputPath('traces');
   const browser = await browserType.launch({ tracesDir });
   const context = await browser.newContext();
@@ -829,6 +944,7 @@ test('should not emit after w/o before', async ({ browserType, mode }, testInfo)
       {
         type: 'before',
         callId: expect.any(Number),
+        title: 'Wait for event "console"',
       },
       {
         type: 'after',
@@ -859,6 +975,61 @@ test('should not emit after w/o before', async ({ browserType, mode }, testInfo)
   }
   expect(call2before).toBeGreaterThan(call1);
   expect(call2after).toBe(call2before);
+});
+
+test('should save trace while a WebSocket keeps streaming frames', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41351' }
+}, async ({ context, page, server }, testInfo) => {
+  let streaming = true;
+  server.onceWebSocketConnection(ws => {
+    const timer = setInterval(() => {
+      if (streaming && ws.readyState === ws.OPEN)
+        ws.send('x'.repeat(16 * 1024), () => {});
+    }, 1);
+    const stop = () => clearInterval(timer);
+    ws.on('close', stop);
+    ws.on('error', stop);
+  });
+
+  await context.tracing.start({ snapshots: true });
+
+  await context.tracing.startChunk();
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(url => {
+    (window as any).ws = new WebSocket(url);
+    return new Promise<void>(resolve => (window as any).ws.addEventListener('open', () => resolve()));
+  }, `ws://${server.HOST}/ws`);
+  await page.waitForTimeout(100);
+  const tracePath1 = testInfo.outputPath('trace1.zip');
+  await context.tracing.stopChunk({ path: tracePath1 });
+
+  streaming = false;
+  await context.tracing.startChunk();
+  await page.waitForTimeout(100);
+  const tracePath2 = testInfo.outputPath('trace2.zip');
+  await context.tracing.stopChunk({ path: tracePath2 });
+
+  await page.evaluate(() => new Promise<void>(resolve => {
+    const ws = (window as any).ws as WebSocket;
+    if (ws.readyState === WebSocket.CLOSED) {
+      resolve();
+      return;
+    }
+    ws.addEventListener('close', () => resolve(), { once: true });
+    ws.close();
+  }));
+
+  const webSocketLines = await Promise.all([tracePath1, tracePath2].map(async path => {
+    const { resources } = await parseTraceRaw(path);
+    const websocketResource = Array.from(resources).find(([name, buffer]) => name.endsWith('.jsonl'))!;
+    const lines = websocketResource[1].toString().split('\n').filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines)
+      expect(() => JSON.parse(line)).not.toThrow();
+    return { path, lines };
+  }));
+  expect(webSocketLines[0].path).not.toEqual(webSocketLines[1].path);
+  expect(webSocketLines[1].lines).toEqual(webSocketLines[1].lines);
 });
 
 function expectRed(pixels: Buffer, offset: number) {

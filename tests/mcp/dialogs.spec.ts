@@ -29,7 +29,7 @@ test('alert dialog', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     code: `await page.getByRole('button', { name: 'Button' }).click();`,
@@ -40,7 +40,7 @@ test('alert dialog', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     code: undefined,
@@ -77,7 +77,7 @@ test('two alert dialogs', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     code: `await page.getByRole('button', { name: 'Button' }).click();`,
@@ -126,7 +126,7 @@ test('confirm dialog (true)', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     modalState: expect.stringContaining(`- ["confirm" dialog with message "Confirm"]: can be handled by browser_handle_dialog`),
@@ -161,7 +161,7 @@ test('confirm dialog (false)', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     modalState: expect.stringContaining(`- ["confirm" dialog with message "Confirm"]: can be handled by browser_handle_dialog`),
@@ -196,7 +196,7 @@ test('prompt dialog', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     modalState: expect.stringContaining(`- ["prompt" dialog with message "Prompt"]: can be handled by browser_handle_dialog`),
@@ -215,6 +215,51 @@ test('prompt dialog', async ({ client, server }) => {
   });
 });
 
+test('dialog closed out of band', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41837' },
+}, async ({ cdpServer, startClient, server }) => {
+  server.setContent('/', `<title>Title</title><button onclick="alert('Alert')">Button</button>`, 'text/html');
+
+  const browserContext = await cdpServer.start();
+  const [page] = browserContext.pages();
+  // Subscribe to the dialog event to prevent this connection from auto-dismissing dialogs.
+  page.on('dialog', () => {});
+  // Establish the CDP session up front: creating one while a dialog is blocking the page hangs.
+  const cdpSession = await browserContext.newCDPSession(page);
+  await cdpSession.send('Page.enable');
+
+  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`- button "Button" [ref=e2]`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_click',
+    arguments: {
+      element: 'Button',
+      target: 'e2',
+    },
+  })).toHaveResponse({
+    modalState: `- ["alert" dialog with message "Alert"]: can be handled by browser_handle_dialog`,
+  });
+
+  // Close the dialog through CDP as a side-channel, similar to the user closing it in the headed browser.
+  const closedPromise = page.waitForEvent('dialogclosed');
+  await cdpSession.send('Page.handleJavaScriptDialog', { accept: true });
+  await closedPromise;
+
+  await expect.poll(() => client.callTool({
+    name: 'browser_snapshot',
+  })).toHaveResponse({
+    modalState: undefined,
+    inlineSnapshot: expect.stringContaining(`- button "Button"`),
+  });
+});
+
 test('alert dialog w/ race', async ({ client, server }) => {
   server.setContent('/', `<title>Title</title><button onclick="setTimeout(() => alert('Alert'), 100)">Button</button>`, 'text/html');
   expect(await client.callTool({
@@ -228,7 +273,7 @@ test('alert dialog w/ race', async ({ client, server }) => {
     name: 'browser_click',
     arguments: {
       element: 'Button',
-      ref: 'e2',
+      target: 'e2',
     },
   })).toHaveResponse({
     code: `await page.getByRole('button', { name: 'Button' }).click();`,
@@ -246,5 +291,31 @@ test('alert dialog w/ race', async ({ client, server }) => {
     modalState: undefined,
     page: expect.stringContaining(`- Page URL: ${server.PREFIX}/
 - Page Title: Title`),
+  });
+});
+
+test('alert dialog during navigation', async ({ client, server }) => {
+  server.setContent('/', `<title>Title</title><script>alert('Alert')</script><button>Button</button>`, 'text/html');
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  })).toHaveResponse({
+    modalState: expect.stringContaining(`- ["alert" dialog with message "Alert"]: can be handled by browser_handle_dialog`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_handle_dialog',
+    arguments: { accept: true },
+  })).toHaveResponse({
+    modalState: undefined,
+    page: expect.stringContaining(`- Page URL: ${server.PREFIX}/
+- Page Title: Title`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_snapshot',
+    arguments: {},
+  })).toHaveResponse({
+    inlineSnapshot: expect.stringContaining(`- button "Button"`),
   });
 });

@@ -17,7 +17,9 @@
 import fs from 'fs';
 import path from 'path';
 
-import { z } from 'playwright-core/lib/mcpBundle';
+import * as z from 'zod';
+import { resolveWithinRoot } from '@utils/fileUtils';
+
 import { defineTestTool } from './testTool';
 
 export const setupPage = defineTestTool({
@@ -32,9 +34,9 @@ export const setupPage = defineTestTool({
     type: 'readOnly',
   },
 
-  handle: async (context, params) => {
+  handle: async (context, params, signal) => {
     const seed = await context.getOrCreateSeedFile(params.seedFile, params.project);
-    const { output, status } = await context.runSeedTest(seed.file, seed.projectName);
+    const { output, status } = await context.runSeedTest(seed.file, seed.projectName, signal);
     return { content: [{ type: 'text', text: output }], isError: status !== 'paused' };
   },
 });
@@ -117,7 +119,11 @@ export const saveTestPlan = defineTestTool({
       }
     }
     lines.push(``);
-    await fs.promises.writeFile(path.resolve(context.rootPath, params.fileName), lines.join('\n'));
+    const resolvedFile = resolveWithinRoot(context.rootPath, params.fileName);
+    if (!resolvedFile)
+      throw new Error(`Plan file name must be a relative path inside the workspace: ${params.fileName}`);
+    await fs.promises.mkdir(path.dirname(resolvedFile), { recursive: true });
+    await fs.promises.writeFile(resolvedFile, lines.join('\n'));
     return {
       content: [{
         type: 'text',

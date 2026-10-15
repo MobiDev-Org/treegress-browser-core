@@ -56,6 +56,10 @@ const disallowedMessageCategories = new Set([
 class Runtime {
   constructor(isWorker = false) {
     this._debugger = new Debugger();
+    // A debuggee global with these flags unset is pinned to the debuggable wasm/asm.js
+    // baseline tier, with the optimizing compiler disabled entirely.
+    this._debugger.allowUnobservedWasm = true;
+    this._debugger.allowUnobservedAsmJS = true;
     this._pendingPromises = new Map();
     this._executionContexts = new Map();
     this._windowToExecutionContext = new Map();
@@ -133,8 +137,15 @@ class Runtime {
           return;
         }
         const errorWindow = Services.wm.getOuterWindowWithId(message.outerWindowID);
+        // Note: error locations are one-based, while console locations are zero-based in Firefox.
+        // We want to report all of them as zero-based.
+        const errorLocation = {
+          lineNumber: message.lineNumber - 1,
+          columnNumber: message.columnNumber - 1,
+          url: message.sourceName,
+        };
         if (message.category === 'Web Worker' && message.logLevel === Ci.nsIConsoleMessage.error) {
-          emitEvent(this.events.onErrorFromWorker, errorWindow, message.message, '' + message.stack);
+          emitEvent(this.events.onErrorFromWorker, errorWindow, message.message, '' + message.stack, errorLocation);
           return;
         }
         const executionContext = this._windowToExecutionContext.get(errorWindow);
@@ -165,6 +176,7 @@ class Runtime {
             executionContext,
             message: message.errorMessage,
             stack: message.stack ? message.stack.toString() : '',
+            location: errorLocation,
           });
         }
       },
@@ -238,9 +250,7 @@ class Runtime {
     if (obj.promiseState === 'fulfilled')
       return {success: true, obj: obj.promiseValue};
     if (obj.promiseState === 'rejected') {
-      const debuggee = executionContext._debuggee;
-      exceptionDetails.text = debuggee.executeInGlobalWithBindings('e.message', {e: obj.promiseReason}, {useInnerBindings: true}).return;
-      exceptionDetails.stack = debuggee.executeInGlobalWithBindings('e.stack', {e: obj.promiseReason}, {useInnerBindings: true}).return;
+      executionContext._fillExceptionDetails(obj.promiseReason, exceptionDetails);
       return {success: false, obj: null};
     }
     let resolve, reject;
@@ -248,28 +258,34 @@ class Runtime {
       resolve = a;
       reject = b;
     });
-    this._pendingPromises.set(obj.promiseID, {resolve, reject, executionContext, exceptionDetails});
+    this._pendingPromises.set(obj.promiseID, {resolve, reject, executionContext, exceptionDetails, promiseObj: obj});
+    // Debugger.onPromiseSettled hook was removed in Bug 2044167. Instead, attach
+    // reactions inside the debuggee that run a `debugger;` statement upon settling,
+    // and sweep pending promises from the onDebuggerStatement hook. Unlike
+    // dereferencing the promise and adding reactions from the privileged
+    // compartment, this also works in workers where there are no Xrays.
     if (this._pendingPromises.size === 1)
-      this._debugger.onPromiseSettled = this._onPromiseSettled.bind(this);
+      this._debugger.onDebuggerStatement = this._onDebuggerStatement.bind(this);
+    executionContext._debuggee.executeInGlobalWithBindings(
+        'p.then(() => { debugger; }, () => { debugger; })', {p: obj}, {useInnerBindings: true});
     return await promise;
   }
 
-  _onPromiseSettled(obj) {
-    const pendingPromise = this._pendingPromises.get(obj.promiseID);
-    if (!pendingPromise)
-      return;
-    this._pendingPromises.delete(obj.promiseID);
+  _onDebuggerStatement() {
+    for (const [promiseID, pendingPromise] of this._pendingPromises) {
+      const obj = pendingPromise.promiseObj;
+      if (obj.promiseState === 'pending')
+        continue;
+      this._pendingPromises.delete(promiseID);
+      if (obj.promiseState === 'fulfilled') {
+        pendingPromise.resolve({success: true, obj: obj.promiseValue});
+        continue;
+      }
+      pendingPromise.executionContext._fillExceptionDetails(obj.promiseReason, pendingPromise.exceptionDetails);
+      pendingPromise.resolve({success: false, obj: null});
+    }
     if (!this._pendingPromises.size)
-      this._debugger.onPromiseSettled = undefined;
-
-    if (obj.promiseState === 'fulfilled') {
-      pendingPromise.resolve({success: true, obj: obj.promiseValue});
-      return;
-    };
-    const debuggee = pendingPromise.executionContext._debuggee;
-    pendingPromise.exceptionDetails.text = debuggee.executeInGlobalWithBindings('e.message', {e: obj.promiseReason}, {useInnerBindings: true}).return;
-    pendingPromise.exceptionDetails.stack = debuggee.executeInGlobalWithBindings('e.stack', {e: obj.promiseReason}, {useInnerBindings: true}).return;
-    pendingPromise.resolve({success: false, obj: null});
+      this._debugger.onDebuggerStatement = undefined;
   }
 
   createExecutionContext(domWindow, contextGlobal, auxData) {
@@ -297,7 +313,7 @@ class Runtime {
       }
     }
     if (!this._pendingPromises.size)
-      this._debugger.onPromiseSettled = undefined;
+      this._debugger.onDebuggerStatement = undefined;
     this._debugger.removeDebuggee(destroyedContext._contextGlobal);
     this._executionContexts.delete(destroyedContext._id);
     if (destroyedContext._domWindow)
@@ -357,7 +373,7 @@ class ExecutionContext {
     if (this._domWindow && this._domWindow.document)
       this._domWindow.document.notifyUserGestureActivation();
 
-    let {success, obj} = this._getResult(this._debuggee.executeInGlobal(script), exceptionDetails);
+    let {success, obj} = this._getResult(this._debuggee.executeInGlobal(script, {bypassCSP: true}), exceptionDetails);
     userInputHelper && userInputHelper.destruct();
     if (!success)
       return null;
@@ -372,18 +388,13 @@ class ExecutionContext {
 
   evaluateScriptSafely(script) {
     try {
-      this._debuggee.executeInGlobal(script);
+      this._debuggee.executeInGlobal(script, {bypassCSP: true});
     } catch (e) {
       dump(`WARNING: ${e.message}\n${e.stack}\n`);
     }
   }
 
   async evaluateFunction(functionText, args, exceptionDetails = {}) {
-    const funEvaluation = this._getResult(this._debuggee.executeInGlobal('(' + functionText + ')'), exceptionDetails);
-    if (!funEvaluation.success)
-      return null;
-    if (!funEvaluation.obj.callable)
-      throw new Error('functionText does not evaluate to a function!');
     args = args.map(arg => {
       if (arg.objectId) {
         if (!this._remoteObjects.has(arg.objectId))
@@ -401,7 +412,15 @@ class ExecutionContext {
     const userInputHelper = this._domWindow ? this._domWindow.windowUtils.setHandlingUserInput(true) : null;
     if (this._domWindow && this._domWindow.document)
       this._domWindow.document.notifyUserGestureActivation();
-    let {success, obj} = this._getResult(funEvaluation.obj.apply(null, args), exceptionDetails);
+    // Invoke via executeInGlobalWithBindings so bypassCSP scopes the call (Debugger.Object.apply has no bypassCSP option).
+    const callBindings = {};
+    const argNames = [];
+    for (let i = 0; i < args.length; i++) {
+      const name = '__pwArg' + i;
+      callBindings[name] = args[i];
+      argNames.push(name);
+    }
+    let {success, obj} = this._getResult(this._debuggee.executeInGlobalWithBindings('(' + functionText + ')(' + argNames.join(',') + ')', callBindings, {useInnerBindings: true, bypassCSP: true}), exceptionDetails);
     userInputHelper && userInputHelper.destruct();
     if (!success)
       return null;
@@ -438,12 +457,6 @@ class ExecutionContext {
     return this._createRemoteObject(debuggerObj);
   }
 
-  _instanceOf(debuggerObj, rawObj, className) {
-    if (this._domWindow)
-      return rawObj instanceof this._domWindow[className];
-    return this._debuggee.executeInGlobalWithBindings('o instanceof this[className]', {o: debuggerObj, className: this._debuggee.makeDebuggeeValue(className)}, {useInnerBindings: true}).return;
-  }
-
   _createRemoteObject(debuggerObj) {
     if (debuggerObj instanceof Debugger.Object) {
       const objectId = generateId();
@@ -451,36 +464,33 @@ class ExecutionContext {
       const rawObj = debuggerObj.unsafeDereference();
       const type = typeof rawObj;
       let subtype = undefined;
-      if (debuggerObj.isProxy)
+      if (debuggerObj.isProxy) {
         subtype = 'proxy';
-      else if (Array.isArray(rawObj))
-        subtype = 'array';
-      else if (Object.is(rawObj, null))
-        subtype = 'null';
-      else if (typeof Node !== 'undefined' && Node.isInstance(rawObj))
+      } else if (typeof Node !== 'undefined' && Node.isInstance(rawObj)) {
         subtype = 'node';
-      else if (this._instanceOf(debuggerObj, rawObj, 'RegExp'))
-        subtype = 'regexp';
-      else if (this._instanceOf(debuggerObj, rawObj, 'Date'))
-        subtype = 'date';
-      else if (this._instanceOf(debuggerObj, rawObj, 'Map'))
-        subtype = 'map';
-      else if (this._instanceOf(debuggerObj, rawObj, 'Set'))
-        subtype = 'set';
-      else if (this._instanceOf(debuggerObj, rawObj, 'WeakMap'))
-        subtype = 'weakmap';
-      else if (this._instanceOf(debuggerObj, rawObj, 'WeakSet'))
-        subtype = 'weakset';
-      else if (this._instanceOf(debuggerObj, rawObj, 'Error'))
-        subtype = 'error';
-      else if (this._instanceOf(debuggerObj, rawObj, 'Promise'))
-        subtype = 'promise';
-      else if ((this._instanceOf(debuggerObj, rawObj, 'Int8Array')) || (this._instanceOf(debuggerObj, rawObj, 'Uint8Array')) ||
-               (this._instanceOf(debuggerObj, rawObj, 'Uint8ClampedArray')) || (this._instanceOf(debuggerObj, rawObj, 'Int16Array')) ||
-               (this._instanceOf(debuggerObj, rawObj, 'Uint16Array')) || (this._instanceOf(debuggerObj, rawObj, 'Int32Array')) ||
-               (this._instanceOf(debuggerObj, rawObj, 'Uint32Array')) || (this._instanceOf(debuggerObj, rawObj, 'Float32Array')) ||
-               (this._instanceOf(debuggerObj, rawObj, 'Float64Array'))) {
-        subtype = 'typedarray';
+      } else {
+        switch (debuggerObj.class) {
+          case 'Array': subtype = 'array'; break;
+          case 'RegExp': subtype = 'regexp'; break;
+          case 'Date': subtype = 'date'; break;
+          case 'Map': subtype = 'map'; break;
+          case 'Set': subtype = 'set'; break;
+          case 'WeakMap': subtype = 'weakmap'; break;
+          case 'WeakSet': subtype = 'weakset'; break;
+          case 'Error': subtype = 'error'; break;
+          case 'Promise': subtype = 'promise'; break;
+          case 'Int8Array':
+          case 'Uint8Array':
+          case 'Uint8ClampedArray':
+          case 'Int16Array':
+          case 'Uint16Array':
+          case 'Int32Array':
+          case 'Uint32Array':
+          case 'Float32Array':
+          case 'Float64Array':
+            subtype = 'typedarray';
+            break;
+        }
       }
       return {objectId, type, subtype};
     }
@@ -543,18 +553,17 @@ class ExecutionContext {
 
   getObjectProperties(objectId) {
     if (!this._remoteObjects.has(objectId))
-      throw new Error('Cannot find object with id = ' + arg.objectId);
+      throw new Error('Cannot find object with id = ' + objectId);
     const result = [];
-    for (let obj = this._remoteObjects.get(objectId); obj; obj = obj.proto) {
-      for (const propertyName of obj.getOwnPropertyNames()) {
-        const descriptor = obj.getOwnPropertyDescriptor(propertyName);
-        if (!descriptor.enumerable)
-          continue;
-        result.push({
-          name: propertyName,
-          value: this._createRemoteObject(descriptor.value),
-        });
-      }
+    const obj = this._remoteObjects.get(objectId);
+    for (const propertyName of obj.getOwnPropertyNames()) {
+      const descriptor = obj.getOwnPropertyDescriptor(propertyName);
+      if (!descriptor.enumerable)
+        continue;
+      result.push({
+        name: propertyName,
+        value: this._createRemoteObject(descriptor.value),
+      });
     }
     return result;
   }
@@ -562,16 +571,36 @@ class ExecutionContext {
   _getResult(completionValue, exceptionDetails = {}) {
     if (!completionValue)
       throw new Error('evaluation terminated');
-    if (completionValue.throw) {
-      if (this._debuggee.executeInGlobalWithBindings('e instanceof Error', {e: completionValue.throw}, {useInnerBindings: true}).return) {
-        exceptionDetails.text = this._debuggee.executeInGlobalWithBindings('e.message', {e: completionValue.throw}, {useInnerBindings: true}).return;
-        exceptionDetails.stack = this._debuggee.executeInGlobalWithBindings('e.stack', {e: completionValue.throw}, {useInnerBindings: true}).return;
-      } else {
-        exceptionDetails.value = this._serialize(completionValue.throw);
-      }
+    if ('throw' in completionValue) {
+      this._fillExceptionDetails(completionValue.throw, exceptionDetails);
       return {success: false, obj: null};
     }
     return {success: true, obj: completionValue.return};
+  }
+
+  _fillExceptionDetails(thrown, exceptionDetails) {
+    // Always populate `text`, so that the client reports something for any thrown
+    // value. Evaluate inside the debuggee and guard against throwing getters/toString.
+    const info = this._debuggee.executeInGlobalWithBindings(`(() => {
+      try {
+        if (e instanceof Error)
+          return {isError: true, text: e.message, stack: e.stack};
+        return {isError: false, text: String(e)};
+      } catch {
+        return {isError: false, text: 'Unserializable exception'};
+      }
+    })()`, {e: thrown}, {useInnerBindings: true}).return;
+    const property = name => info.getOwnPropertyDescriptor(name).value;
+    exceptionDetails.text = property('text');
+    if (property('isError')) {
+      exceptionDetails.stack = property('stack');
+      return;
+    }
+    try {
+      exceptionDetails.value = this._serialize(thrown);
+    } catch (e) {
+      // Not serializable (bigint, symbol, cyclic object): `text` is all we have.
+    }
   }
 }
 

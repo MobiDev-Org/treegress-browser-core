@@ -110,14 +110,21 @@ await page.CloseAsync();`);
     </form>
   `);
 
-    await page.focus('input[type=file]');
-    await page.setInputFiles('input[type=file]', asset('file-to-upload.txt'));
-    await page.click('input[type=file]');
+    await recorder.hoverOverElement('input[type=file]');
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      recorder.trustedClick(),
+    ]);
+    // Simulate the time a real user takes to pick a file from the OS dialog
+    // so the merge logic cannot rely on a short delay between click and setInputFiles.
+    await new Promise(f => setTimeout(f, 1000));
+    await chooser.setFiles(asset('file-to-upload.txt'));
 
     const sources = await recorder.waitForOutput('JavaScript', 'setInputFiles');
 
     expect(sources.get('JavaScript')!.text).toContain(`
   await page.getByRole('button', { name: 'Choose File' }).setInputFiles('file-to-upload.txt');`);
+    expect(sources.get('JavaScript')!.text).not.toContain(`click()`);
 
     expect(sources.get('Java')!.text).toContain(`
       page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("Choose File")).setInputFiles(Paths.get("file-to-upload.txt"));`);
@@ -190,6 +197,28 @@ await page.GetByRole(AriaRole.Button, new() { Name = "Choose File" }).SetInputFi
 
     expect(sources.get('C#')!.text).toContain(`
 await page.GetByRole(AriaRole.Button, new() { Name = "Choose File" }).SetInputFilesAsync(new[] {  });`);
+  });
+
+  test('should upload a file via hidden input triggered by button', async ({ openRecorder, browserName, asset, isLinux }) => {
+    const { page, recorder } = await openRecorder();
+    await recorder.setContentAndWait(`
+    <button onclick="document.querySelector('input[type=file]').click()">select file</button>
+    <input type="file" style="display: none">
+  `);
+
+    await recorder.hoverOverElement('button');
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      recorder.trustedClick(),
+    ]);
+    await new Promise(f => setTimeout(f, 1000));
+    await chooser.setFiles(asset('file-to-upload.txt'));
+
+    const sources = await recorder.waitForOutput('JavaScript', 'setInputFiles');
+
+    // The setInputFiles call must target the actual file input, not the trigger button.
+    expect(sources.get('JavaScript')!.text).toContain(`setInputFiles('file-to-upload.txt')`);
+    expect(sources.get('JavaScript')!.text).not.toContain(`getByRole('button', { name: 'select file' }).setInputFiles`);
   });
 
   test('should download files', async ({ openRecorder, server }) => {
@@ -494,6 +523,23 @@ await page.Locator("#textarea").FillAsync(\"Hello'\\"\`\\nWorld\");`);
     expect.soft(sources.get('C#')!.text).toContain(`await page.GetByTestId("foo").ClickAsync();`);
   });
 
+  test('should generate getByTestId for any of the configured testIdAttributes', async ({ openRecorder }) => {
+    const { page, recorder } = await openRecorder({ testIdAttributeName: 'data-pw,data-ti' });
+
+    await recorder.setContentAndWait(`
+      <button data-pw="primary">First</button>
+      <button data-ti="secondary">Second</button>
+    `);
+
+    await page.click('[data-pw=primary]');
+    let sources = await recorder.waitForOutput('JavaScript', `page.getByTestId('primary')`);
+    expect.soft(sources.get('JavaScript')!.text).toContain(`await page.getByTestId('primary').click()`);
+
+    await page.click('[data-ti=secondary]');
+    sources = await recorder.waitForOutput('JavaScript', `page.getByTestId('secondary')`);
+    expect.soft(sources.get('JavaScript')!.text).toContain(`await page.getByTestId('secondary').click()`);
+  });
+
   test('should auto-generate toBeVisible', async ({ openRecorder }) => {
     const { page, recorder } = await openRecorder();
 
@@ -533,28 +579,28 @@ await page.Locator("#textarea").FillAsync(\"Hello'\\"\`\\nWorld\");`);
     ]);
 
     expect.soft(sources.get('Playwright Test')!.text).toContain(`
+  await page.getByRole('button', { name: 'one' }).click();
   await expect(page.getByRole('heading', { name: 'new header' })).toBeVisible();
-
   await page.getByRole('button', { name: 'two' }).click();`);
 
     expect.soft(sources.get('Python')!.text).toContain(`
+    page.get_by_role("button", name="one").click()
     expect(page.get_by_role("heading", name="new header")).to_be_visible()
-
     page.get_by_role("button", name="two").click()`);
 
     expect.soft(sources.get('Python Async')!.text).toContain(`
+    await page.get_by_role("button", name="one").click()
     await expect(page.get_by_role("heading", name="new header")).to_be_visible()
-
     await page.get_by_role("button", name="two").click()`);
 
     expect.soft(sources.get('Java')!.text).toContain(`
+      page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("one")).click();
       assertThat(page.getByRole(AriaRole.HEADING, new Page.GetByRoleOptions().setName("new header"))).isVisible();
-
       page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("two")).click();`);
 
     expect.soft(sources.get('C#')!.text).toContain(`
+await page.GetByRole(AriaRole.Button, new() { Name = "one" }).ClickAsync();
 await Expect(page.GetByRole(AriaRole.Heading, new() { Name = "new header" })).ToBeVisibleAsync();
-
 await page.GetByRole(AriaRole.Button, new() { Name = "two" }).ClickAsync();`);
   });
 });

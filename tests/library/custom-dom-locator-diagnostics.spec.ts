@@ -15,7 +15,7 @@
  */
 
 import { playwrightTest as it, expect } from '../config/browserTest';
-import { inspectLocatorCandidates } from '../../packages/playwright-core/src/tools/customDomLocatorCompiler';
+import { inspectLocatorCandidates } from '../../packages/playwright-core/src/tools/backend/customDomLocatorCompiler';
 
 it('should classify ambiguous locator candidates', async ({ page }) => {
   await page.setContent(`

@@ -14,58 +14,136 @@
  * limitations under the License.
  */
 
-import { assert, debugLogger, mkdirIfNeeded, monotonicTime } from '../utils';
-import { launchProcess } from './utils/processLauncher';
-import { jpegjs } from '../utilsBundle';
+import path from 'path';
+
+import jpegjs from 'jpeg-js';
+import { launchProcess } from '@utils/processLauncher';
+import { assert } from '@isomorphic/assert';
+import { createGuid } from '@utils/crypto';
+import { debugLogger } from '@utils/debugLogger';
+import { mkdirIfNeeded } from '@utils/fileUtils';
+import { monotonicTime } from '@isomorphic/time';
+import { Artifact } from './artifact';
+import { writeClusterHeader, writeHeader } from './ebml';
+import { registry } from './registry';
 
 import type * as types from './types';
 import type { ChildProcess } from 'child_process';
+import type { Screencast, ScreencastClient } from './screencast';
+import type { Page } from './page';
 
-const fps = 25;
+const kDefaultFps = 25;
 
 export class VideoRecorder {
-  private _options: types.VideoOptions;
+  private _screencast: Screencast;
+  private _videoRecorder: FfmpegVideoRecorder | undefined;
+  private _client: ScreencastClient | undefined;
+  private _artifact: Artifact | undefined;
+
+  constructor(screencast: Screencast) {
+    this._screencast = screencast;
+  }
+
+  start(options: { fileName?: string, size?: { width: number, height: number }, fps?: number }) {
+    assert(!this._artifact);
+    // Do this first, it likes to throw.
+    const ffmpegPath = registry.findExecutable('ffmpeg')!.executablePathOrDie(this._screencast.page.browserContext._browser.sdkLanguage());
+    const outputFile = options.fileName ?? path.join(this._screencast.page.browserContext._browser.options.artifactsDir, createGuid() + '.webm');
+
+    this._client = {
+      onFrame: frame => this._videoRecorder!.writeFrame(frame.buffer, frame.frameSwapWallTime),
+      gracefulClose: () => this.stop(),
+      dispose: () => this.stop().catch(e => debugLogger.log('error', `Failed to stop video recorder: ${String(e)}`)),
+      size: options.size,
+      fps: options.fps,
+    };
+
+    const { size } = this._screencast.addClient(this._client);
+    // For video files only, prioritize encoding into the given size, regardless of the actual pixel data.
+    const videoSize = options.size ?? size;
+    this._videoRecorder = new FfmpegVideoRecorder(ffmpegPath, videoSize, options.fps ?? kDefaultFps, outputFile);
+    this._artifact = new Artifact(this._screencast.page.browserContext, outputFile);
+    return this._artifact;
+  }
+
+  async stop() {
+    if (!this._artifact)
+      return;
+
+    const artifact = this._artifact;
+    this._artifact = undefined;
+    const client = this._client!;
+    this._client = undefined;
+    const videoRecorder = this._videoRecorder!;
+    this._videoRecorder = undefined;
+
+    this._screencast.removeClient(client);
+    await videoRecorder._stop();
+    await artifact.reportFinished();
+  }
+}
+
+// Note: it is important to start video recorder before sending Screencast.startScreencast,
+// and it is equally important to send Screencast.startScreencast before sending Target.resume.
+export function startAutomaticVideoRecording(page: Page) {
+  const recordVideo = page.browserContext._options.recordVideo;
+  if (!recordVideo)
+    return;
+  const recorder = new VideoRecorder(page.screencast);
+  if (page.browserContext._options.recordVideo?.showActions)
+    page.screencast.showActions(page.browserContext._options.recordVideo?.showActions);
+  const dir = recordVideo.dir ?? page.browserContext._browser.options.artifactsDir;
+  const artifact = recorder.start({ size: recordVideo.size, fps: recordVideo.fps, fileName: path.join(dir, page.guid + '.webm') });
+  page.video = artifact;
+}
+
+class FfmpegVideoRecorder {
+  private _size: types.Size;
+  private _fps: number;
   private _process: ChildProcess | null = null;
   private _gracefullyClose: (() => Promise<void>) | null = null;
-  private _lastWritePromise: Promise<void> = Promise.resolve();
-  private _firstFrameTimestamp: number = 0;
-  private _lastFrame: { timestamp: number, frameNumber: number, buffer: Buffer } | null = null;
+  private _creationTimeMs: number;
+  private _lastFrame: { timestamp: number, buffer: Buffer } | null = null;
   private _lastWriteNodeTime: number = 0;
-  private _frameQueue: Buffer[] = [];
   private _isStopped = false;
   private _ffmpegPath: string;
   private _launchPromise: Promise<Error | null>;
+  private _outputFile: string;
 
-  constructor(ffmpegPath: string, options: types.VideoOptions) {
-    this._ffmpegPath = ffmpegPath;
-    if (!options.outputFile.endsWith('.webm'))
+  constructor(ffmpegPath: string, size: types.Size, fps: number, outputFile: string) {
+    if (!outputFile.endsWith('.webm'))
       throw new Error('File must have .webm extension');
-    this._options = options;
+    this._outputFile = outputFile;
+    this._ffmpegPath = ffmpegPath;
+    this._size = size;
+    this._fps = fps;
+    this._creationTimeMs = Date.now();
     this._launchPromise = this._launch().catch(e => e);
   }
 
   private async _launch() {
-    await mkdirIfNeeded(this._options.outputFile);
+    await mkdirIfNeeded(this._outputFile);
     // How to tune the codec:
-    // 1. Read vp8 documentation to figure out the options.
+    // 1. Read vp9 documentation to figure out the options.
+    //   https://developers.google.com/media/vp9/live-encoding
     //   https://www.webmproject.org/docs/encoder-parameters/
     // 2. Use the following command to map the options to ffmpeg arguments.
-    //   $ ./third_party/ffmpeg/ffmpeg-mac -h encoder=vp8
-    // 3. A bit more about passing vp8 options to ffmpeg.
-    //   https://trac.ffmpeg.org/wiki/Encode/VP8
-    // 4. Tuning for VP9:
-    //   https://developers.google.com/media/vp9/live-encoding
+    //   $ ./third_party/ffmpeg/ffmpeg-mac -h encoder=libvpx-vp9
+    // 3. A bit more about passing vp9 options to ffmpeg.
+    //   https://trac.ffmpeg.org/wiki/Encode/VP9
     //
     // How to stress-test video recording (runs 10 recorders in parallel to book all cpus available):
     //   $ node ./utils/video_stress.js
     //
-    // We use the following vp8 options:
+    // We use the following vp9 options:
     //   "-qmin 0 -qmax 50" - quality variation from 0 to 50.
-    //     Suggested here: https://trac.ffmpeg.org/wiki/Encode/VP8
-    //   "-crf 8" - constant quality mode, 4-63, lower means better quality.
-    //   "-deadline realtime -speed 8" - do not use too much cpu to keep up with incoming frames.
-    //   "-b:v 1M" - video bitrate. Default value is too low for vp8
-    //     Suggested here: https://trac.ffmpeg.org/wiki/Encode/VP8
+    //   "-crf 8" - constrained quality mode (together with -b:v), 0-63, lower means better quality.
+    //   "-deadline realtime -cpu-used 8" - do not use too much cpu to keep up with incoming frames.
+    //     Realtime mode accepts -cpu-used 5-9, higher is faster.
+    //   "-lag-in-frames 0" - do not buffer frames for lookahead, encode as they arrive.
+    //   "-b:v 1M" - video bitrate for the default 800x450 video at 25fps.
+    //     Larger or faster videos get the bitrate scaled with the pixel rate: at 1920x1080 and 60fps
+    //     the 1M budget visibly blurs scrolling text, while the scaled ~14M is visually lossless.
     //   Note that we can switch to "-qmin 20 -qmax 50 -crf 30" for smaller video size but worse quality.
     //
     // We use "pad" and "crop" video filters (-vf option) to resize incoming frames
@@ -73,22 +151,59 @@ export class VideoRecorder {
     //   https://ffmpeg.org/ffmpeg-filters.html#pad-1
     //   https://ffmpeg.org/ffmpeg-filters.html#crop
     //
-    // We use "image2pipe" mode to pipe frames and get a single video - https://trac.ffmpeg.org/wiki/Slideshow
-    //   "-f image2pipe -c:v mjpeg -i -" forces input to be read from standard input, and forces
-    //     mjpeg input image format.
-    //   "-avioflags direct" reduces general buffering.
+    // We wrap each incoming MJPEG frame into a minimal Matroska stream (see ./ebml.ts) with an
+    // explicit timestamp, and let ffmpeg read frame timing from that stream.
+    //   "-f matroska -i pipe:0" forces input to be read from standard input as Matroska.
     //   "-fpsprobesize 0 -probesize 32 -analyzeduration 0" reduces initial buffering
     //     while analyzing input fps and other stats.
+    //   Note: "-avioflags direct" must NOT be used here - it breaks Matroska header parsing
+    //     by disabling the input buffering the demuxer needs.
     //
     // "-y" means overwrite output.
     // "-an" means no audio.
+    // "-r 25" forces a constant output frame rate; ffmpeg duplicates frames as needed based on
+    //   the input timestamps, so we don't have to repeat frames ourselves.
     // "-threads 1" means using one thread. This drastically reduces stalling when
-    //   cpu is overbooked. By default vp8 tries to use all available threads?
+    //   cpu is overbooked. A single thread can't keep up with larger or faster videos
+    //   (1920x1080 at 60fps encodes below realtime), so we add a thread per 4x the default pixel rate.
+    //   vp9 only parallelizes across tile columns and rows, hence "-tile-columns" and "-row-mt 1".
 
-    const w = this._options.width;
-    const h = this._options.height;
-    const args = `-loglevel error -f image2pipe -avioflags direct -fpsprobesize 0 -probesize 32 -analyzeduration 0 -c:v mjpeg -i pipe:0 -y -an -r ${fps} -c:v vp8 -qmin 0 -qmax 50 -crf 8 -deadline realtime -speed 8 -b:v 1M -threads 1 -vf pad=${w}:${h}:0:0:gray,crop=${w}:${h}:0:0`.split(' ');
-    args.push(this._options.outputFile);
+    const w = this._size.width;
+    const h = this._size.height;
+    // Bitrate and encoder threads scale with the pixel rate relative to 800x450 at 25fps:
+    //   800x450 at 25fps   -> scale 1,    bitrate 1000k,  1 thread
+    //   800x800 at 25fps   -> scale 1.78, bitrate 1778k,  1 thread
+    //   1920x1080 at 25fps -> scale 5.76, bitrate 5760k,  2 threads
+    //   1920x1080 at 60fps -> scale 13.8, bitrate 13824k, 4 threads
+    const pixelRateScale = Math.max(1, w * h * this._fps / (800 * 450 * kDefaultFps));
+    const bitrate = Math.round(pixelRateScale * 1000);
+    const threads = Math.min(8, Math.ceil(pixelRateScale / 4));
+    const tileColumns = Math.ceil(Math.log2(threads));
+    const args = [
+      '-loglevel error',
+      '-f matroska',
+      '-fpsprobesize 0',
+      '-probesize 32',
+      '-analyzeduration 0',
+      '-i pipe:0',
+      '-y',
+      '-an',
+      `-r ${this._fps}`,
+      '-c:v libvpx-vp9',
+      '-qmin 0',
+      '-qmax 50',
+      '-crf 8',
+      '-deadline realtime',
+      '-cpu-used 8',
+      '-lag-in-frames 0',
+      `-b:v ${bitrate}k`,
+      `-threads ${threads}`,
+      `-tile-columns ${tileColumns}`,
+      '-row-mt 1',
+      `-vf pad=${w}:${h}:0:0:gray,crop=${w}:${h}:0:0`,
+      `-metadata creation_time=${new Date(this._creationTimeMs).toISOString()}`,
+    ].flatMap(option => option.split(' '));
+    args.push(this._outputFile);
 
     const { launchedProcess, gracefullyClose } = await launchProcess({
       command: this._ffmpegPath,
@@ -112,6 +227,7 @@ export class VideoRecorder {
     });
     this._process = launchedProcess;
     this._gracefullyClose = gracefullyClose;
+    launchedProcess.stdin!.write(writeHeader());
   }
 
   writeFrame(frame: Buffer, timestamp: number) {
@@ -127,35 +243,17 @@ export class VideoRecorder {
     if (this._isStopped)
       return;
 
-    if (!this._firstFrameTimestamp)
-      this._firstFrameTimestamp = timestamp;
-
-    const frameNumber = Math.floor((timestamp - this._firstFrameTimestamp) * fps);
-
-    if (this._lastFrame) {
-      const repeatCount = frameNumber - this._lastFrame.frameNumber;
-      for (let i = 0; i < repeatCount; ++i)
-        this._frameQueue.push(this._lastFrame.buffer);
-      this._lastWritePromise = this._lastWritePromise.then(() => this._sendFrames());
-    }
-
-    this._lastFrame = { buffer: frame, timestamp, frameNumber };
+    this._emitFrame(frame, timestamp - this._creationTimeMs);
+    this._lastFrame = { buffer: frame, timestamp };
     this._lastWriteNodeTime = monotonicTime();
   }
 
-  private async _sendFrames() {
-    while (this._frameQueue.length)
-      await this._sendFrame(this._frameQueue.shift()!);
+  private _emitFrame(frame: Buffer, timestampMs: number) {
+    this._process!.stdin!.write(writeClusterHeader(Math.max(0, Math.round(timestampMs)), frame.length));
+    this._process!.stdin!.write(frame);
   }
 
-  private async _sendFrame(frame: Buffer) {
-    return new Promise(f => this._process!.stdin!.write(frame, f)).then(error => {
-      if (error)
-        debugLogger.log('browser', `ffmpeg failed to write: ${String(error)}`);
-    });
-  }
-
-  async stop() {
+  async _stop() {
     // Only report the error on stop. This allows to make the constructor synchronous.
     const error = await this._launchPromise;
     if (error)
@@ -163,16 +261,13 @@ export class VideoRecorder {
     if (this._isStopped)
       return;
     if (!this._lastFrame) {
-      // ffmpeg only creates a file upon some non-empty input
-      this._writeFrame(createWhiteImage(this._options.width, this._options.height), monotonicTime());
+      // ffmpeg only creates a file upon some non-empty input.
+      this._writeFrame(createWhiteImage(this._size.width, this._size.height), Date.now());
     }
-    // Pad with at least 1s of the last frame in the end for convenience.
-    // This also ensures non-empty videos with 1 frame.
-    const addTime = Math.max((monotonicTime() - this._lastWriteNodeTime) / 1000, 1);
-    this._writeFrame(Buffer.from([]), this._lastFrame!.timestamp + addTime);
+    const addTimeMs = Math.max(monotonicTime() - this._lastWriteNodeTime, 1000);
+    this._emitFrame(this._lastFrame!.buffer, this._lastFrame!.timestamp + addTimeMs - this._creationTimeMs);
     this._isStopped = true;
     try {
-      await this._lastWritePromise;
       await this._gracefullyClose!();
     } catch (e) {
       debugLogger.log('error', `ffmpeg failed to stop: ${String(e)}`);

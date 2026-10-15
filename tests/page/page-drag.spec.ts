@@ -19,12 +19,10 @@ import { test as it, expect } from './pageTest';
 import { attachFrame } from '../config/utils';
 
 it.skip(({ browserName, browserMajorVersion }) => browserName === 'chromium' && browserMajorVersion < 91);
-it.fixme(({ headless, isLinux }) => isLinux && !headless, 'Stray mouse events on Linux headed mess up the tests.');
-it.fixme(({ headless, isWindows, browserName }) => isWindows && !headless && browserName === 'webkit', 'WebKit win also send stray mouse events.');
+it.skip(({ isAndroid }) => isAndroid, 'No drag&drop on Android.');
+it.skip(({ headless }) => !headless, 'Stray mouse events mess up the tests.');
 
 it.describe('Drag and drop', () => {
-  it.skip(({ isAndroid }) => isAndroid, 'No drag&drop on Android.');
-
   it('should work @smoke', async ({ page, server }) => {
     await page.goto(server.PREFIX + '/drag-n-drop.html');
     await page.hover('#source');
@@ -71,7 +69,6 @@ it.describe('Drag and drop', () => {
   });
 
   it('should work inside iframe', async ({ page, server, browserName, isElectron, isWindows }) => {
-    it.fixme(isElectron && isWindows, 'Fails on the bots');
     await page.goto(server.EMPTY_PAGE);
     const frame = await attachFrame(page, 'myframe', server.PREFIX + '/drag-n-drop.html');
     await page.$eval('iframe', iframe => {
@@ -133,7 +130,6 @@ it.describe('Drag and drop', () => {
         iframe.style.marginLeft = '500px';
         iframe.style.marginTop = '60px';
       });
-      await page.waitForTimeout(5000);
       const pageEvents = await trackEvents(await page.$('body'));
       const frameEvents = await trackEvents(await frame.$('body'));
       await page.hover('#source');
@@ -436,12 +432,13 @@ async function trackEvents(target: ElementHandle) {
       'dragstart', 'dragend', 'dragover', 'dragenter', 'dragleave', 'dragexit',
       'drop'
     ]) {
-      target.addEventListener(event, (e: PointerEvent) => {
+      target.addEventListener(event, e => {
+        const pe = e as PointerEvent;
         // Browsers are all over the place with dragend position.
         if (event === 'dragend')
           events.push('dragend');
         else
-          events.push(`${event} at ${e.clientX};${e.clientY}`);
+          events.push(`${event} at ${pe.clientX};${pe.clientY}`);
       }, false);
     }
     return events;

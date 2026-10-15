@@ -18,8 +18,12 @@ import type { IncomingMessage } from 'http';
 import type { ProxyServer } from '../third_party/proxy';
 import { createProxy } from '../third_party/proxy';
 import net from 'net';
-import type { SocksSocketClosedPayload, SocksSocketDataPayload, SocksSocketRequestedPayload } from 'playwright-core/src/server/utils/socksProxy';
-import { SocksProxy } from '../../packages/playwright-core/lib/server/utils/socksProxy';
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
+
+type SocksSocketClosedPayload = utils.SocksSocketClosedPayload;
+type SocksSocketDataPayload = utils.SocksSocketDataPayload;
+type SocksSocketRequestedPayload = utils.SocksSocketRequestedPayload;
+const { SocksProxy } = utils;
 
 // Certain browsers perform telemetry requests which we want to ignore.
 const kConnectHostsToIgnore = new Set([
@@ -34,6 +38,7 @@ export class TestProxy {
 
   connectHosts: string[] = [];
   requestUrls: string[] = [];
+  requestHosts: string[] = [];
   wsUrls: string[] = [];
 
   private readonly _server: ProxyServer;
@@ -65,6 +70,7 @@ export class TestProxy {
   forwardTo(port: number, options?: { allowConnectRequests?: boolean, removePrefix?: string, preserveHostname?: boolean }) {
     this._prependHandler('request', (req: IncomingMessage) => {
       this.requestUrls.push(req.url);
+      this.requestHosts.push(req.headers.host);
       const url = new URL(req.url, `http://${req.headers.host}`);
       if (options?.preserveHostname)
         url.port = '' + port;
@@ -112,6 +118,7 @@ export class TestProxy {
   reset() {
     this.connectHosts = [];
     this.requestUrls = [];
+    this.requestHosts = [];
     for (const { event, handler } of this._handlers)
       this._server.removeListener(event, handler);
     this._handlers = [];

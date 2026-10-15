@@ -14,29 +14,29 @@
  * limitations under the License.
  */
 
-import { formatMatcherMessage } from 'playwright-core/lib/utils';
-
-import { expectTypes } from '../util';
+import { expectTypes, formatMatcherMessage } from './matcherHint';
 
 import type { MatcherResult } from './matcherHint';
 import type { Locator } from 'playwright-core';
+import type { ExpectResult } from 'playwright-core/lib/client/frame';
 import type { ExpectMatcherStateInternal } from './matchers';
 
 export async function toBeTruthy(
   this: ExpectMatcherStateInternal,
   matcherName: string,
   locator: Locator,
-  receiverType: string,
+  receiverType: 'Locator',
   expected: string,
   arg: string,
-  query: (isNot: boolean, timeout: number) => Promise<{ matches: boolean, log?: string[], received?: any, timedOut?: boolean, errorMessage?: string }>,
-  options: { timeout?: number } = {},
+  query: (isNot: boolean, timeout: number, signal?: AbortSignal) => Promise<ExpectResult>,
+  options: { timeout?: number, signal?: AbortSignal } = {},
 ): Promise<MatcherResult<any, any>> {
   expectTypes(locator, [receiverType], matcherName);
 
   const timeout = options.timeout ?? this.timeout;
 
-  const { matches: pass, log, timedOut, received, errorMessage } = await query(!!this.isNot, timeout);
+  const { matches: pass, log, timedOut, received, errorMessage } = await query(!!this.isNot, timeout, options.signal);
+  const receivedValue = received?.value;
 
   if (pass === !this.isNot) {
     return {
@@ -54,7 +54,7 @@ export async function toBeTruthy(
     printedReceived = errorMessage ? '' : `Received: ${expected}`;
   } else {
     printedExpected = `Expected: ${expected}`;
-    printedReceived = errorMessage ? '' : `Received: ${received}`;
+    printedReceived = errorMessage ? '' : `Received: ${receivedValue}`;
   }
   const message = () => {
     return formatMatcherMessage(this.utils, {
@@ -75,10 +75,11 @@ export async function toBeTruthy(
   return {
     message,
     pass,
-    actual: received,
+    actual: receivedValue,
     name: matcherName,
     expected,
     log,
     timeout: timedOut ? timeout : undefined,
+    ariaSnapshot: received?.ariaSnapshot,
   };
 }

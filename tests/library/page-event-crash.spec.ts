@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
 import { contextTest as testBase, expect } from '../config/browserTest';
 
 const test = testBase.extend<{ crash: () => void }, { dummy: string }>({
@@ -34,7 +35,9 @@ const test = testBase.extend<{ crash: () => void }, { dummy: string }>({
 
 test.beforeEach(({ platform, browserName, channel }) => {
   test.slow(platform === 'linux' && (browserName === 'webkit'), 'WebKit/Linux tests are consistently slower on some Linux environments. Most likely WebContent process is not getting terminated properly and is causing the slowdown.');
-  test.fixme(channel === 'webkit-wsl', 'WebKit on WSL is even slower than above ^^ - skipping for now');
+  test.skip(channel === 'webkit-wsl', 'WebKit on WSL is even slower than above ^^ - skipping for now');
+  test.skip(browserName === 'chromium' && utils.hostPlatform.startsWith('ubuntu24.04'), 'never dispatches the crash event');
+  test.skip(browserName === 'webkit' && utils.hostPlatform.startsWith('debian13'), 'never dispatches the crash event');
 });
 
 test('should emit crash event when page crashes', async ({ page, crash }) => {
@@ -44,17 +47,29 @@ test('should emit crash event when page crashes', async ({ page, crash }) => {
   expect(crashedPage).toBe(page);
 });
 
-test('should throw on any action after page crashes', async ({ page, crash, browserName }) => {
+test('should throw on any action after page crashes', async ({ page, crash, server, browserName }) => {
   await page.setContent(`<div>This page should crash</div>`);
   crash();
   await page.waitForEvent('crash');
-  const err = await page.evaluate(() => {}).then(() => null, e => e);
-  expect(err).toBeTruthy();
-  // In Firefox, crashed page is sometimes "closed".
-  if (browserName === 'firefox')
-    expect(err.message.includes('Target page, context or browser has been closed') || err.message.includes('Target crashed'), err.message).toBe(true);
-  else
-    expect(err.message).toContain('Target crashed');
+  const expectCrashError = (error: Error | null) => {
+    expect(error, 'action should reject after crash').toBeTruthy();
+    // In Firefox, crashed page is sometimes "closed".
+    if (browserName === 'firefox')
+      expect(error!.message.includes('has been closed') || error!.message.includes('crashed'), error!.message).toBe(true);
+    else
+      expect(error!.message).toContain('crashed');
+  };
+  expectCrashError(await page.evaluate(() => {}).then(() => null, e => e));
+  expectCrashError(await page.goto(server.EMPTY_PAGE).then(() => null, e => e));
+  expectCrashError(await page.reload().then(() => null, e => e));
+});
+
+test('expect should not hang when page crashed', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/31907' },
+}, async ({ page, crash }) => {
+  const expectPromise = expect(page.getByText('child')).toBeVisible();
+  crash();
+  await expect(expectPromise).rejects.toThrowError();
 });
 
 test('should cancel waitForEvent when page crashes', async ({ page, crash }) => {
@@ -82,4 +97,32 @@ test('should be able to close context when page crashes', async ({ isAndroid, pa
   crash();
   await page.waitForEvent('crash');
   await page.context().close();
+});
+
+test('should be able to close page after crash', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42956' },
+}, async ({ page, crash }) => {
+  await page.setContent(`<div>This page should crash</div>`);
+  crash();
+  await page.waitForEvent('crash');
+  // Give the browser a chance to erroneously "close" the crashed page.
+  await new Promise(f => setTimeout(f, 3000));
+  expect(page.isClosed()).toBe(false);
+  expect(page.context().pages()).toEqual([page]);
+  await page.close();
+  expect(page.isClosed()).toBe(true);
+  expect(page.context().pages()).toEqual([]);
+});
+
+test.fixme('should reject in-flight worker.evaluate when page crashes', async ({ page, crash, server }) => {
+  await page.goto(server.EMPTY_PAGE);
+  const [worker] = await Promise.all([
+    page.waitForEvent('worker'),
+    page.evaluate(() => new Worker(URL.createObjectURL(
+        new Blob(['self.onmessage = () => {}'], { type: 'application/javascript' })))),
+  ]);
+  const evalPromise = worker.evaluate(() => new Promise(() => {})).catch((e: Error) => e); // never resolves in-worker
+  crash();
+  const error = await evalPromise as Error;
+  expect(error.message).toContain('crash');
 });

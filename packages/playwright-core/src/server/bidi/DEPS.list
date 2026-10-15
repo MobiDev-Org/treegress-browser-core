@@ -1,9 +1,8 @@
 [*]
-../../utils/
-../../utils/isomorphic/
+@utils/**
+@isomorphic/**
 ../
-../isomorphic/
-../utils
+../../generated/
 ./third_party/
 
 [bidiOverCdp.ts]

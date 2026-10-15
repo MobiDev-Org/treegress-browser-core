@@ -17,14 +17,14 @@
 import fs from 'fs';
 import path from 'path';
 
-import { getAsBooleanFromENV } from 'playwright-core/lib/utils';
+import { getAsBooleanFromENV } from '@utils/env';
 
 import { CommonReporterOptions, formatFailure, nonTerminalScreen, resolveOutputFile } from './base';
 import { stripAnsiEscapes } from '../util';
 
 import type { ReporterV2 } from './reporterV2';
 import type { JUnitReporterOptions } from '../../types/test';
-import type { FullConfig, FullResult, Suite, TestCase } from '../../types/testReporter';
+import type { FullConfig, FullResult, Suite, TestCase, TestResult } from '../../types/testReporter';
 
 class JUnitReporter implements ReporterV2 {
   private config!: FullConfig;
@@ -38,10 +38,14 @@ class JUnitReporter implements ReporterV2 {
   private resolvedOutputFile: string | undefined;
   private stripANSIControlSequences = false;
   private includeProjectInTestName = false;
+  private includeRetries = false;
+  private omitTags = false;
 
   constructor(options: JUnitReporterOptions & CommonReporterOptions) {
     this.stripANSIControlSequences = getAsBooleanFromENV('PLAYWRIGHT_JUNIT_STRIP_ANSI', !!options.stripANSIControlSequences);
     this.includeProjectInTestName = getAsBooleanFromENV('PLAYWRIGHT_JUNIT_INCLUDE_PROJECT_IN_TEST_NAME', !!options.includeProjectInTestName);
+    this.includeRetries = getAsBooleanFromENV('PLAYWRIGHT_JUNIT_INCLUDE_RETRIES', !!options.includeRetries);
+    this.omitTags = getAsBooleanFromENV('PLAYWRIGHT_JUNIT_OMIT_TAGS', !!options.omitTags);
     this.configDir = options.configDir;
     this.resolvedOutputFile = resolveOutputFile('JUNIT', options)?.outputFile;
   }
@@ -143,17 +147,15 @@ class JUnitReporter implements ReporterV2 {
   }
 
   private async _addTestCase(suiteName: string, namePrefix: string, test: TestCase, entries: XMLEntry[]): Promise<'failure' | 'error' | null> {
-    const entry = {
+    const entry: XMLEntry = {
       name: 'testcase',
       attributes: {
         // Skip root, project, file
         name: namePrefix + test.titlePath().slice(3).join(' › '),
         // filename
         classname: suiteName,
-        time: (test.results.reduce((acc, value) => acc + value.duration, 0)) / 1000
-
       },
-      children: [] as XMLEntry[]
+      children: [],
     };
     entries.push(entry);
 
@@ -162,9 +164,8 @@ class JUnitReporter implements ReporterV2 {
     // Xray JUnit extensions but it also agnostic, so other tools can also take advantage of this format
     const properties: XMLEntry = {
       name: 'properties',
-      children: [] as XMLEntry[]
+      children: [],
     };
-
     for (const annotation of test.annotations) {
       const property: XMLEntry = {
         name: 'property',
@@ -175,44 +176,73 @@ class JUnitReporter implements ReporterV2 {
       };
       properties.children?.push(property);
     }
-
     if (properties.children?.length)
-      entry.children.push(properties);
+      entry.children!.push(properties);
 
     if (test.outcome() === 'skipped') {
-      entry.children.push({ name: 'skipped' });
+      entry.children!.push({ name: 'skipped' });
       return null;
     }
 
-    let classification: 'failure' | 'error' | null = null;
-    if (!test.ok()) {
-      const errorInfo = classifyError(test);
-      if (errorInfo) {
-        classification = errorInfo.elementName;
-        entry.children.push({
-          name: errorInfo.elementName,
-          attributes: {
-            message: errorInfo.message,
-            type: errorInfo.type,
-          },
-          text: stripAnsiEscapes(formatFailure(nonTerminalScreen, this.config, test))
-        });
-      } else {
-        classification = 'failure';
-        entry.children.push({
-          name: 'failure',
-          attributes: {
-            message: `${path.basename(test.location.file)}:${test.location.line}:${test.location.column} ${test.title}`,
-            type: 'FAILURE',
-          },
-          text: stripAnsiEscapes(formatFailure(nonTerminalScreen, this.config, test))
-        });
+    if (this.includeRetries && test.ok()) {
+      const passResult = test.results[test.results.length - 1];
+      entry.attributes!.time = passResult.duration / 1000;
+      await this._appendStdIO(entry, [passResult]);
+      // Add <flakyFailure>/<flakyError> for each failed retry.
+      for (let i = 0; i < test.results.length - 1; i++) {
+        const result = test.results[i];
+        if (result.status === 'passed' || result.status === 'skipped')
+          continue;
+        entry.children!.push(await this._buildRetryEntry(result, 'flaky'));
       }
+      // No <failure> element — flaky tests count as passed.
+      return null;
     }
 
+    if (this.includeRetries) {
+      entry.attributes!.time = test.results[0].duration / 1000;
+      await this._appendStdIO(entry, [test.results[0]]);
+      // Add <rerunFailure>/<rerunError> for each subsequent retry.
+      for (let i = 1; i < test.results.length; i++) {
+        const result = test.results[i];
+        if (result.status === 'passed' || result.status === 'skipped')
+          continue;
+        entry.children!.push(await this._buildRetryEntry(result, 'rerun'));
+      }
+      return this._addFailureEntry(test, classifyResultError(test.results[0]), entry);
+    }
+
+    entry.attributes!.time = test.results.reduce((acc, value) => acc + value.duration, 0) / 1000;
+    await this._appendStdIO(entry, test.results);
+    if (test.ok())
+      return null;
+    return this._addFailureEntry(test, classifyTestError(test), entry);
+  }
+
+  private _addFailureEntry(test: TestCase, errorInfo: ErrorInfo | null, entry: XMLEntry): 'failure' | 'error' {
+    if (errorInfo) {
+      entry.children!.push({
+        name: errorInfo.elementName,
+        attributes: { message: errorInfo.message, type: errorInfo.type },
+        text: stripAnsiEscapes(formatFailure(nonTerminalScreen, this.config, test, undefined, { omitTags: this.omitTags }))
+      });
+      return errorInfo.elementName;
+    }
+    entry.children!.push({
+      name: 'failure',
+      attributes: {
+        message: `${path.basename(test.location.file)}:${test.location.line}:${test.location.column} ${test.title}`,
+        type: 'FAILURE',
+      },
+      text: stripAnsiEscapes(formatFailure(nonTerminalScreen, this.config, test, undefined, { omitTags: this.omitTags }))
+    });
+    return 'failure';
+  }
+
+  private async _appendStdIO(entry: XMLEntry, results: TestResult[]) {
     const systemOut: string[] = [];
     const systemErr: string[] = [];
-    for (const result of test.results) {
+    for (const result of results) {
       for (const item of result.stdout)
         systemOut.push(item.toString());
       for (const item of result.stderr)
@@ -240,44 +270,64 @@ class JUnitReporter implements ReporterV2 {
     // Note: it is important to only produce a single system-out/system-err entry
     // so that parsers in the wild understand it.
     if (systemOut.length)
-      entry.children.push({ name: 'system-out', text: systemOut.join('') });
+      entry.children!.push({ name: 'system-out', text: systemOut.join('') });
     if (systemErr.length)
-      entry.children.push({ name: 'system-err', text: systemErr.join('') });
-    return classification;
+      entry.children!.push({ name: 'system-err', text: systemErr.join('') });
+  }
+
+  private async _buildRetryEntry(result: TestResult, prefix: 'flaky' | 'rerun'): Promise<XMLEntry> {
+    const errorInfo = classifyResultError(result);
+    const entry: XMLEntry = {
+      name: `${prefix}${errorInfo?.elementName === 'error' ? 'Error' : 'Failure'}`,
+      attributes: { message: errorInfo?.message || '', type: errorInfo?.type || 'FAILURE', time: result.duration / 1000 },
+      children: [],
+    };
+    const stackTrace = result.error?.stack || result.error?.message || result.error?.value || '';
+    entry.children!.push({ name: 'stackTrace', text: stripAnsiEscapes(stackTrace) });
+    await this._appendStdIO(entry, [result]);
+    return entry;
   }
 }
 
-function classifyError(test: TestCase): { elementName: 'failure' | 'error'; type: string; message: string } | null {
-  for (const result of test.results) {
-    const error = result.error;
-    if (!error)
-      continue;
+type ErrorInfo = { elementName: 'failure' | 'error'; type: string; message: string };
 
-    const rawMessage = stripAnsiEscapes(error.message || error.value || '');
+function classifyResultError(result: TestResult): ErrorInfo | null {
+  const error = result.error;
+  if (!error)
+    return null;
 
-    // Parse "ErrorName: message" format from serialized error.
-    const nameMatch = rawMessage.match(/^(\w+): /);
-    const errorName = nameMatch ? nameMatch[1] : '';
-    const messageBody = nameMatch ? rawMessage.slice(nameMatch[0].length) : rawMessage;
-    const firstLine = messageBody.split('\n')[0].trim();
+  const rawMessage = stripAnsiEscapes(error.message || error.value || '');
 
-    // Check for expect/assertion failure pattern.
-    const matcherMatch = rawMessage.match(/expect\(.*?\)\.(not\.)?(\w+)/);
-    if (matcherMatch) {
-      const matcherName = `expect.${matcherMatch[1] || ''}${matcherMatch[2]}`;
-      return {
-        elementName: 'failure',
-        type: matcherName,
-        message: firstLine,
-      };
-    }
+  // Parse "ErrorName: message" format from serialized error.
+  const nameMatch = rawMessage.match(/^(\w+): /);
+  const errorName = nameMatch ? nameMatch[1] : '';
+  const messageBody = nameMatch ? rawMessage.slice(nameMatch[0].length) : rawMessage;
+  const firstLine = messageBody.split('\n')[0].trim();
 
-    // Thrown error.
+  // Check for expect/assertion failure pattern.
+  const matcherMatch = rawMessage.match(/expect\(.*?\)\.(not\.)?(\w+)/);
+  if (matcherMatch) {
+    const matcherName = `expect.${matcherMatch[1] || ''}${matcherMatch[2]}`;
     return {
-      elementName: 'error',
-      type: errorName || 'Error',
+      elementName: 'failure',
+      type: matcherName,
       message: firstLine,
     };
+  }
+
+  // Thrown error.
+  return {
+    elementName: 'error',
+    type: errorName || 'Error',
+    message: firstLine,
+  };
+}
+
+function classifyTestError(test: TestCase): ErrorInfo | null {
+  for (const result of test.results) {
+    const info = classifyResultError(result);
+    if (info)
+      return info;
   }
   return null;
 }

@@ -22,11 +22,17 @@ import { StackTraceView } from './stackTrace';
 import { CodeMirrorWrapper } from '@web/components/codeMirrorWrapper';
 import type { SourceHighlight } from '@web/components/codeMirrorWrapper';
 import type { SourceLocation, SourceModel } from '@isomorphic/trace/traceModel';
-import type { StackFrame } from '@protocol/channels';
+import type { StackFrame } from '@isomorphic/trace/trace';
 import { CopyToClipboard } from './copyToClipboard';
 import { ToolbarButton } from '@web/components/toolbarButton';
 import { Toolbar } from '@web/components/toolbar';
 import { useTraceModel } from './traceModelContext';
+
+function extname(file: string): string {
+  const basename = file.substring(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1);
+  const dot = basename.lastIndexOf('.');
+  return dot <= 0 ? '' : basename.substring(dot);
+}
 
 function useSources(stack: StackFrame[] | undefined, selectedFrame: number, sources: Map<string, SourceModel>, rootDir?: string, fallbackLocation?: SourceLocation) {
   const model = useTraceModel();
@@ -55,7 +61,11 @@ function useSources(stack: StackFrame[] | undefined, selectedFrame: number, sour
     } else if (source.content === undefined || (location === fallbackLocation)) {
       const sha1 = await calculateSha1(file);
       try {
-        let response = model ? await fetch(model.createRelativeUrl(`sha1/src@${sha1}.txt`)) : undefined;
+        let response = model ? await fetch(model.createRelativeUrl(`file/src/${sha1}${extname(file)}`)) : undefined;
+        if (!response || response.status === 404) {
+          // Older traces stored sources under resources/src@<sha1>.txt.
+          response = model ? await fetch(model.createRelativeUrl(`file/resources/src@${sha1}.txt`)) : undefined;
+        }
         if (!response || response.status === 404)
           response = await fetch(`file?path=${encodeURIComponent(file)}`);
         if (response.status >= 400)

@@ -5,17 +5,15 @@ description: Explains how to develop Playwright - add APIs, MCP tools, CLI comma
 
 # Playwright Development Guide
 
-## Table of Contents
+See [CLAUDE.md](../../../CLAUDE.md) for monorepo structure, build/test/lint commands, and coding conventions.
+
+## Detailed Guides
 
 - [Library Architecture](library.md) — client/server/dispatcher structure, protocol layer, DEPS rules
 - [Adding and Modifying APIs](api.md) — define API docs, implement client/server, add tests
-- [MCP Tools and CLI Commands](mcp-dev.md) — add MCP tools, CLI commands, config options
-- [Vendoring Dependencies](vendor.md) — bundle third-party npm packages into playwright-core or playwright
-- [Uploading Fixes to GitHub](github.md) — branch naming, commit format, pushing fixes for issues
-
-## Build
-- Assume watch is running and everything is up to date.
-- If not, run `npm run build`.
-
-## Lint
-- Run `npm run flint` to lint everything before commit.
+- [MCP Tools and CLI Commands](tools.md) — add MCP tools, CLI commands, config options
+- [Vendor Dependencies & Bundling](vendor.md) — utilsBundle, coreBundle, babelBundle; adding vendored npm packages; DEPS.list; `check_deps`
+- [Updating WebKit Safari Version](webkit-safari-version.md) — update the Safari version string in the WebKit user-agent
+- [WebView (iOS Safari) Backend](webview.md) — `webkit/webview/` against stock Mobile Safari; provisional-target pause/resume; what's upstream vs Playwright patches; local + CI test setup
+- [Bisecting Across Published Versions](bisect-published-versions.md) — reproduce regressions side-by-side from npm and diff `node_modules/playwright/lib/` between versions
+- [Dashboard](dashboard.md) - the UI powering the "playwright cli show" command, and how to work on it

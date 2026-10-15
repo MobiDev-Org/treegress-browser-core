@@ -547,6 +547,35 @@ onEnd
 onExit
 `);
     });
+
+    test('onError receives workerInfo for fixture teardown errors (#39063)', async ({ runInlineTest }) => {
+      const result = await runInlineTest({
+        'reporter.ts': `
+          class Reporter {
+            printsToStdio() { return true; }
+            onError(error, workerInfo) {
+              console.log('teardownError:'
+                + ' message=' + (error.message || '').split('\\n')[0]
+                + ' workerInfo=' + (workerInfo ? typeof workerInfo.workerIndex + '/' + typeof workerInfo.parallelIndex + '/' + workerInfo.project.name : 'undefined'));
+            }
+          }
+          module.exports = Reporter;
+        `,
+        'playwright.config.ts': `module.exports = { projects: [{ name: 'foo' }], reporter: './reporter.ts' };`,
+        'a.spec.ts': `
+          import { test as base } from '@playwright/test';
+          const test = base.extend<{}, { brokenWorker: void }>({
+            brokenWorker: [async ({}, use) => {
+              await use();
+              throw new Error('teardown failed');
+            }, { scope: 'worker' }],
+          });
+          test('uses worker fixture', async ({ brokenWorker }) => {});
+        `,
+      }, { reporter: '', workers: 1 });
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain('teardownError: message=Error: teardown failed workerInfo=number/number/foo');
+    });
   });
 }
 
@@ -766,6 +795,31 @@ test('step attachments are referentially equal to result attachments', async ({ 
   ]);
 });
 
+test('step annotations are reported in onStepEnd', async ({ runInlineTest }) => {
+  class TestReporter implements Reporter {
+    onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+      if (step.category === 'test.step')
+        console.log('%%%', JSON.stringify(step.annotations));
+    }
+  }
+  const result = await runInlineTest({
+    'reporter.ts': `module.exports = ${TestReporter.toString()}`,
+    'playwright.config.ts': `module.exports = { reporter: './reporter' };`,
+    'a.spec.ts': `
+      import { test } from '@playwright/test';
+      test('test', async () => {
+        await test.step('step', async stepInfo => {
+          stepInfo.annotations.push({ type: 'expected-result', description: 'step passes' });
+        });
+      });
+    `,
+  }, { 'reporter': '', 'workers': 1 });
+
+  expect(result.outputLines).toEqual([
+    JSON.stringify([{ type: 'expected-result', description: 'step passes' }]),
+  ]);
+});
+
 test('step.attach attachments are reported on right steps', async ({ runInlineTest }) => {
   class TestReporter implements Reporter {
     onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
@@ -885,4 +939,96 @@ test('should have static annotations on result when all tests are skipped', asyn
     'annotation: warning one more',
     'annotation: skip',
   ]);
+});
+
+test('AggregateError sub-errors are spread into testInfo.errors', async ({ runInlineTest }) => {
+  class TestReporter implements Reporter {
+    onTestEnd(test: TestCase, result: TestResult): void {
+      for (const error of result.errors)
+        console.log(`%%${error.message ?? error.value}`);
+      // For the boxed-step case, also surface a frame from the test file so
+      // we can assert that the boxed-stack rewrite only applies to the
+      // top-level error and not to its sub-errors.
+      if (test.title === 'boxed step') {
+        for (const error of result.errors) {
+          const frame = (error.stack ?? '').split('\n').find(l => l.includes('a.spec.ts:'));
+          console.log(`%%FRAME ${error.message}: ${frame?.trim()}`);
+        }
+      }
+    }
+  }
+
+  const result = await runInlineTest({
+    'reporter.ts': `module.exports = ${TestReporter.toString()}`,
+    'playwright.config.ts': `module.exports = { reporter: './reporter' };`,
+    'a.spec.ts': `
+      import { test } from '@playwright/test';
+      test('basic', () => {
+        throw new AggregateError([new Error('a'), new Error('b')], 'parent');
+      });
+      test('nested', () => {
+        throw new AggregateError([
+          new AggregateError([new Error('a'), new Error('b')], 'inner'),
+          new Error('c'),
+        ], 'outer');
+      });
+      test('non-error entries', () => {
+        const err: any = new Error('parent');
+        err.errors = ['oops', { foo: 1 }, new Error('real')];
+        throw err;
+      });
+      test('boxed step', async () => {
+        const subA = new Error('sub a');
+        const subB = new Error('sub b');
+        const helper = async () => {
+          await test.step('boxed', async () => {
+            throw new AggregateError([subA, subB], 'top');
+          }, { box: true });
+        };
+        await helper();
+      });
+    `,
+  }, { 'reporter': '', 'workers': 1 });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.outputLines).toEqual([
+    'AggregateError: parent',
+    'Error: a',
+    'Error: b',
+    'AggregateError: outer',
+    'AggregateError: inner',
+    'Error: a',
+    'Error: b',
+    'Error: c',
+    'Error: parent',
+    `'oops'`,
+    '{ foo: 1 }',
+    'Error: real',
+    'AggregateError: top',
+    'Error: sub a',
+    'Error: sub b',
+    expect.stringMatching(/^FRAME AggregateError: top: at .*a\.spec\.ts:25:/),
+    expect.stringMatching(/^FRAME Error: sub a: at .*a\.spec\.ts:18:/),
+    expect.stringMatching(/^FRAME Error: sub b: at .*a\.spec\.ts:19:/),
+  ]);
+});
+
+test('--add-reporter should append to configured reporters instead of replacing them', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'configured-reporter.js': `
+      module.exports = class { onBegin() { console.log('FROM_CONFIGURED_REPORTER'); } };
+    `,
+    'added-reporter.js': `
+      module.exports = class { onBegin() { console.log('FROM_ADDED_REPORTER'); } };
+    `,
+    'playwright.config.ts': `module.exports = { reporter: [['./configured-reporter.js']] };`,
+    'a.spec.js': `
+      const { test } = require('@playwright/test');
+      test('test', () => {});
+    `,
+  }, { 'workers': 1 }, undefined, { additionalArgs: ['--add-reporter=./added-reporter.js'] });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.output).toContain('FROM_CONFIGURED_REPORTER');
+  expect(result.output).toContain('FROM_ADDED_REPORTER');
 });

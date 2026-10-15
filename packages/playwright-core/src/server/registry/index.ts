@@ -20,26 +20,29 @@ import os from 'os';
 import path from 'path';
 import * as util from 'util';
 
-import { downloadBrowserWithProgressBar, logPolitely } from './browserFetcher';
-import { dockerVersion, readDockerVersionSync, transformCommandsForRoot } from './dependencies';
+import { wrapInASCIIBox } from '@utils/ascii';
+import { debugLogger } from '@utils/debugLogger';
+import { shortPlatform, hostPlatform, isOfficiallySupportedPlatform } from '@utils/hostPlatform';
+import { NET_DEFAULT_TIMEOUT } from '@utils/network';
+import { spawnAsync } from '@utils/processLauncher';
+import { canAccessFile, existsAsync, removeFolders } from '@utils/fileUtils';
+import { calculateSha1 } from '@utils/crypto';
+import { getAsBooleanFromENV, getFromENV, getPackageManagerExecCommand } from '@utils/env';
+import { lock } from '@utils/third_party/lockfile';
+import { fetchData } from '../utils';
+import { getEmbedderName } from '../userAgent';
 import { installDependenciesLinux, installDependenciesWindows, validateDependenciesLinux, validateDependenciesWindows } from './dependencies';
-import { calculateSha1, getAsBooleanFromENV, getFromENV, getPackageManagerExecCommand } from '../../utils';
-import { wrapInASCIIBox } from '../utils/ascii';
-import { debugLogger } from '../utils/debugLogger';
-import { shortPlatform, hostPlatform, isOfficiallySupportedPlatform } from '../utils/hostPlatform';
-import { fetchData, NET_DEFAULT_TIMEOUT } from '../utils/network';
-import { spawnAsync } from '../utils/spawnAsync';
-import { getEmbedderName } from '../utils/userAgent';
-import { lockfile } from '../../utilsBundle';
-import { canAccessFile, existsAsync, removeFolders } from '../utils/fileUtils';
+import { dockerVersion, readDockerVersionSync, transformCommandsForRoot } from './dependencies';
+import { downloadBrowserWithProgressBar, logPolitely } from './browserFetcher';
+import { packageRoot, binPath } from '../../package';
 
 import type { DependencyGroup } from './dependencies';
-import type { HostPlatform } from '../utils/hostPlatform';
+import type { HostPlatform } from '@utils/hostPlatform';
 
 export { writeDockerVersion } from './dependencies';
 
-const PACKAGE_PATH = path.join(__dirname, '..', '..', '..');
-const BIN_PATH = path.join(__dirname, '..', '..', '..', 'bin');
+const PACKAGE_PATH = packageRoot;
+const BIN_PATH = binPath;
 
 const PLAYWRIGHT_CDN_MIRRORS = [
   'https://cdn.playwright.dev/dbazure/download/playwright', // ESRP CDN
@@ -62,7 +65,7 @@ const EXECUTABLE_PATHS = {
   'chromium': {
     '<unknown>': undefined,
     'linux-x64': ['chrome-linux64', 'chrome'],
-    'linux-arm64': ['chrome-linux', 'chrome'],  // non-cft build
+    'linux-arm64': ['chrome-linux-arm64', 'chrome'],
     'mac-x64': ['chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
     'mac-arm64': ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
     'win-x64': ['chrome-win64', 'chrome.exe'],
@@ -70,23 +73,7 @@ const EXECUTABLE_PATHS = {
   'chromium-headless-shell': {
     '<unknown>': undefined,
     'linux-x64': ['chrome-headless-shell-linux64', 'chrome-headless-shell'],
-    'linux-arm64': ['chrome-linux', 'headless_shell'],  // non-cft build
-    'mac-x64': ['chrome-headless-shell-mac-x64', 'chrome-headless-shell'],
-    'mac-arm64': ['chrome-headless-shell-mac-arm64', 'chrome-headless-shell'],
-    'win-x64': ['chrome-headless-shell-win64', 'chrome-headless-shell.exe'],
-  },
-  'chromium-tip-of-tree': {
-    '<unknown>': undefined,
-    'linux-x64': ['chrome-linux64', 'chrome'],
-    'linux-arm64': ['chrome-linux', 'chrome'],  // non-cft build
-    'mac-x64': ['chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
-    'mac-arm64': ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
-    'win-x64': ['chrome-win64', 'chrome.exe'],
-  },
-  'chromium-tip-of-tree-headless-shell': {
-    '<unknown>': undefined,
-    'linux-x64': ['chrome-headless-shell-linux64', 'chrome-headless-shell'],
-    'linux-arm64': ['chrome-linux', 'headless_shell'],  // non-cft build
+    'linux-arm64': ['chrome-headless-shell-linux-arm64', 'chrome-headless-shell'],
     'mac-x64': ['chrome-headless-shell-mac-x64', 'chrome-headless-shell'],
     'mac-arm64': ['chrome-headless-shell-mac-arm64', 'chrome-headless-shell'],
     'win-x64': ['chrome-headless-shell-win64', 'chrome-headless-shell.exe'],
@@ -143,201 +130,122 @@ const DOWNLOAD_PATHS: Record<string, DownloadPaths> = {
   'chromium': {
     '<unknown>': undefined,
     'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': cftUrl('linux64/chrome-linux64.zip'),
+    'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': cftUrl('linux64/chrome-linux64.zip'),
     'ubuntu24.04-x64': cftUrl('linux64/chrome-linux64.zip'),
+    'ubuntu26.04-x64': cftUrl('linux64/chrome-linux64.zip'),
     'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/chromium/%s/chromium-linux-arm64.zip',
-    'ubuntu22.04-arm64': 'builds/chromium/%s/chromium-linux-arm64.zip',
-    'ubuntu24.04-arm64': 'builds/chromium/%s/chromium-linux-arm64.zip',
-    'debian11-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'debian11-arm64': 'builds/chromium/%s/chromium-linux-arm64.zip',
+    'ubuntu20.04-arm64': undefined,
+    'ubuntu22.04-arm64': cftUrl('linux-arm64/chrome-linux-arm64.zip'),
+    'ubuntu24.04-arm64': cftUrl('linux-arm64/chrome-linux-arm64.zip'),
+    'ubuntu26.04-arm64': cftUrl('linux-arm64/chrome-linux-arm64.zip'),
+    'debian11-x64': undefined,
+    'debian11-arm64': undefined,
     'debian12-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'debian12-arm64': 'builds/chromium/%s/chromium-linux-arm64.zip',
+    'debian12-arm64': cftUrl('linux-arm64/chrome-linux-arm64.zip'),
     'debian13-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'debian13-arm64': 'builds/chromium/%s/chromium-linux-arm64.zip',
-    'mac10.13': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac10.14': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac10.15': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac11': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac11-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'mac12': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac12-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'mac13': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac13-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
+    'debian13-arm64': cftUrl('linux-arm64/chrome-linux-arm64.zip'),
+    'mac10.13': undefined,
+    'mac10.14': undefined,
+    'mac10.15': undefined,
+    'mac11': undefined,
+    'mac11-arm64': undefined,
+    'mac12': undefined,
+    'mac12-arm64': undefined,
+    'mac13': undefined,
+    'mac13-arm64': undefined,
     'mac14': cftUrl('mac-x64/chrome-mac-x64.zip'),
     'mac14-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
     'mac15': cftUrl('mac-x64/chrome-mac-x64.zip'),
     'mac15-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
+    'mac26': cftUrl('mac-x64/chrome-mac-x64.zip'),
+    'mac26-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
     'win64': cftUrl('win64/chrome-win64.zip'),
   },
   'chromium-headless-shell': {
     '<unknown>': undefined,
     'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
+    'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
     'ubuntu24.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
+    'ubuntu26.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
     'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/chromium/%s/chromium-headless-shell-linux-arm64.zip',
-    'ubuntu22.04-arm64': 'builds/chromium/%s/chromium-headless-shell-linux-arm64.zip',
-    'ubuntu24.04-arm64': 'builds/chromium/%s/chromium-headless-shell-linux-arm64.zip',
-    'debian11-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'debian11-arm64': 'builds/chromium/%s/chromium-headless-shell-linux-arm64.zip',
+    'ubuntu20.04-arm64': undefined,
+    'ubuntu22.04-arm64': cftUrl('linux-arm64/chrome-headless-shell-linux-arm64.zip'),
+    'ubuntu24.04-arm64': cftUrl('linux-arm64/chrome-headless-shell-linux-arm64.zip'),
+    'ubuntu26.04-arm64': cftUrl('linux-arm64/chrome-headless-shell-linux-arm64.zip'),
+    'debian11-x64': undefined,
+    'debian11-arm64': undefined,
     'debian12-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'debian12-arm64': 'builds/chromium/%s/chromium-headless-shell-linux-arm64.zip',
+    'debian12-arm64': cftUrl('linux-arm64/chrome-headless-shell-linux-arm64.zip'),
     'debian13-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'debian13-arm64': 'builds/chromium/%s/chromium-headless-shell-linux-arm64.zip',
+    'debian13-arm64': cftUrl('linux-arm64/chrome-headless-shell-linux-arm64.zip'),
     'mac10.13': undefined,
     'mac10.14': undefined,
     'mac10.15': undefined,
-    'mac11': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac11-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'mac12': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac12-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'mac13': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac13-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
+    'mac11': undefined,
+    'mac11-arm64': undefined,
+    'mac12': undefined,
+    'mac12-arm64': undefined,
+    'mac13': undefined,
+    'mac13-arm64': undefined,
     'mac14': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
     'mac14-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
     'mac15': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
     'mac15-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'win64': cftUrl('win64/chrome-headless-shell-win64.zip'),
-  },
-  'chromium-tip-of-tree': {
-    '<unknown>': undefined,
-    'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'ubuntu22.04-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'ubuntu24.04-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-linux-arm64.zip',
-    'ubuntu22.04-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-linux-arm64.zip',
-    'ubuntu24.04-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-linux-arm64.zip',
-    'debian11-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'debian11-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-linux-arm64.zip',
-    'debian12-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'debian12-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-linux-arm64.zip',
-    'debian13-x64': cftUrl('linux64/chrome-linux64.zip'),
-    'debian13-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-linux-arm64.zip',
-    'mac10.13': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac10.14': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac10.15': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac11': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac11-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'mac12': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac12-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'mac13': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac13-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'mac14': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac14-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'mac15': cftUrl('mac-x64/chrome-mac-x64.zip'),
-    'mac15-arm64': cftUrl('mac-arm64/chrome-mac-arm64.zip'),
-    'win64': cftUrl('win64/chrome-win64.zip'),
-  },
-  'chromium-tip-of-tree-headless-shell': {
-    '<unknown>': undefined,
-    'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'ubuntu22.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'ubuntu24.04-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-headless-shell-linux-arm64.zip',
-    'ubuntu22.04-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-headless-shell-linux-arm64.zip',
-    'ubuntu24.04-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-headless-shell-linux-arm64.zip',
-    'debian11-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'debian11-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-headless-shell-linux-arm64.zip',
-    'debian12-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'debian12-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-headless-shell-linux-arm64.zip',
-    'debian13-x64': cftUrl('linux64/chrome-headless-shell-linux64.zip'),
-    'debian13-arm64': 'builds/chromium-tip-of-tree/%s/chromium-tip-of-tree-headless-shell-linux-arm64.zip',
-    'mac10.13': undefined,
-    'mac10.14': undefined,
-    'mac10.15': undefined,
-    'mac11': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac11-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'mac12': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac12-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'mac13': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac13-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'mac14': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac14-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
-    'mac15': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
-    'mac15-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
+    'mac26': cftUrl('mac-x64/chrome-headless-shell-mac-x64.zip'),
+    'mac26-arm64': cftUrl('mac-arm64/chrome-headless-shell-mac-arm64.zip'),
     'win64': cftUrl('win64/chrome-headless-shell-win64.zip'),
   },
   'firefox': {
     '<unknown>': undefined,
     'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': 'builds/firefox/%s/firefox-ubuntu-20.04.zip',
+    'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': 'builds/firefox/%s/firefox-ubuntu-22.04.zip',
     'ubuntu24.04-x64': 'builds/firefox/%s/firefox-ubuntu-24.04.zip',
+    'ubuntu26.04-x64': 'builds/firefox/%s/firefox-ubuntu-24.04.zip',
     'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/firefox/%s/firefox-ubuntu-20.04-arm64.zip',
+    'ubuntu20.04-arm64': undefined,
     'ubuntu22.04-arm64': 'builds/firefox/%s/firefox-ubuntu-22.04-arm64.zip',
     'ubuntu24.04-arm64': 'builds/firefox/%s/firefox-ubuntu-24.04-arm64.zip',
-    'debian11-x64': 'builds/firefox/%s/firefox-debian-11.zip',
-    'debian11-arm64': 'builds/firefox/%s/firefox-debian-11-arm64.zip',
+    'ubuntu26.04-arm64': 'builds/firefox/%s/firefox-ubuntu-24.04-arm64.zip',
+    'debian11-x64': undefined,
+    'debian11-arm64': undefined,
     'debian12-x64': 'builds/firefox/%s/firefox-debian-12.zip',
     'debian12-arm64': 'builds/firefox/%s/firefox-debian-12-arm64.zip',
     'debian13-x64': 'builds/firefox/%s/firefox-debian-13.zip',
     'debian13-arm64': 'builds/firefox/%s/firefox-debian-13-arm64.zip',
-    'mac10.13': 'builds/firefox/%s/firefox-mac.zip',
-    'mac10.14': 'builds/firefox/%s/firefox-mac.zip',
-    'mac10.15': 'builds/firefox/%s/firefox-mac.zip',
-    'mac11': 'builds/firefox/%s/firefox-mac.zip',
-    'mac11-arm64': 'builds/firefox/%s/firefox-mac-arm64.zip',
-    'mac12': 'builds/firefox/%s/firefox-mac.zip',
-    'mac12-arm64': 'builds/firefox/%s/firefox-mac-arm64.zip',
-    'mac13': 'builds/firefox/%s/firefox-mac.zip',
-    'mac13-arm64': 'builds/firefox/%s/firefox-mac-arm64.zip',
+    'mac10.13': undefined,
+    'mac10.14': undefined,
+    'mac10.15': undefined,
+    'mac11': undefined,
+    'mac11-arm64': undefined,
+    'mac12': undefined,
+    'mac12-arm64': undefined,
+    'mac13': undefined,
+    'mac13-arm64': undefined,
     'mac14': 'builds/firefox/%s/firefox-mac.zip',
     'mac14-arm64': 'builds/firefox/%s/firefox-mac-arm64.zip',
     'mac15': 'builds/firefox/%s/firefox-mac.zip',
     'mac15-arm64': 'builds/firefox/%s/firefox-mac-arm64.zip',
+    'mac26': 'builds/firefox/%s/firefox-mac.zip',
+    'mac26-arm64': 'builds/firefox/%s/firefox-mac-arm64.zip',
     'win64': 'builds/firefox/%s/firefox-win64.zip',
-  },
-  'firefox-beta': {
-    '<unknown>': undefined,
-    'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': 'builds/firefox-beta/%s/firefox-beta-ubuntu-20.04.zip',
-    'ubuntu22.04-x64': 'builds/firefox-beta/%s/firefox-beta-ubuntu-22.04.zip',
-    'ubuntu24.04-x64': 'builds/firefox-beta/%s/firefox-beta-ubuntu-24.04.zip',
-    'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': undefined,
-    'ubuntu22.04-arm64': 'builds/firefox-beta/%s/firefox-beta-ubuntu-22.04-arm64.zip',
-    'ubuntu24.04-arm64': 'builds/firefox-beta/%s/firefox-beta-ubuntu-24.04-arm64.zip',
-    'debian11-x64': 'builds/firefox-beta/%s/firefox-beta-debian-11.zip',
-    'debian11-arm64': 'builds/firefox-beta/%s/firefox-beta-debian-11-arm64.zip',
-    'debian12-x64': 'builds/firefox-beta/%s/firefox-beta-debian-12.zip',
-    'debian12-arm64': 'builds/firefox-beta/%s/firefox-beta-debian-12-arm64.zip',
-    'debian13-x64': 'builds/firefox-beta/%s/firefox-beta-debian-12.zip',
-    'debian13-arm64': 'builds/firefox-beta/%s/firefox-beta-debian-12-arm64.zip',
-    'mac10.13': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac10.14': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac10.15': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac11': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac11-arm64': 'builds/firefox-beta/%s/firefox-beta-mac-arm64.zip',
-    'mac12': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac12-arm64': 'builds/firefox-beta/%s/firefox-beta-mac-arm64.zip',
-    'mac13': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac13-arm64': 'builds/firefox-beta/%s/firefox-beta-mac-arm64.zip',
-    'mac14': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac14-arm64': 'builds/firefox-beta/%s/firefox-beta-mac-arm64.zip',
-    'mac15': 'builds/firefox-beta/%s/firefox-beta-mac.zip',
-    'mac15-arm64': 'builds/firefox-beta/%s/firefox-beta-mac-arm64.zip',
-    'win64': 'builds/firefox-beta/%s/firefox-beta-win64.zip',
   },
   'webkit': {
     '<unknown>': undefined,
     'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': 'builds/webkit/%s/webkit-ubuntu-20.04.zip',
+    'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': 'builds/webkit/%s/webkit-ubuntu-22.04.zip',
     'ubuntu24.04-x64': 'builds/webkit/%s/webkit-ubuntu-24.04.zip',
+    'ubuntu26.04-x64': 'builds/webkit/%s/webkit-ubuntu-26.04.zip',
     'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/webkit/%s/webkit-ubuntu-20.04-arm64.zip',
+    'ubuntu20.04-arm64': undefined,
     'ubuntu22.04-arm64': 'builds/webkit/%s/webkit-ubuntu-22.04-arm64.zip',
     'ubuntu24.04-arm64': 'builds/webkit/%s/webkit-ubuntu-24.04-arm64.zip',
-    'debian11-x64': 'builds/webkit/%s/webkit-debian-11.zip',
-    'debian11-arm64': 'builds/webkit/%s/webkit-debian-11-arm64.zip',
+    'ubuntu26.04-arm64': 'builds/webkit/%s/webkit-ubuntu-26.04-arm64.zip',
+    'debian11-x64': undefined,
+    'debian11-arm64': undefined,
     'debian12-x64': 'builds/webkit/%s/webkit-debian-12.zip',
     'debian12-arm64': 'builds/webkit/%s/webkit-debian-12-arm64.zip',
     'debian13-x64': 'builds/webkit/%s/webkit-debian-13.zip',
@@ -355,37 +263,43 @@ const DOWNLOAD_PATHS: Record<string, DownloadPaths> = {
     'mac14-arm64': 'builds/webkit/%s/webkit-mac-14-arm64.zip',
     'mac15': 'builds/webkit/%s/webkit-mac-15.zip',
     'mac15-arm64': 'builds/webkit/%s/webkit-mac-15-arm64.zip',
+    'mac26': 'builds/webkit/%s/webkit-mac-26.zip',
+    'mac26-arm64': 'builds/webkit/%s/webkit-mac-26-arm64.zip',
     'win64': 'builds/webkit/%s/webkit-win64.zip',
   },
   'ffmpeg': {
     '<unknown>': undefined,
     'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
+    'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
     'ubuntu24.04-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
+    'ubuntu26.04-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
     'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
+    'ubuntu20.04-arm64': undefined,
     'ubuntu22.04-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
     'ubuntu24.04-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
-    'debian11-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
-    'debian11-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
+    'ubuntu26.04-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
+    'debian11-x64': undefined,
+    'debian11-arm64': undefined,
     'debian12-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
     'debian12-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
     'debian13-x64': 'builds/ffmpeg/%s/ffmpeg-linux.zip',
     'debian13-arm64': 'builds/ffmpeg/%s/ffmpeg-linux-arm64.zip',
-    'mac10.13': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
-    'mac10.14': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
-    'mac10.15': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
-    'mac11': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
-    'mac11-arm64': 'builds/ffmpeg/%s/ffmpeg-mac-arm64.zip',
-    'mac12': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
-    'mac12-arm64': 'builds/ffmpeg/%s/ffmpeg-mac-arm64.zip',
-    'mac13': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
-    'mac13-arm64': 'builds/ffmpeg/%s/ffmpeg-mac-arm64.zip',
+    'mac10.13': undefined,
+    'mac10.14': undefined,
+    'mac10.15': undefined,
+    'mac11': undefined,
+    'mac11-arm64': undefined,
+    'mac12': undefined,
+    'mac12-arm64': undefined,
+    'mac13': undefined,
+    'mac13-arm64': undefined,
     'mac14': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
     'mac14-arm64': 'builds/ffmpeg/%s/ffmpeg-mac-arm64.zip',
     'mac15': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
     'mac15-arm64': 'builds/ffmpeg/%s/ffmpeg-mac-arm64.zip',
+    'mac26': 'builds/ffmpeg/%s/ffmpeg-mac.zip',
+    'mac26-arm64': 'builds/ffmpeg/%s/ffmpeg-mac-arm64.zip',
     'win64': 'builds/ffmpeg/%s/ffmpeg-win64.zip',
   },
   'winldd': {
@@ -394,10 +308,12 @@ const DOWNLOAD_PATHS: Record<string, DownloadPaths> = {
     'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': undefined,
     'ubuntu24.04-x64': undefined,
+    'ubuntu26.04-x64': undefined,
     'ubuntu18.04-arm64': undefined,
     'ubuntu20.04-arm64': undefined,
     'ubuntu22.04-arm64': undefined,
     'ubuntu24.04-arm64': undefined,
+    'ubuntu26.04-arm64': undefined,
     'debian11-x64': undefined,
     'debian11-arm64': undefined,
     'debian12-x64': undefined,
@@ -417,42 +333,48 @@ const DOWNLOAD_PATHS: Record<string, DownloadPaths> = {
     'mac14-arm64': undefined,
     'mac15': undefined,
     'mac15-arm64': undefined,
+    'mac26': undefined,
+    'mac26-arm64': undefined,
     'win64': 'builds/winldd/%s/winldd-win64.zip',
   },
   'android': {
     '<unknown>': 'builds/android/%s/android.zip',
     'ubuntu18.04-x64': undefined,
-    'ubuntu20.04-x64': 'builds/android/%s/android.zip',
+    'ubuntu20.04-x64': undefined,
     'ubuntu22.04-x64': 'builds/android/%s/android.zip',
     'ubuntu24.04-x64': 'builds/android/%s/android.zip',
+    'ubuntu26.04-x64': 'builds/android/%s/android.zip',
     'ubuntu18.04-arm64': undefined,
-    'ubuntu20.04-arm64': 'builds/android/%s/android.zip',
+    'ubuntu20.04-arm64': undefined,
     'ubuntu22.04-arm64': 'builds/android/%s/android.zip',
     'ubuntu24.04-arm64': 'builds/android/%s/android.zip',
-    'debian11-x64': 'builds/android/%s/android.zip',
-    'debian11-arm64': 'builds/android/%s/android.zip',
+    'ubuntu26.04-arm64': 'builds/android/%s/android.zip',
+    'debian11-x64': undefined,
+    'debian11-arm64': undefined,
     'debian12-x64': 'builds/android/%s/android.zip',
     'debian12-arm64': 'builds/android/%s/android.zip',
     'debian13-x64': 'builds/android/%s/android.zip',
     'debian13-arm64': 'builds/android/%s/android.zip',
-    'mac10.13': 'builds/android/%s/android.zip',
-    'mac10.14': 'builds/android/%s/android.zip',
-    'mac10.15': 'builds/android/%s/android.zip',
-    'mac11': 'builds/android/%s/android.zip',
-    'mac11-arm64': 'builds/android/%s/android.zip',
-    'mac12': 'builds/android/%s/android.zip',
-    'mac12-arm64': 'builds/android/%s/android.zip',
-    'mac13': 'builds/android/%s/android.zip',
-    'mac13-arm64': 'builds/android/%s/android.zip',
+    'mac10.13': undefined,
+    'mac10.14': undefined,
+    'mac10.15': undefined,
+    'mac11': undefined,
+    'mac11-arm64': undefined,
+    'mac12': undefined,
+    'mac12-arm64': undefined,
+    'mac13': undefined,
+    'mac13-arm64': undefined,
     'mac14': 'builds/android/%s/android.zip',
     'mac14-arm64': 'builds/android/%s/android.zip',
     'mac15': 'builds/android/%s/android.zip',
     'mac15-arm64': 'builds/android/%s/android.zip',
+    'mac26': 'builds/android/%s/android.zip',
+    'mac26-arm64': 'builds/android/%s/android.zip',
     'win64': 'builds/android/%s/android.zip',
   },
 };
 
-export const defaultCacheDirectory = (() => {
+function computeDefaultCacheDirectory(): string {
   if (process.platform === 'linux')
     return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   if (process.platform === 'darwin')
@@ -460,20 +382,28 @@ export const defaultCacheDirectory = (() => {
   if (process.platform === 'win32')
     return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   throw new Error('Unsupported platform: ' + process.platform);
-})();
+}
 
-export const defaultRegistryDirectory = path.join(defaultCacheDirectory, 'ms-playwright');
+let _defaultCacheDirectory: string | undefined;
+
+export function defaultCacheDirectory(): string {
+  return _defaultCacheDirectory ??= computeDefaultCacheDirectory();
+}
+
+export function defaultRegistryDirectory(): string {
+  return path.join(defaultCacheDirectory(), 'ms-playwright');
+}
 
 export const registryDirectory = (() => {
   let result: string;
 
   const envDefined = getFromENV('PLAYWRIGHT_BROWSERS_PATH');
   if (envDefined === '0')
-    result = path.join(__dirname, '..', '..', '..', '.local-browsers');
+    result = path.join(packageRoot, '.local-browsers');
   else if (envDefined)
     result = envDefined;
   else
-    result = defaultRegistryDirectory;
+    result = defaultRegistryDirectory();
 
   if (!path.isAbsolute(result)) {
     // It is important to resolve to the absolute path:
@@ -666,44 +596,6 @@ export class Registry {
       _isHermeticInstallation: true,
     });
 
-    const chromiumTipOfTreeHeadlessShell = descriptors.find(d => d.name === 'chromium-tip-of-tree-headless-shell')!;
-    const chromiumTipOfTreeHeadlessShellExecutable = findExecutablePath(chromiumTipOfTreeHeadlessShell.dir, 'chromium-tip-of-tree-headless-shell');
-    this._executables.push({
-      name: 'chromium-tip-of-tree-headless-shell',
-      browserName: 'chromium',
-      directory: chromiumTipOfTreeHeadlessShell.dir,
-      executablePath: () => chromiumTipOfTreeHeadlessShellExecutable,
-      executablePathOrDie: (sdkLanguage: string) => executablePathOrDie('chromium', chromiumTipOfTreeHeadlessShellExecutable, chromiumTipOfTreeHeadlessShell.installByDefault, sdkLanguage),
-      installType: chromiumTipOfTreeHeadlessShell.installByDefault ? 'download-by-default' : 'download-on-demand',
-      _validateHostRequirements: (sdkLanguage: string) => this._validateHostRequirements(sdkLanguage, chromiumTipOfTreeHeadlessShell.dir, ['chrome-linux'], [], ['chrome-win']),
-      downloadURLs: this._downloadURLs(chromiumTipOfTreeHeadlessShell),
-      title: chromiumTipOfTreeHeadlessShell.title,
-      revision: chromiumTipOfTreeHeadlessShell.revision,
-      browserVersion: chromiumTipOfTreeHeadlessShell.browserVersion,
-      _install: force => this._downloadExecutable(chromiumTipOfTreeHeadlessShell, force, chromiumTipOfTreeHeadlessShellExecutable),
-      _dependencyGroup: 'chromium',
-      _isHermeticInstallation: true,
-    });
-
-    const chromiumTipOfTree = descriptors.find(d => d.name === 'chromium-tip-of-tree')!;
-    const chromiumTipOfTreeExecutable = findExecutablePath(chromiumTipOfTree.dir, 'chromium-tip-of-tree');
-    this._executables.push({
-      name: 'chromium-tip-of-tree',
-      browserName: 'chromium',
-      directory: chromiumTipOfTree.dir,
-      executablePath: () => chromiumTipOfTreeExecutable,
-      executablePathOrDie: (sdkLanguage: string) => executablePathOrDie('chromium-tip-of-tree', chromiumTipOfTreeExecutable, chromiumTipOfTree.installByDefault, sdkLanguage),
-      installType: chromiumTipOfTree.installByDefault ? 'download-by-default' : 'download-on-demand',
-      _validateHostRequirements: (sdkLanguage: string) => this._validateHostRequirements(sdkLanguage, chromiumTipOfTree.dir, ['chrome-linux'], [], ['chrome-win']),
-      downloadURLs: this._downloadURLs(chromiumTipOfTree),
-      title: chromiumTipOfTree.title,
-      revision: chromiumTipOfTree.revision,
-      browserVersion: chromiumTipOfTree.browserVersion,
-      _install: force => this._downloadExecutable(chromiumTipOfTree, force, chromiumTipOfTreeExecutable),
-      _dependencyGroup: 'chromium',
-      _isHermeticInstallation: true,
-    });
-
     this._executables.push(this._createChromiumChannel('chrome', {
       'linux': '/opt/google/chrome/chrome',
       'darwin': '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -807,25 +699,6 @@ export class Registry {
       _isHermeticInstallation: true,
     });
 
-    const firefoxBeta = descriptors.find(d => d.name === 'firefox-beta')!;
-    const firefoxBetaExecutable = findExecutablePath(firefoxBeta.dir, 'firefox');
-    this._executables.push({
-      name: 'firefox-beta',
-      browserName: 'firefox',
-      directory: firefoxBeta.dir,
-      executablePath: () => firefoxBetaExecutable,
-      executablePathOrDie: (sdkLanguage: string) => executablePathOrDie('firefox-beta', firefoxBetaExecutable, firefoxBeta.installByDefault, sdkLanguage),
-      installType: firefoxBeta.installByDefault ? 'download-by-default' : 'download-on-demand',
-      _validateHostRequirements: (sdkLanguage: string) => this._validateHostRequirements(sdkLanguage, firefoxBeta.dir, ['firefox'], [], ['firefox']),
-      downloadURLs: this._downloadURLs(firefoxBeta),
-      title: firefoxBeta.title,
-      revision: firefoxBeta.revision,
-      browserVersion: firefoxBeta.browserVersion,
-      _install: force => this._downloadExecutable(firefoxBeta, force, firefoxBetaExecutable),
-      _dependencyGroup: 'firefox',
-      _isHermeticInstallation: true,
-    });
-
     const webkit = descriptors.find(d => d.name === 'webkit')!;
     const webkitExecutable = findExecutablePath(webkit.dir, 'webkit');
     const webkitLinuxLddDirectories = [
@@ -854,12 +727,19 @@ export class Registry {
       _dependencyGroup: 'webkit',
       _isHermeticInstallation: true,
     });
+    const wslExecutable = process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wsl.exe') : undefined;
     this._executables.push({
       name: 'webkit-wsl',
       browserName: 'webkit',
       directory: webkit.dir,
-      executablePath: () => webkitExecutable,
-      executablePathOrDie: (sdkLanguage: string) => executablePathOrDie('webkit', webkitExecutable, webkit.installByDefault, sdkLanguage),
+      executablePath: () => wslExecutable,
+      executablePathOrDie: () => {
+        if (!wslExecutable)
+          throw new Error(`webkit-wsl is only supported on Windows`);
+        return wslExecutable;
+      },
+      // WebKit is installed inside the WSL distribution by install_webkit_wsl.ps1.
+      wslExecutablePath: `/home/pwuser/.cache/ms-playwright/webkit-${webkit.revision}/pw_run.sh`,
       installType: 'download-on-demand',
       title: 'Webkit in WSL',
       _validateHostRequirements: (sdkLanguage: string) => Promise.resolve(),
@@ -1051,7 +931,7 @@ export class Registry {
       return await installDependenciesLinux(targets, dryRun);
   }
 
-  async install(executablesToInstall: Executable[], options?: { force?: boolean }) {
+  async install(executablesToInstall: Executable[], options?: { force?: boolean, gc?: boolean }) {
     const executables = this._dedupe(executablesToInstall);
     await fs.promises.mkdir(registryDirectory, { recursive: true });
     const lockfilePath = path.join(registryDirectory, '__dirlock');
@@ -1059,7 +939,7 @@ export class Registry {
 
     let releaseLock;
     try {
-      releaseLock = await lockfile.lock(registryDirectory, {
+      releaseLock = await lock(registryDirectory, {
         retries: {
           // Retry 20 times during 10 minutes with
           // exponential back-off.
@@ -1077,7 +957,7 @@ export class Registry {
       await fs.promises.writeFile(path.join(linksDir, calculateSha1(PACKAGE_PATH)), PACKAGE_PATH);
 
       // Remove stale browsers.
-      if (!getAsBooleanFromENV('PLAYWRIGHT_SKIP_BROWSER_GC'))
+      if (options?.gc !== false && !getAsBooleanFromENV('PLAYWRIGHT_SKIP_BROWSER_GC'))
         await this._validateInstallationCache(linksDir);
 
       // Install browsers for this package.
@@ -1288,7 +1168,8 @@ export class Registry {
       if (code !== 0)
         throw new Error(`Failed to install ${channel}`);
     } else {
-      const { command, args, elevatedPermissions } = await transformCommandsForRoot([`bash "${path.join(BIN_PATH, scriptName)}" ${scriptArgs.join('')}`]);
+      const shellArgs = scriptArgs.map(a => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
+      const { command, args, elevatedPermissions } = await transformCommandsForRoot([`bash "${path.join(BIN_PATH, scriptName)}" ${shellArgs}`]);
       if (elevatedPermissions)
         console.log('Switching to root user to install dependencies...'); // eslint-disable-line no-console
       const { code } = await spawnAsync(command, args, { cwd, stdio: 'inherit' });
@@ -1380,9 +1261,9 @@ export class Registry {
   private _defaultBrowsersToInstall(options: { shell?: 'no' | 'only' }): Executable[] {
     let executables = this.defaultExecutables();
     if (options.shell === 'no')
-      executables = executables.filter(e => e.name !== 'chromium-headless-shell' && e.name !== 'chromium-tip-of-tree-headless-shell');
+      executables = executables.filter(e => e.name !== 'chromium-headless-shell');
     if (options.shell === 'only')
-      executables = executables.filter(e => e.name !== 'chromium' && e.name !== 'chromium-tip-of-tree');
+      executables = executables.filter(e => e.name !== 'chromium');
     return executables;
   }
 
@@ -1418,11 +1299,6 @@ export class Registry {
           handleArgument('chromium');
         if (options.shell !== 'no')
           handleArgument('chromium-headless-shell');
-      } else if (alias === 'chromium-tip-of-tree') {
-        if (options.shell !== 'only')
-          handleArgument('chromium-tip-of-tree');
-        if (options.shell !== 'no')
-          handleArgument('chromium-tip-of-tree-headless-shell');
       } else {
         handleArgument(alias);
       }
@@ -1433,7 +1309,7 @@ export class Registry {
 
     if (faultyArguments.length)
       throw new Error(`Invalid installation targets: ${faultyArguments.map(name => `'${name}'`).join(', ')}. Expecting one of: ${this.suggestedBrowsersToInstall()}`);
-    return executables;
+    return [...new Set(executables)];
   }
 }
 
@@ -1517,4 +1393,6 @@ function lowercaseAllKeys(json: any): any {
   return result;
 }
 
-export const registry = new Registry(require('../../../browsers.json'));
+export const registry = new Registry(require(path.join(packageRoot, 'browsers.json')));
+
+export { runOopDownloadBrowserMain } from './oopDownloadBrowserMain';
