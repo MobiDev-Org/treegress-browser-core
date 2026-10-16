@@ -219,22 +219,21 @@ it.describe('pause', () => {
     const recorderPage = await recorderPageGetter();
     await recorderPage.click('[title="Step over (F10)"]');
 
-    const iframe = page.frames()[1];
-    const button = await iframe.waitForSelector('button');
-    const box1Promise = button.boundingBox();
+    const { box1, box2 } = await (page as any)._wrapApiCall(async () => {
+      const iframe = page.frames()[1];
+      const button = await iframe.waitForSelector('button');
+      const box1 = await button.boundingBox();
 
-    const actionPoint = await page.waitForSelector('x-pw-action-point');
-    const box2Promise = actionPoint.boundingBox();
-    await recorderPage.click('[title="Step over (F10)"]');
+      const actionPoint = await page.waitForSelector('x-pw-action-point');
+      const box2 = await actionPoint.boundingBox();
 
-    const box1 = await box1Promise;
-    const box2 = await box2Promise;
+      const iframeActionPoint = await iframe.$('x-pw-action-point');
+      expect(await iframeActionPoint?.isVisible()).toBeFalsy();
 
-    const iframeActionPoint = await iframe.$('x-pw-action-point');
-    const iframeActionPointPromise = iframeActionPoint?.boundingBox();
+      return { box1, box2 };
+    }, { internal: true });
+
     await recorderPage.click('[title="Resume (F8)"]');
-
-    expect(await iframeActionPointPromise).toBeFalsy();
 
     const x1 = box1!.x + box1!.width / 2;
     const y1 = box1!.y + box1!.height / 2;
@@ -277,7 +276,7 @@ it.describe('pause', () => {
     await recorderPage.waitForSelector('.source-line-paused:has-text("page.pause({ __testHookKeepTestTimeout: true });  // 2")');
     expect(await sanitizeLog(recorderPage)).toEqual([
       'Pause- XXms',
-      'Click(page.locator(\'button\'))- XXms',
+      'Click locator(\'button\')- XXms',
       'Pause',
     ]);
     await recorderPage.click('[title="Resume (F8)"]');
@@ -325,8 +324,8 @@ it.describe('pause', () => {
     await recorderPage.waitForSelector('.source-line-paused:has-text("page.pause({ __testHookKeepTestTimeout: true });  // 2")');
     expect(await sanitizeLog(recorderPage)).toEqual([
       'Pause- XXms',
-      'Expect "toHaveText"(page.locator(\'button\'))- XXms',
-      'Expect "not toHaveText"(page.locator(\'button\'))- XXms',
+      'Expect "toHaveText" locator(\'button\')- XXms',
+      'Expect "not toHaveText" locator(\'button\')- XXms',
       'Pause',
     ]);
     await recorderPage.click('[title="Resume (F8)"]');
@@ -369,7 +368,7 @@ it.describe('pause', () => {
     expect(await sanitizeLog(recorderPage)).toEqual([
       'Pause- XXms',
       'Wait for event "console"- XXms',
-      'Click(page.getByRole(\'button\', { name: \'Submit\' }))- XXms',
+      'Click getByRole(\'button\', { name: \'Submit\' })- XXms',
       'Pause',
     ]);
     await recorderPage.click('[title="Resume (F8)"]');
@@ -388,12 +387,33 @@ it.describe('pause', () => {
     await recorderPage.waitForSelector('.source-line-error-underline');
     expect(await sanitizeLog(recorderPage)).toEqual([
       'Pause- XXms',
-      'Is checked(page.getByRole(\'button\'))- XXms',
+      'Is checked getByRole(\'button\')- XXms',
       'waiting for getByRole(\'button\')',
       'error: Error: Not a checkbox or radio button',
     ]);
     const error = await scriptPromise;
     expect(error.message).toContain('Not a checkbox or radio button');
+  });
+
+  it('should populate log with expect failure', async ({ page, recorderPageGetter }) => {
+    await page.setContent('<button>Submit</button>');
+    const scriptPromise = (async () => {
+      // @ts-ignore
+      await page.pause({ __testHookKeepTestTimeout: true });
+      await expect(page.getByRole('button')).toHaveText('Other', { timeout: 1 });
+    })().catch(e => e);
+    const recorderPage = await recorderPageGetter();
+    await recorderPage.click('[title="Resume (F8)"]');
+    await recorderPage.waitForSelector('.source-line-error-underline');
+    expect(await sanitizeLog(recorderPage)).toEqual([
+      'Pause- XXms',
+      'Expect "toHaveText" getByRole(\'button\')- XXms',
+      'Expect "toHaveText" getByRole(\'button\') with timeout 1ms',
+      'waiting for getByRole(\'button\')',
+      'error: Expect failed',
+    ]);
+    const error = await scriptPromise;
+    expect(error.message).toContain('toHaveText');
   });
 
   it('should populate log with error in waitForEvent', async ({ page, recorderPageGetter }) => {
@@ -547,7 +567,10 @@ it.describe('pause', () => {
 
     const box1Promise = waitForTestLog<BoundingBox>(page, 'Highlight box for test: ');
     await recorderPage.click('[title="Step over (F10)"]');
-    const box2 = roundBox((await page.locator('#target').boundingBox())!);
+    // Use an internal call to avoid pausing on it instead of the stepped-over click.
+    const box2 = await (page as any)._wrapApiCall(async () => {
+      return roundBox((await page.locator('#target').boundingBox())!);
+    }, { internal: true });
     const box1 = roundBox(await box1Promise);
     expect(box1).toEqual(box2);
 

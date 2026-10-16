@@ -49,7 +49,7 @@ test('browser_evaluate (element)', async ({ client, server }) => {
     arguments: {
       function: 'element => element.style.backgroundColor',
       element: 'body',
-      ref: 'e1',
+      target: 'e1',
     },
   })).toHaveResponse({
     result: `"red"`,
@@ -73,6 +73,65 @@ test('browser_evaluate object', async ({ client, server }) => {
   })).toHaveResponse({
     result: JSON.stringify({ title: 'Title', url: server.HELLO_WORLD }, null, 2),
     code: `await page.evaluate('() => ({ title: document.title, url: document.URL })');`,
+  });
+});
+
+test('browser_evaluate expression', async ({ client, server }) => {
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    page: expect.stringContaining(`- Page Title: Title`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: '(1+1)',
+    },
+  })).toHaveResponse({
+    result: `2`,
+    code: `await page.evaluate('() => ((1+1))');`,
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: '[1,2,3].map(x => x*2)',
+    },
+  })).toHaveResponse({
+    result: `[\n  2,\n  4,\n  6\n]`,
+    code: `await page.evaluate('() => ([1,2,3].map(x => x*2))');`,
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: 'function foo() { return 1; }',
+    },
+  })).toHaveResponse({
+    result: `1`,
+    code: `await page.evaluate('function foo() { return 1; }');`,
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: 'async () => 42',
+    },
+  })).toHaveResponse({
+    result: `42`,
+    code: `await page.evaluate('async () => 42');`,
+  });
+
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: 'Promise.resolve(42)',
+    },
+  })).toHaveResponse({
+    result: `42`,
+    code: `await page.evaluate('() => (Promise.resolve(42))');`,
   });
 });
 

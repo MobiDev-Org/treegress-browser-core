@@ -73,7 +73,7 @@ Locator:  locator('span')
 Expected: 0
 Received: 1
 Timeout:  1000ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveCount" with timeout 1000ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveCount" locator('span') with timeout 1000ms`);
   });
 
   test('fail zero 2', async ({ page }) => {
@@ -86,7 +86,7 @@ Locator:  locator('span')
 Expected: not 1
 Received: 1
 Timeout:  1000ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "not toHaveCount" with timeout 1000ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "not toHaveCount" locator('span') with timeout 1000ms`);
   });
 });
 
@@ -124,7 +124,7 @@ Locator:  locator('div')
 Expected: "error"
 Received: "string"
 Timeout:  200ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" with timeout 200ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" locator('div') with timeout 200ms`);
   });
 
   test('pass number', async ({ page }) => {
@@ -145,7 +145,7 @@ Locator:  locator('div')
 Expected: 1
 Received: 2021
 Timeout:  200ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" with timeout 200ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" locator('div') with timeout 200ms`);
   });
 
   test('pass boolean', async ({ page }) => {
@@ -166,7 +166,7 @@ Locator:  locator('div')
 Expected: true
 Received: false
 Timeout:  200ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" with timeout 200ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" locator('div') with timeout 200ms`);
   });
 
   test('pass boolean 2', async ({ page }) => {
@@ -187,7 +187,7 @@ Locator:  locator('div')
 Expected: true
 Received: false
 Timeout:  200ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" with timeout 200ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveJSProperty" locator('div') with timeout 200ms`);
   });
 
   test('pass undefined', async ({ page }) => {
@@ -249,7 +249,7 @@ Timeout:  1000ms
 
 Call log:
 `);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveClass" with timeout 1000ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveClass" locator('div') with timeout 1000ms`);
   });
 
   test('pass with array', async ({ page }) => {
@@ -264,7 +264,7 @@ Call log:
     const error = await expect(locator).toHaveClass(['foo', 'bar', /[a-z]az/], { timeout: 1000 }).catch(e => e);
     expect(stripAnsi(error.message)).toContain(`expect(locator).toHaveClass(expected) failed`);
     expect(stripAnsi(error.message)).toContain(`Timeout: 1000ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveClass" with timeout 1000ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toHaveClass" locator('div') with timeout 1000ms`);
   });
 });
 
@@ -298,7 +298,7 @@ Timeout:  1000ms
 
 Call log:
 `);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toContainClass" with timeout 1000ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toContainClass" locator('div') with timeout 1000ms`);
   });
 
   test('pass with array', async ({ page }) => {
@@ -316,7 +316,7 @@ Call log:
     const error = await expect(locator).toContainClass(['foo', 'bar', 'baz'], { timeout: 1000 }).catch(e => e);
     expect(stripAnsi(error.message)).toContain(`expect(locator).toContainClass(expected) failed`);
     expect(stripAnsi(error.message)).toContain(`Timeout: 1000ms`);
-    expect(stripAnsi(error.message)).toContain(`- Expect "toContainClass" with timeout 1000ms`);
+    expect(stripAnsi(error.message)).toContain(`- Expect "toContainClass" locator('div') with timeout 1000ms`);
   });
 });
 
@@ -442,7 +442,7 @@ Timeout:  1000ms
 
 Call log:
 `);
-      expect(stripAnsi(error.message)).toContain(`- Expect "toHaveAttribute" with timeout 1000ms`);
+      expect(stripAnsi(error.message)).toContain(`- Expect "toHaveAttribute" locator('#node') with timeout 1000ms`);
     }
     {
       const error = await expect(locator).toHaveAttribute('disabled', /.*/, { timeout: 1000 }).catch(e => e);
@@ -455,7 +455,7 @@ Timeout: 1000ms
 
 Call log:
 `);
-      expect(stripAnsi(error.message)).toContain(`- Expect "toHaveAttribute" with timeout 1000ms`);
+      expect(stripAnsi(error.message)).toContain(`- Expect "toHaveAttribute" locator('#node') with timeout 1000ms`);
     }
     await expect(locator).not.toHaveAttribute('disabled', '');
     await expect(locator).not.toHaveAttribute('disabled', /.*/);
@@ -477,7 +477,7 @@ Timeout:  1000ms
 
 Call log:
 `);
-      expect(stripAnsi(error.message)).toContain(`- Expect "not toHaveAttribute" with timeout 1000ms`);
+      expect(stripAnsi(error.message)).toContain(`- Expect "not toHaveAttribute" locator('#node') with timeout 1000ms`);
     }
     {
       const error = await expect(locator).not.toHaveAttribute('checked', /.*/, { timeout: 1000 }).catch(e => e);
@@ -487,7 +487,7 @@ Locator: locator('#node')
 Expected pattern: not /.*/
 Received string: ""
 Timeout: 1000ms`);
-      expect(stripAnsi(error.message)).toContain(`- Expect "not toHaveAttribute" with timeout 1000ms`);
+      expect(stripAnsi(error.message)).toContain(`- Expect "not toHaveAttribute" locator('#node') with timeout 1000ms`);
     }
   });
 
@@ -522,61 +522,24 @@ test.describe('toHaveCSS', () => {
     await expect(locator).toHaveCSS('color', 'rgb(255, 0, 0)');
   });
 
+  test('should support pseudo element', async ({ page }) => {
+    await page.setContent(`
+      <style>
+        #node::before {
+          color: rgb(255, 0, 0);
+          content: "Text content";
+        }
+      </style>
+      <div id=node></div>
+    `);
+    const locator = page.locator('#node');
+    await expect(locator).toHaveCSS('color', 'rgb(255, 0, 0)', { pseudo: 'before' });
+  });
+
   test('custom css properties', async ({ page }) => {
     await page.setContent('<div id=node style="--custom-color-property:#FF00FF;">Text content</div>');
     const locator = page.locator('#node');
     await expect(locator).toHaveCSS('--custom-color-property', '#FF00FF');
-  });
-
-  test('fail with bad arguments', async ({ page }) => {
-    await page.setContent(`<div id=node>hi</div>`);
-    const locator = page.locator('#node');
-    try {
-      await expect(locator).toHaveCSS('property', {} as any);
-      expect(true, 'should throw!').toBe(false);
-    } catch (error) {
-      expect(error.message).toContain(`toHaveCSS expected value must be a string or a regular expression`);
-    }
-    try {
-      await expect(locator).toHaveCSS(123 as any, '123');
-      expect(true, 'should throw!').toBe(false);
-    } catch (error) {
-      expect(error.message).toContain(`toHaveCSS argument must be a string or an object`);
-    }
-  });
-
-  test('pass with object', async ({ page }) => {
-    await page.setContent(`<div id=node style="color: rgb(255, 0, 0); display: flex; background-color: red;">Text content</div>`);
-    const locator = page.locator('#node');
-    await expect(locator).toHaveCSS({
-      color: 'rgb(255, 0, 0)',
-      display: 'flex',
-      backgroundColor: 'rgb(255, 0, 0)',
-    });
-  });
-
-  test('does not support custom properties inside object', async ({ page }) => {
-    await page.setContent(`<div id=node style="--my-color: blue">Text content</div>`);
-    const locator = page.locator('#node');
-    await expect(locator).toHaveCSS({ '--my-color': '' } as any);
-  });
-
-  test('fail with object', async ({ page }) => {
-    await page.setContent(`<div id=node style="color: rgb(255, 0, 0); display: flex; background-color: red;">Text content</div>`);
-    const locator = page.locator('#node');
-    const error = await expect(locator).toHaveCSS({
-      'color': 'blue',
-      'display': 'flex',
-      'backgroundColor': 'rgb(255, 0, 0)',
-    }, { timeout: 3000 }).catch(e => e);
-    expect(stripAnsi(error.message)).toContain(`
-  Object {
-    "backgroundColor": "rgb(255, 0, 0)",
--   "color": "blue",
-+   "color": "rgb(255, 0, 0)",
-    "display": "flex",
-  }`);
-    expect(stripAnsi(error.message)).not.toContain(`unexpected value "[object Object]"`);
   });
 });
 
@@ -700,4 +663,25 @@ Error: Unexpected token "#" while parsing css selector "##". Did you mean to CSS
 
 Call log:
 `);
+});
+
+test('should report expect error details when page closes during expect', async ({ page }) => {
+  await page.setContent(`<div>hello</div>`);
+  const promise = expect(page.locator('div')).toHaveText('world', { timeout: 10000 }).catch((e: Error) => e);
+  await page.waitForTimeout(1000);
+  await page.close();
+  const error = await promise as Error;
+  expect(stripAnsi(error.message)).toContain('expect(locator).toHaveText(expected) failed');
+  expect(stripAnsi(error.message)).toContain('Expected: "world"');
+  expect(stripAnsi(error.message)).toContain('Received: "hello"');
+});
+
+test('should report page close reason when page closes during expect', async ({ page }) => {
+  await page.setContent(`<div>hello</div>`);
+  const promise = expect(page.locator('non-existent')).toHaveText('world', { timeout: 10000 }).catch((e: Error) => e);
+  await page.close({ reason: 'Bye bye.' });
+  const error = await promise as Error;
+  expect(stripAnsi(error.message)).toContain('expect(locator).toHaveText(expected) failed');
+  expect(stripAnsi(error.message)).toContain('Bye bye.');
+  expect(stripAnsi(error.message)).not.toContain('Internal server error');
 });

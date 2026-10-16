@@ -16,20 +16,29 @@
 
 import fs from 'fs';
 import path from 'path';
+import url from 'url';
 
-import { gracefullyProcessExitDoNotHang } from '../../../utils';
-import { isUnderTest } from '../../../utils';
-import { HttpServer } from '../../utils/httpServer';
-import { open } from '../../../utilsBundle';
+import open from 'open';
+import { HttpServer } from '@utils/httpServer';
+import { gracefullyProcessExitDoNotHang } from '@utils/processLauncher';
+import { isUnderTest } from '@utils/debug';
+import { isCodingAgent } from '@utils/env';
+import { isPathInside } from '@utils/fileUtils';
+import { libPath } from '../../../package';
 import { syncLocalStorageWithSettings } from '../../launchApp';
 import { launchApp } from '../../launchApp';
 import { createPlaywright } from '../../playwright';
 import { ProgressController } from '../../progress';
+import { nullProgress } from '../../progress';
 
-import type { Transport } from '../../utils/httpServer';
+import type { Transport } from '@utils/httpServer';
 import type { BrowserType } from '../../browserType';
 import type { Page } from '../../page';
 import type http from 'http';
+
+// HMR: build-time flag — `true` in watch builds, `false` in release. Mirror of
+// the one in dashboardApp.ts; esbuild's `define` replaces both.
+declare const __PW_HMR__: boolean;
 
 export type TraceViewerServerOptions = {
   host?: string;
@@ -78,43 +87,76 @@ function validateTraceUrlOrPath(traceFileOrUrl: string | undefined): string | un
   }
 }
 
-export async function startTraceViewerServer(options?: TraceViewerServerOptions): Promise<HttpServer> {
-  const server = new HttpServer();
-  server.routePrefix('/trace', (request, response) => {
+export async function startTraceViewerServer(options: TraceViewerServerOptions & { allowedFileRoots: () => string[] }): Promise<HttpServer> {
+  const server = new HttpServer(libPath('vite', 'traceViewer'));
+  const isAllowed = (filePath: string) => options.allowedFileRoots().some(root => isPathInside(path.resolve(root), filePath));
+
+  const serveTraceDataRoute = (request: http.IncomingMessage, response: http.ServerResponse, relativePath: string): boolean => {
+    if (!relativePath.startsWith('/file'))
+      return false;
     const url = new URL('http://localhost' + request.url!);
-    const relativePath = url.pathname.slice('/trace'.length);
-    if (relativePath.startsWith('/file')) {
-      try {
-        const filePath = url.searchParams.get('path')!;
-        if (fs.existsSync(filePath))
-          return server.serveFile(request, response, url.searchParams.get('path')!);
-
-        // If .json is requested, we'll synthesize it for zip-less operation.
-        if (filePath.endsWith('.json')) {
-          const fullPrefix = filePath.substring(0, filePath.length - '.json'.length);
-          // Live traces are stored in the common artifacts directory. Trace files
-          // corresponding to a particular test, all have the same unique prefix.
-          return sendTraceDescriptor(response, path.dirname(fullPrefix), path.basename(fullPrefix));
-        }
-
-        // If 'trace.dir' is requested, return all trace files inside.
-        if (filePath.endsWith(tracesDirMarker))
-          return sendTraceDescriptor(response, path.dirname(filePath));
-      } catch {
+    try {
+      const filePath = path.resolve(url.searchParams.get('path')!);
+      if (!isAllowed(filePath)) {
+        response.statusCode = 403;
+        response.end();
+        return true;
       }
-      response.statusCode = 404;
-      response.end();
-      return true;
-    }
-    const absolutePath = path.join(__dirname, '..', '..', '..', 'vite', 'traceViewer', ...relativePath.split('/'));
-    return server.serveFile(request, response, absolutePath);
-  });
+      if (fs.existsSync(filePath))
+        return server.serveFile(request, response, filePath, undefined, { skipRootCheck: true });
 
-  const transport = options?.transport || (options?.isServer ? new StdinServer() : undefined);
+      // If .json is requested, we'll synthesize it for zip-less operation.
+      if (filePath.endsWith('.json')) {
+        const fullPrefix = filePath.substring(0, filePath.length - '.json'.length);
+        // Live traces are stored in the common artifacts directory. Trace files
+        // corresponding to a particular test, all have the same unique prefix.
+        return sendTraceDescriptor(response, path.dirname(fullPrefix), path.basename(fullPrefix));
+      }
+
+      // If 'trace.dir' is requested, return all trace files inside.
+      if (filePath.endsWith(tracesDirMarker))
+        return sendTraceDescriptor(response, path.dirname(filePath));
+    } catch {
+    }
+    response.statusCode = 404;
+    response.end();
+    return true;
+  };
+
+  // HMR: watch builds serve the trace viewer (incl. UI mode) through an
+  // embedded Vite dev server. Release builds always take the static branch
+  // (the dev-server arm is DCE'd). Set PW_HMR_STATIC=1 during watch to
+  // exercise the bundled output. The service worker at /trace/sw.bundle.js
+  // still ships from the separate vite.sw.config.ts build — serve it from lib.
+  if (__PW_HMR__ && process.env.PW_HMR_STATIC !== '1') {
+    const traceViewerRoot = path.resolve(__dirname, '..', '..', 'trace-viewer');
+    const devServer = await server.createViteDevServer({ root: traceViewerRoot, base: '/trace/' });
+    server.routePrefix('/trace', (request, response) => {
+      const url = new URL('http://localhost' + request.url!);
+      const relativePath = url.pathname.slice('/trace'.length);
+      if (relativePath.startsWith('/file'))
+        return serveTraceDataRoute(request, response, relativePath);
+      if (relativePath === '/sw.bundle.js')
+        return server.serveFile(request, response, path.join(libPath('vite', 'traceViewer'), 'sw.bundle.js'));
+      devServer.middlewares(request, response, HttpServer.notFoundFallback(response));
+      return true;
+    });
+  } else {
+    server.routePrefix('/trace', (request, response) => {
+      const url = new URL('http://localhost' + request.url!);
+      const relativePath = url.pathname.slice('/trace'.length);
+      if (relativePath.startsWith('/file'))
+        return serveTraceDataRoute(request, response, relativePath);
+      const absolutePath = path.join(libPath('vite', 'traceViewer'), ...relativePath.split('/'));
+      return server.serveFile(request, response, absolutePath);
+    });
+  }
+
+  const transport = options.transport || (options.isServer ? new StdinServer() : undefined);
   if (transport)
     server.createWebSocket(() => transport);
 
-  const { host, port } = options || {};
+  const { host, port } = options;
   await server.start({ preferredPort: port, host });
   return server;
 }
@@ -153,7 +195,8 @@ export async function installRootRedirect(server: HttpServer, traceUrl: string |
 
 export async function runTraceViewerApp(traceUrl: string | undefined, browserName: string, options: TraceViewerServerOptions & { headless?: boolean }) {
   traceUrl = validateTraceUrlOrPath(traceUrl);
-  const server = await startTraceViewerServer(options);
+  const allowedFileRoots = traceFileRoots(traceUrl);
+  const server = await startTraceViewerServer({ ...options, allowedFileRoots: () => allowedFileRoots });
   await installRootRedirect(server, traceUrl, options);
   const page = await openTraceViewerApp(server.urlPrefix('precise'), browserName, options);
   page.on('close', () => gracefullyProcessExitDoNotHang(0));
@@ -162,9 +205,27 @@ export async function runTraceViewerApp(traceUrl: string | undefined, browserNam
 
 export async function runTraceInBrowser(traceUrl: string | undefined, options: TraceViewerServerOptions) {
   traceUrl = validateTraceUrlOrPath(traceUrl);
-  const server = await startTraceViewerServer(options);
+  const allowedFileRoots = traceFileRoots(traceUrl);
+  const server = await startTraceViewerServer({ ...options, allowedFileRoots: () => allowedFileRoots });
   await installRootRedirect(server, traceUrl, options);
   await openTraceInBrowser(server.urlPrefix('human-readable'));
+}
+
+function traceFileRoots(traceUrl: string | undefined): string[] {
+  if (traceUrl?.startsWith('file://')) {
+    try {
+      return [path.dirname(url.fileURLToPath(traceUrl))];
+    } catch {
+    }
+  }
+  if (traceUrl?.startsWith('file?path=')) {
+    try {
+      const url = new URL(traceUrl, 'http://localhost');
+      return [path.dirname(url.searchParams.get('path')!)];
+    } catch {
+    }
+  }
+  return [process.cwd()];
 }
 
 export async function openTraceViewerApp(url: string, browserName: string, options?: TraceViewerAppOptions): Promise<Page> {
@@ -176,7 +237,7 @@ export async function openTraceViewerApp(url: string, browserName: string, optio
     windowSize: { width: 1280, height: 800 },
     persistentContextOptions: {
       ...options?.persistentContextOptions,
-      cdpPort: isUnderTest() ? 0 : undefined,
+      args: isUnderTest() ? ['--remote-debugging-port=0'] : undefined,
       headless: !!options?.headless,
       colorScheme: isUnderTest() ? 'light' : undefined,
     },
@@ -184,7 +245,7 @@ export async function openTraceViewerApp(url: string, browserName: string, optio
 
   const controller = new ProgressController();
   await controller.run(async progress => {
-    await context._browser._defaultContext!._loadDefaultContextAsIs(progress);
+    await context._browser._defaultContext!.loadDefaultContextAsIs(progress);
 
     if (process.env.PWTEST_PRINT_WS_ENDPOINT) {
       // eslint-disable-next-line no-restricted-properties
@@ -192,10 +253,10 @@ export async function openTraceViewerApp(url: string, browserName: string, optio
     }
 
     if (!isUnderTest())
-      await syncLocalStorageWithSettings(page, 'traceviewer');
+      await progress.race(syncLocalStorageWithSettings(page, 'traceviewer'));
 
     if (isUnderTest())
-      page.on('close', () => context.close({ reason: 'Trace viewer closed' }).catch(() => {}));
+      page.on('close', () => context.close(nullProgress, { reason: 'Trace viewer closed' }).catch(() => {}));
 
     await page.mainFrame().goto(progress, url);
   });
@@ -205,7 +266,7 @@ export async function openTraceViewerApp(url: string, browserName: string, optio
 export async function openTraceInBrowser(url: string) {
   // eslint-disable-next-line no-console
   console.log('\nListening on ' + url);
-  if (!isUnderTest())
+  if (!isUnderTest() && !isCodingAgent())
     await open(url.replace('0.0.0.0', 'localhost')).catch(() => {});
 }
 
@@ -273,10 +334,12 @@ function traceDescriptor(traceDir: string, tracePrefix: string | undefined) {
       result.entries.push({ name, path: toFilePathUrl(path.join(traceDir, name)) });
   }
 
-  const resourcesDir = path.join(traceDir, 'resources');
-  if (fs.existsSync(resourcesDir)) {
-    for (const name of fs.readdirSync(resourcesDir))
-      result.entries.push({ name: 'resources/' + name, path: toFilePathUrl(path.join(resourcesDir, name)) });
+  for (const dir of ['resources', 'screencast', 'screenshots', 'aria', 'attachments', 'src']) {
+    const dirPath = path.join(traceDir, dir);
+    if (fs.existsSync(dirPath)) {
+      for (const name of fs.readdirSync(dirPath))
+        result.entries.push({ name: dir + '/' + name, path: toFilePathUrl(path.join(dirPath, name)) });
+    }
   }
   return result;
 }

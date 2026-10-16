@@ -18,6 +18,7 @@ import { attachFrame, detachFrame } from '../config/utils';
 import { contextTest as test, expect } from '../config/browserTest';
 import type { Frame, Page, WebSocketRoute } from '@playwright/test';
 import { TestServer } from '../config/testserver';
+import type { WebSocket as WebSocketServer } from 'ws';
 
 declare global {
   interface Window {
@@ -245,6 +246,72 @@ test('should work with ws.close', async ({ page, server }) => {
   expect(await closedPromise).toEqual({ code: 3009, reason: 'oops' });
 });
 
+test('should observe upstream handshake failure when connectToServer is used', async ({ page, server }) => {
+  // Exercises the WebSocket-as-network-request path used by Firefox after the
+  // har-WebSocket plumbing change, where a 4xx handshake response is synthesized
+  // into a full lifecycle in FFPage._onWebSocketRequestFinished.
+  const serverCloses: { code: number | undefined, reason: string | undefined }[] = [];
+  let routeHandlerInvoked = 0;
+  await page.routeWebSocket(/.*/, ws => {
+    ++routeHandlerInvoked;
+    const serverRoute = ws.connectToServer();
+    serverRoute.onClose((code, reason) => {
+      serverCloses.push({ code, reason });
+      void ws.close();
+    });
+  });
+
+  const upgradePromise = server.waitForUpgrade();
+  await setupWS(page, server, 'blob');
+  const { socket } = await upgradePromise;
+  socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
+  socket.destroy();
+
+  // Server-side route handler observes the close caused by the rejected handshake.
+  await expect.poll(() => serverCloses.length).toBe(1);
+  expect(serverCloses[0].code).toBeGreaterThanOrEqual(1000);
+
+  // Once the route closes the page-side socket, the page sees the close.
+  await expect.poll(() => page.evaluate(() => window.ws.readyState)).toBe(3);
+  expect(routeHandlerInvoked).toBe(1);
+});
+
+test('should observe multiple concurrent routed WebSockets with connectToServer', async ({ page, server }) => {
+  // Exercises FFNetworkManager._webSocketRequestIds tracking by routing two
+  // simultaneous WebSocket connections through `connectToServer()`. Each request
+  // gets a distinct id in the new Firefox WebSocket-as-network-request flow.
+  let routedConnections = 0;
+  await page.routeWebSocket(/.*/, ws => {
+    ++routedConnections;
+    const serverRoute = ws.connectToServer();
+    ws.onMessage(message => serverRoute.send(message));
+    serverRoute.onMessage(message => ws.send(message));
+  });
+
+  // Echo all incoming messages on whichever connection arrives; re-register after each.
+  const handleConnection = (ws: WebSocketServer) => {
+    ws.on('message', data => ws.send(`echo-${data.toString()}`));
+    server.onceWebSocketConnection(handleConnection);
+  };
+  server.onceWebSocketConnection(handleConnection);
+
+  await page.goto(server.EMPTY_PAGE);
+  const results = await page.evaluate(async host => {
+    const collect = (tag: string) => new Promise<string>(resolve => {
+      const ws = new WebSocket(`ws://${host}/ws`);
+      ws.addEventListener('open', () => ws.send(`hi-${tag}`));
+      ws.addEventListener('message', event => {
+        resolve(event.data);
+        ws.close();
+      });
+    });
+    return Promise.all([collect('a'), collect('b')]);
+  }, server.HOST);
+
+  expect(results.sort()).toEqual(['echo-hi-a', 'echo-hi-b']);
+  expect(routedConnections).toBe(2);
+});
+
 test('should pattern match', async ({ page, server }) => {
   await page.routeWebSocket(/.*\/ws$/, async ws => {
     ws.connectToServer();
@@ -258,7 +325,7 @@ test('should pattern match', async ({ page, server }) => {
 
   const wsPromise = server.waitForWebSocket();
 
-  await page.goto('about:blank');
+  await page.goto(server.EMPTY_PAGE);
   await page.evaluate(async ({ host }) => {
     window.log = [];
     (window as any).ws1 = new WebSocket('ws://' + host + '/ws');
@@ -408,6 +475,27 @@ test('should work without server', async ({ page, server }) => {
   ]);
 });
 
+test('should route WebSockets in already loaded documents', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43105' },
+}, async ({ page, server }) => {
+  await page.goto(server.EMPTY_PAGE);
+  const frame = await attachFrame(page, 'frame1', server.EMPTY_PAGE);
+  await page.routeWebSocket(/.*/, ws => {
+    ws.onMessage(message => ws.send('mock-' + message));
+  });
+
+  for (const target of [page.mainFrame(), frame]) {
+    await target.evaluate(({ host }) => {
+      window.log = [];
+      window.ws = new WebSocket('ws://' + host + '/ws');
+      window.ws.addEventListener('message', event => window.log.push(event.data));
+      window.ws.addEventListener('close', () => window.log.push('close'));
+      window.ws.addEventListener('open', () => window.ws.send('hi'));
+    }, { host: server.HOST });
+    await expect.poll(() => target.evaluate(() => window.log)).toEqual(['mock-hi']);
+  }
+});
+
 test('should emit close upon frame navigation', async ({ page, server }) => {
   const { promise, resolve } = withResolvers<WebSocketRoute>();
   await page.routeWebSocket(/.*/, async ws => {
@@ -475,7 +563,7 @@ test('should route on context', async ({ page, server }) => {
     });
   });
 
-  await page.goto('about:blank');
+  await page.goto(server.EMPTY_PAGE);
   await page.evaluate(({ host }) => {
     window.log = [];
     (window as any).ws1 = new WebSocket('ws://' + host + '/ws1');
@@ -542,7 +630,7 @@ test('should work with no trailing slash', async ({ page, server }) => {
     });
   });
 
-  await page.goto('about:blank');
+  await page.goto(server.EMPTY_PAGE);
   await page.evaluate(({ host }) => {
     window.log = [];
     // No trailing slash!
@@ -577,4 +665,62 @@ test('should work with baseURL', async ({ contextFactory, server }) => {
     'open',
     `message: data=echo origin=ws://${server.HOST} lastEventId=`,
   ]);
+});
+
+test('should work with baseURL regardless of scheme casing', async ({ contextFactory, server }) => {
+  // baseURL schemes are case-insensitive, same as everywhere else in URL matching.
+  const context = await contextFactory({ baseURL: 'HTTP://' + server.HOST });
+  const page = await context.newPage();
+
+  await page.routeWebSocket('/ws', ws => {
+    ws.onMessage(message => {
+      ws.send(message);
+    });
+  });
+
+  await setupWS(page, server, 'blob');
+
+  await page.evaluate(async () => {
+    await window.wsOpened;
+    window.ws.send('echo');
+  });
+
+  await expect.poll(() => page.evaluate(() => window.log)).toEqual([
+    'open',
+    `message: data=echo origin=ws://${server.HOST} lastEventId=`,
+  ]);
+});
+
+test('should expose protocols to the route handler', async ({ page, server }) => {
+  const routes: WebSocketRoute[] = [];
+  await page.routeWebSocket(/.*/, ws => {
+    routes.push(ws);
+  });
+
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(({ host }) => {
+    (window as any).wsNone = new WebSocket('ws://' + host + '/ws-none');
+    (window as any).wsString = new WebSocket('ws://' + host + '/ws-string', 'chat.v1');
+    (window as any).wsArray = new WebSocket('ws://' + host + '/ws-array', ['chat.v2', 'chat.v1']);
+  }, { host: server.HOST });
+
+  await expect.poll(() => routes.length).toBe(3);
+
+  const byUrl = new Map(routes.map(r => [new URL(r.url()).pathname, r] as const));
+  expect(byUrl.get('/ws-none')!.protocols()).toEqual([]);
+  expect(byUrl.get('/ws-string')!.protocols()).toEqual(['chat.v1']);
+  expect(byUrl.get('/ws-array')!.protocols()).toEqual(['chat.v2', 'chat.v1']);
+});
+
+test('should expose protocols on server-side route', async ({ page, server }) => {
+  const { promise, resolve } = withResolvers<{ page: WebSocketRoute, server: WebSocketRoute }>();
+  await page.routeWebSocket(/.*/, ws => {
+    const serverRoute = ws.connectToServer();
+    resolve({ page: ws, server: serverRoute });
+  });
+
+  await setupWS(page, server, 'blob', ['chat.v2', 'chat.v1']);
+  const { page: pageRoute, server: serverRoute } = await promise;
+  expect(pageRoute.protocols()).toEqual(['chat.v2', 'chat.v1']);
+  expect(serverRoute.protocols()).toEqual(['chat.v2', 'chat.v1']);
 });

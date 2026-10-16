@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-import { eventsHelper } from '../../utils';
+import { eventsHelper } from '@utils/eventsHelper';
 import { DebugController } from '../debugController';
 import { Dispatcher } from './dispatcher';
 
 import type { DispatcherConnection, RootDispatcher } from './dispatcher';
-import type { RegisteredListener } from '../utils/eventsHelper';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type { RegisteredListener } from '@utils/eventsHelper';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 
 export class DebugControllerDispatcher extends Dispatcher<DebugController, channels.DebugControllerChannel, RootDispatcher> implements channels.DebugControllerChannel {
@@ -51,11 +51,11 @@ export class DebugControllerDispatcher extends Dispatcher<DebugController, chann
   }
 
   async initialize(params: channels.DebugControllerInitializeParams, progress: Progress) {
-    this._object.initialize(params.codegenId, params.sdkLanguage);
+    this._object.initialize(progress, params.codegenId, params.sdkLanguage);
   }
 
   async setReportStateChanged(params: channels.DebugControllerSetReportStateChangedParams, progress: Progress) {
-    this._object.setReportStateChanged(params.enabled);
+    this._object.setReportStateChanged(progress, params.enabled);
   }
 
   async setRecorderMode(params: channels.DebugControllerSetRecorderModeParams, progress: Progress) {
@@ -75,7 +75,7 @@ export class DebugControllerDispatcher extends Dispatcher<DebugController, chann
   }
 
   async kill(params: channels.DebugControllerKillParams, progress: Progress) {
-    this._object.kill();
+    this._object.kill(progress);
   }
 
   override _onDispose() {

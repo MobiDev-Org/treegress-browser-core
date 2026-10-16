@@ -92,9 +92,6 @@ export class PageHandler {
     // to be ignored by the protocol clients.
     this._isPageReady = false;
 
-    if (this._pageTarget.videoRecordingInfo())
-      this._onVideoRecordingStarted();
-
     this._pageEventSink = {};
     helper.decorateAsEventEmitter(this._pageEventSink);
 
@@ -105,7 +102,6 @@ export class PageHandler {
       helper.on(this._pageTarget, PageTarget.Events.Crashed, () => {
         this._session.emitEvent('Page.crashed', {});
       }),
-      helper.on(this._pageTarget, PageTarget.Events.ScreencastStarted, this._onVideoRecordingStarted.bind(this)),
       helper.on(this._pageTarget, PageTarget.Events.ScreencastFrame, this._onScreencastFrame.bind(this)),
       helper.on(this._pageNetwork, PageNetwork.Events.Request, this._handleNetworkEvent.bind(this, 'Network.requestWillBeSent')),
       helper.on(this._pageNetwork, PageNetwork.Events.Response, this._handleNetworkEvent.bind(this, 'Network.responseReceived')),
@@ -157,11 +153,6 @@ export class PageHandler {
     for (const watcher of this._pendingEventWatchers)
       watcher.dispose();
     helper.removeListeners(this._eventListeners);
-  }
-
-  _onVideoRecordingStarted() {
-    const info = this._pageTarget.videoRecordingInfo();
-    this._session.emitEvent('Page.videoRecordingStarted', { screencastId: info.sessionId, file: info.file });
   }
 
   _onScreencastFrame(params) {
@@ -236,8 +227,8 @@ export class PageHandler {
     });
   }
 
-  async ['Page.setViewportSize']({viewportSize}) {
-    await this._pageTarget.setViewportSize(viewportSize === null ? undefined : viewportSize);
+  async ['Page.setViewportSize']({viewportSize, deviceScaleFactor, screenSize, isMobile}) {
+    await this._pageTarget.setViewportSize(viewportSize === null ? undefined : viewportSize, deviceScaleFactor, screenSize, isMobile);
   }
 
   async ['Page.setZoom']({zoom}) {
@@ -275,9 +266,9 @@ export class PageHandler {
     this._pageNetwork.setExtraHTTPHeaders(headers);
   }
 
-  async ['Network.setRequestInterception']({enabled}) {
+  async ['Network.setRequestInterception']({enabled, bypassServiceWorker}) {
     if (enabled)
-      this._pageNetwork.enableRequestInterception();
+      this._pageNetwork.enableRequestInterception(bypassServiceWorker);
     else
       this._pageNetwork.disableRequestInterception();
   }
@@ -322,7 +313,7 @@ export class PageHandler {
     return await this._contentPage.send('adoptNode', options);
   }
 
-  async ['Page.screenshot']({ mimeType, clip, omitDeviceScaleFactor, quality = 80}) {
+  async ['Page.screenshot']({ mimeType, clip, omitDeviceScaleFactor, quality }) {
     const rect = new DOMRect(clip.x, clip.y, clip.width, clip.height);
 
     const browsingContext = this._pageTarget.linkedBrowser().browsingContext;
@@ -358,7 +349,7 @@ export class PageHandler {
       }
     }
 
-    const win = browsingContext.topChromeWindow.ownerGlobal;
+    const win = browsingContext.topChromeWindow;
     const canvas = win.document.createElementNS('http://www.w3.org/1999/xhtml', 'canvas');
     canvas.width = canvasWidth;
     canvas.height = canvasHeight;
@@ -366,7 +357,8 @@ export class PageHandler {
     ctx.drawImage(snapshot, 0, 0);
     snapshot.close();
 
-    if (mimeType === 'image/jpeg') {
+    if (mimeType === 'image/jpeg' || mimeType === 'image/webp') {
+      quality ??= mimeType === 'image/webp' ? 100 : 80;
       if (quality < 0 || quality > 100)
         throw new Error('Quality must be an integer value between 0 and 100; received ' + quality);
       quality /= 100;
@@ -679,6 +671,10 @@ export class PageHandler {
   }
 
   async ['Page.stopScreencast'](options) {
+    // If screencast is enabled at the context level, then browser
+    // context will handle the stopping.
+    if (this._pageTarget.browserContext().screencastOptions)
+      return;
     await this._pageTarget.stopScreencast(options);
   }
 

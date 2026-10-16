@@ -1,8 +1,9 @@
 [*]
-@isomorphic/**
-@trace/**
 @web/**
 ui/
+
+[snapshotMain.ts]
+@isomorphic/**
 
 [sw-main.ts]
 sw/**

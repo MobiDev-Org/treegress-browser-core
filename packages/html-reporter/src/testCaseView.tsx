@@ -25,7 +25,7 @@ import { statusIcon } from './statusIcon';
 import './testCaseView.css';
 import { TestResultView } from './testResultView';
 import { linkifyText } from '@web/renderUtils';
-import { msToString } from './utils';
+import { msToString } from '@isomorphic/formatUtils';
 import { clsx } from '@web/uiUtils';
 import { CopyToClipboardContainer } from './copyToClipboard';
 import { HeaderView } from './headerView';
@@ -43,6 +43,7 @@ export const TestCaseView: React.FC<{
   const searchParams = useSearchParams();
 
   const visibleTestAnnotations = test.annotations.filter(a => !a.type.startsWith('_')) ?? [];
+  appendRepeatEachIndexAnnotation(visibleTestAnnotations, test.repeatEachIndex);
 
   return <>
     <HeaderView
@@ -61,7 +62,7 @@ export const TestCaseView: React.FC<{
         </CopyToClipboardContainer>
       </div>
       <div style={{ flex: 'auto' }}></div>
-      <TraceLink test={test} trailingSeparator={true} />
+      <TraceLink test={test} run={selectedResultIndex} trailingSeparator={true} />
       <div className='test-case-duration'>{msToString(test.duration)}</div>
     </div>
     <ProjectAndTagLabelsView style={{ marginLeft: '6px' }} projectNames={report.json().projectNames} activeProjectName={test.projectName} otherLabels={test.tags} />
@@ -78,6 +79,7 @@ export const TestCaseView: React.FC<{
         </div>,
         render: () => {
           const visibleAnnotations = result.annotations.filter(annotation => !annotation.type.startsWith('_'));
+          appendRepeatEachIndexAnnotation(visibleAnnotations, test.repeatEachIndex);
           return <>
             {!!visibleAnnotations.length && <AutoChip header='Annotations' dataTestId='test-case-annotations'>
               {visibleAnnotations.map((annotation, index) => <TestCaseAnnotationView key={index} annotation={annotation} />)}
@@ -96,6 +98,11 @@ function TestCaseAnnotationView({ annotation: { type, description } }: { annotat
       {description && <CopyToClipboardContainer value={description}>: {linkifyText(description)}</CopyToClipboardContainer>}
     </div>
   );
+}
+
+function appendRepeatEachIndexAnnotation(annotations: TestAnnotation[], repeatEachIndex: number | undefined) {
+  if (repeatEachIndex)
+    annotations.push({ type: 'repeatEachIndex', description: String(repeatEachIndex) });
 }
 
 function retryLabel(index: number) {

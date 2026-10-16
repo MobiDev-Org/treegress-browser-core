@@ -19,6 +19,10 @@ import * as playwright from 'playwright';
 type AssertType<T, S> = S extends T ? AssertNotAny<S> : false;
 type AssertNotAny<S> = {notRealProperty: number} extends S ? false : true;
 
+declare const page: playwright.Page;
+// @ts-expect-error annotate is not a Screencast.start option.
+page.screencast.start({ annotate: { position: 'top-left' } });
+
 // Examples taken from README
 (async () => {
   const browser = await playwright.chromium.launch();
@@ -121,11 +125,6 @@ playwright.chromium.launch().then(async browser => {
     const content = await (window as any).readfile('/etc/hosts');
     console.log(content);
   });
-
-  await page.exposeBinding('clicked', async (source, handle) => {
-    await handle.asElement()!.textContent();
-    await source.page.goto('http://example.com');
-  }, { handle: true });
 
   await page.emulateMedia({media: 'screen'});
   await page.pdf({ path: 'page.pdf' });
@@ -432,6 +431,84 @@ playwright.chromium.launch().then(async browser => {
   }
   {
     await locator.evaluateAll((sel: HTMLSelectElement[]) => {})
+  }
+  // Handles in callback results are unboxed, but the callback keeps its authored
+  // sync/async signature, even though the runtime always exposes it as async on the page side.
+  {
+    await locator.evaluate((e, cb) => {
+      const value = cb(2);
+      const assertion: AssertType<number, typeof value> = true;
+    }, (x: number) => 2 * x);
+  }
+  {
+    await locator.evaluate((e, cb) => {
+      const value = cb(2);
+      const assertion: AssertType<Promise<number>, typeof value> = true;
+    }, async (x: number) => 2 * x);
+  }
+  {
+    await locator.evaluate((e, { cb }) => {
+      const value = cb(2);
+      const assertion: AssertType<Promise<number>, typeof value> = true;
+    }, { cb: (x: number) => page.evaluateHandle(y => 2 * y, x) });
+  }
+  {
+    const func = async (x: number) => {
+      const double = await page.evaluateHandle(y => 2 * y, x);
+      return { double, add: 17 };
+    };
+    await locator.evaluate((e, { cb }) => {
+      const value = cb(2);
+      const assertion: AssertType<Promise<{ double: number, add: number }>, typeof value> = true;
+    }, { cb: func });
+  }
+  {
+    // Promises nested in the argument are not awaited, only callback results are.
+    const result = await page.evaluate(arg => {
+      const assertion: AssertType<Promise<number>, typeof arg.a> = true;
+      return arg;
+    }, { a: new Promise<number>(() => {}), b: 42 });
+    const assertion: AssertType<{ a: Promise<number>, b: number }, typeof result> = true;
+  }
+  await browser.close();
+})();
+
+// branded primitives in evaluate arguments — https://github.com/microsoft/playwright/issues/42000
+declare const __brand: unique symbol;
+type Branded<T, B> = T & { [__brand]: B };
+type IsoDate = Branded<string, 'IsoDate'>;
+declare function takesIsoDate(date: IsoDate): void;
+
+(async () => {
+  const browser = await playwright.chromium.launch();
+  const page = await browser.newPage();
+  const date = '2026-01-15' as IsoDate;
+  {
+    const result = await page.evaluate((d: IsoDate) => d, date);
+    const assertion: AssertType<IsoDate, typeof result> = true;
+  }
+  {
+    await page.evaluate(d => takesIsoDate(d), date);
+  }
+  {
+    await page.evaluate(({ d }) => takesIsoDate(d), { d: date });
+  }
+  {
+    const count = 42 as Branded<number, 'Count'>;
+    const result = await page.evaluate(c => c, count);
+    const assertion: AssertType<Branded<number, 'Count'>, typeof result> = true;
+  }
+  {
+    const result = await page.evaluate((arg: { d?: IsoDate }) => arg.d, { d: date } as { d?: IsoDate });
+    const assertion: AssertType<IsoDate | undefined, typeof result> = true;
+  }
+  {
+    const result = await page.evaluate((dates: readonly IsoDate[]) => dates[0], [date] as readonly IsoDate[]);
+    const assertion: AssertType<IsoDate, typeof result> = true;
+  }
+  {
+    const result = await page.evaluate((pair: [IsoDate, number]) => pair[0], [date, 42] as [IsoDate, number]);
+    const assertion: AssertType<IsoDate, typeof result> = true;
   }
   await browser.close();
 })();
@@ -943,7 +1020,24 @@ playwright.chromium.launch().then(async browser => {
   const browserType = {} as playwright.BrowserType<playwright.Browser & {foo: 'string'}>;
   const browser = await browserType.launch();
   await browser.close();
-})
+})();
+
+// APIRequestContext / APIResponse generics
+(async () => {
+  const request = {} as playwright.APIRequestContext;
+  interface User { id: string; name: string }
+
+  const typed = await request.get<User>('/api/users/42');
+  const user = await typed.json();
+  const name: string = user.name;
+
+  const posted = await request.post<User>('/api/users', { data: { name: 'x' } });
+  const created: User = await posted.json();
+
+  const untyped = await request.get('/api/users/42');
+  const body = await untyped.json();
+  console.log(body, name, created);
+})();
 
 // exported types
 import {

@@ -22,23 +22,24 @@ import { TargetClosedError, isTargetClosedError } from './errors';
 import { Events } from './events';
 import { JSHandle, parseResult, serializeArgument } from './jsHandle';
 import { Waiter } from './waiter';
-import { TimeoutSettings } from './timeoutSettings';
+import { TimeoutSettings, kNoTimeout } from './timeoutSettings';
 
 import type { Page } from './page';
-import type { BrowserContextOptions, Headers, WaitForEventOptions } from './types';
+import type { BrowserContextOptions, Headers, TimeoutOptions, WaitForEventOptions } from './types';
 import type * as structs from '../../types/structs';
 import type * as api from '../../types/types';
-import type * as channels from '@protocol/channels';
+import type * as channels from './channels';
 import type * as childProcess from 'child_process';
 import type { BrowserWindow } from 'electron';
 import type { Playwright } from './playwright';
 
-type ElectronOptions = Omit<channels.ElectronLaunchOptions, 'env'|'extraHTTPHeaders'|'recordHar'|'colorScheme'|'acceptDownloads'> & {
+type ElectronOptions = Omit<channels.ElectronLaunchOptions, 'env'|'extraHTTPHeaders'|'recordHar'|'colorScheme'|'acceptDownloads'|'httpCredentials'> & {
   env?: NodeJS.ProcessEnv,
   extraHTTPHeaders?: Headers,
   recordHar?: BrowserContextOptions['recordHar'],
   colorScheme?: 'dark' | 'light' | 'no-preference' | null,
   acceptDownloads?: boolean,
+  httpCredentials?: BrowserContextOptions['httpCredentials'],
   timeout?: number,
 };
 
@@ -58,16 +59,17 @@ export class Electron extends ChannelOwner<channels.ElectronChannel> implements 
   async launch(options: ElectronOptions = {}): Promise<ElectronApplication> {
     options = this._playwright.selectors._withSelectorOptions(options);
     const params: channels.ElectronLaunchParams = {
-      ...await prepareBrowserContextParams(this._platform, options),
-      env: envObjectToArray(options.env ? options.env : this._platform.env),
+      ...await prepareBrowserContextParams(options),
+      env: options.env ? envObjectToArray(options.env) : undefined,
       tracesDir: options.tracesDir,
-      timeout: new TimeoutSettings(this._platform).launchTimeout(options),
+      artifactsDir: options.artifactsDir,
     };
-    const app = ElectronApplication.from((await this._channel.launch(params)).electronApplication);
+    const app = ElectronApplication.from((await this._channel.launch(params, new TimeoutSettings().launchTimeout(options))).electronApplication);
     this._playwright.selectors._contextsForSelectors.add(app._context);
     app.once(Events.ElectronApplication.Close, () => this._playwright.selectors._contextsForSelectors.delete(app._context));
     await app._context._initializeHarFromOptions(options.recordHar);
     app._context.tracing._tracesDir = options.tracesDir;
+    app._context.request.tracing._tracesDir = options.tracesDir;
     return app;
   }
 }
@@ -84,7 +86,7 @@ export class ElectronApplication extends ChannelOwner<channels.ElectronApplicati
   constructor(parent: ChannelOwner, type: string, guid: string, initializer: channels.ElectronApplicationInitializer) {
     super(parent, type, guid, initializer);
 
-    this._timeoutSettings = new TimeoutSettings(this._platform);
+    this._timeoutSettings = new TimeoutSettings();
     this._context = BrowserContext.from(initializer.context);
     for (const page of this._context._pages)
       this._onPage(page);
@@ -92,7 +94,7 @@ export class ElectronApplication extends ChannelOwner<channels.ElectronApplicati
     this._channel.on('close', () => {
       this.emit(Events.ElectronApplication.Close);
     });
-    this._channel.on('console', event => this.emit(Events.ElectronApplication.Console, new ConsoleMessage(this._platform, event, null, null)));
+    this._channel.on('console', event => this.emit(Events.ElectronApplication.Console, new ConsoleMessage(event, null, null)));
     this._setEventToSubscriptionMapping(new Map<string, channels.ElectronApplicationUpdateSubscriptionParams['event']>([
       [Events.ElectronApplication.Console, 'console'],
     ]));
@@ -113,7 +115,7 @@ export class ElectronApplication extends ChannelOwner<channels.ElectronApplicati
     return [...this._windows];
   }
 
-  async firstWindow(options?: { timeout?: number }): Promise<Page> {
+  async firstWindow(options?: TimeoutOptions): Promise<Page> {
     if (this._windows.size)
       return this._windows.values().next().value!;
     return await this.waitForEvent('window', options);
@@ -139,10 +141,10 @@ export class ElectronApplication extends ChannelOwner<channels.ElectronApplicati
 
   async waitForEvent(event: string, optionsOrPredicate: WaitForEventOptions = {}): Promise<any> {
     return await this._wrapApiCall(async () => {
-      const timeout = this._timeoutSettings.timeout(typeof optionsOrPredicate === 'function' ? {} : optionsOrPredicate);
+      const timeoutOptions = this._timeoutSettings.timeout(typeof optionsOrPredicate === 'function' ? {} : optionsOrPredicate);
       const predicate = typeof optionsOrPredicate === 'function' ? optionsOrPredicate : optionsOrPredicate.predicate;
       const waiter = Waiter.createForEvent(this, event);
-      waiter.rejectOnTimeout(timeout, `Timeout ${timeout}ms exceeded while waiting for event "${event}"`);
+      waiter.rejectOnTimeout(timeoutOptions, `Timeout ${timeoutOptions.timeout}ms exceeded while waiting for event "${event}"`);
       if (event !== Events.ElectronApplication.Close)
         waiter.rejectOnEvent(this, Events.ElectronApplication.Close, () => new TargetClosedError());
       const result = await waiter.waitForEvent(this, event, predicate as any);
@@ -152,17 +154,17 @@ export class ElectronApplication extends ChannelOwner<channels.ElectronApplicati
   }
 
   async browserWindow(page: Page): Promise<JSHandle<BrowserWindow>> {
-    const result = await this._channel.browserWindow({ page: page._channel });
+    const result = await this._channel.browserWindow({ page: page._channel }, kNoTimeout);
     return JSHandle.from(result.handle);
   }
 
   async evaluate<R, Arg>(pageFunction: structs.PageFunctionOn<ElectronAppType, Arg, R>, arg: Arg): Promise<R> {
-    const result = await this._channel.evaluateExpression({ expression: String(pageFunction), isFunction: typeof pageFunction === 'function', arg: serializeArgument(arg) });
+    const result = await this._channel.evaluateExpression({ expression: String(pageFunction), isFunction: typeof pageFunction === 'function', arg: serializeArgument(arg) }, kNoTimeout);
     return parseResult(result.value);
   }
 
   async evaluateHandle<R, Arg>(pageFunction: structs.PageFunctionOn<ElectronAppType, Arg, R>, arg: Arg): Promise<structs.SmartHandle<R>> {
-    const result = await this._channel.evaluateExpressionHandle({ expression: String(pageFunction), isFunction: typeof pageFunction === 'function', arg: serializeArgument(arg) });
+    const result = await this._channel.evaluateExpressionHandle({ expression: String(pageFunction), isFunction: typeof pageFunction === 'function', arg: serializeArgument(arg) }, kNoTimeout);
     return JSHandle.from(result.handle) as any as structs.SmartHandle<R>;
   }
 }

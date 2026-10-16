@@ -26,7 +26,6 @@ it('should work @smoke', async ({ page, server }) => {
 
 it('should work with file URL', async ({ page, asset, isAndroid, mode, channel }) => {
   it.skip(isAndroid, 'No files on Android');
-  it.skip(mode.startsWith('service'));
   it.skip(channel === 'webkit-wsl', 'separate filesystem on wsl');
 
   const fileurl = url.pathToFileURL(asset('empty.html')).href;
@@ -35,9 +34,17 @@ it('should work with file URL', async ({ page, asset, isAndroid, mode, channel }
   expect(page.frames().length).toBe(1);
 });
 
+it('should navigate from file URL to about:blank', async ({ page, asset, isAndroid, channel }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42050' });
+  it.skip(isAndroid, 'No files on Android');
+  it.skip(channel === 'webkit-wsl', 'separate filesystem on wsl');
+
+  await page.goto(url.pathToFileURL(asset('empty.html')).href);
+  await page.goto('about:blank');
+});
+
 it('should work with file URL with subframes', async ({ page, asset, isAndroid, mode, channel }) => {
   it.skip(isAndroid, 'No files on Android');
-  it.skip(mode.startsWith('service'));
   it.skip(channel === 'webkit-wsl', 'separate filesystem on wsl');
 
   const fileurl = url.pathToFileURL(asset('frames/two-frames.html')).href;
@@ -115,6 +122,27 @@ it('should work with Cross-Origin-Opener-Policy', async ({ page, server }) => {
   expect(requests.size).toBe(1);
   expect(response.request().failure()).toBeNull();
 });
+
+for (const crossOriginEmbedderPolicy of [undefined, 'require-corp']) {
+  it(`should work with Cross-Origin-Opener-Policy${crossOriginEmbedderPolicy ? ' and Cross-Origin-Embedder-Policy' : ''} and history state`, async ({ page, server }) => {
+    it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42731' });
+    server.setRoute('/empty.html', (req, res) => {
+      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+      if (crossOriginEmbedderPolicy)
+        res.setHeader('Cross-Origin-Embedder-Policy', crossOriginEmbedderPolicy);
+      res.end(`
+        <!doctype html>
+        <h1>hello</h1>
+        <script type="module">history.replaceState({ key: 1 }, '', location.href);</script>
+      `);
+    });
+    const response = await page.goto(server.EMPTY_PAGE);
+    expect(response.status()).toBe(200);
+    expect(page.url()).toBe(server.EMPTY_PAGE);
+    expect(await page.evaluate(() => history.state)).toEqual({ key: 1 });
+    await expect(page.locator('h1')).toHaveText('hello');
+  });
+}
 
 it('should work with Cross-Origin-Opener-Policy and interception', async ({ page, server }) => {
   server.setRoute('/empty.html', (req, res) => {
@@ -360,23 +388,14 @@ it('should fail when main resources failed to load', async ({ page, browserName,
   it.skip(channel === 'webkit-wsl', 'Networking mode mirrored ends up stalling connections rather than terminating them, see https://github.com/microsoft/WSL/issues/10855.');
   let error = null;
   await page.goto('http://localhost:44123/non-existing-url').catch(e => error = e);
-  if (browserName === 'chromium') {
-    if (mode === 'service2')
-      expect(error.message).toContain('net::ERR_SOCKS_CONNECTION_FAILED');
-    else
-      expect(error.message).toContain('net::ERR_CONNECTION_REFUSED');
-  } else if (browserName === 'webkit' && isWindows && mode === 'service2') {
-    expect(error.message).toContain(`proxy handshake error`);
-  } else if (browserName === 'webkit' && isWindows && channel !== 'webkit-wsl') {
+  if (browserName === 'chromium')
+    expect(error.message).toContain('net::ERR_CONNECTION_REFUSED');
+  else if (browserName === 'webkit' && isWindows && channel !== 'webkit-wsl')
     expect(error.message).toContain(`Could not connect to server`);
-  } else if (browserName === 'webkit') {
-    if (mode === 'service2')
-      expect(error.message).toContain('Connection refused');
-    else
-      expect(error.message).toContain('Could not connect');
-  } else {
+  else if (browserName === 'webkit')
+    expect(error.message).toContain('Could not connect');
+  else
     expect(error.message).toContain('NS_ERROR_CONNECTION_REFUSED');
-  }
 });
 
 it('should fail when exceeding maximum navigation timeout', async ({ page, server, playwright }) => {
@@ -389,8 +408,8 @@ it('should fail when exceeding maximum navigation timeout', async ({ page, serve
   expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
 });
 
-it('should fail when exceeding default maximum navigation timeout', async ({ page, server, playwright, isAndroid }) => {
-  it.skip(isAndroid, 'No context per test');
+it('should fail when exceeding default maximum navigation timeout', async ({ page, server, playwright, isAndroid, isElectron }) => {
+  it.skip(isAndroid || isElectron, 'No context per test');
 
   // Hang for request to the empty.html
   server.setRoute('/empty.html', (req, res) => { });
@@ -403,8 +422,8 @@ it('should fail when exceeding default maximum navigation timeout', async ({ pag
   expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
 });
 
-it('should fail when exceeding browser context navigation timeout', async ({ page, server, playwright, isAndroid }) => {
-  it.skip(isAndroid, 'No context per test');
+it('should fail when exceeding browser context navigation timeout', async ({ page, server, playwright, isAndroid, isElectron }) => {
+  it.skip(isAndroid || isElectron, 'No context per test');
 
   // Hang for request to the empty.html
   server.setRoute('/empty.html', (req, res) => { });
@@ -416,8 +435,8 @@ it('should fail when exceeding browser context navigation timeout', async ({ pag
   expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
 });
 
-it('should fail when exceeding default maximum timeout', async ({ page, server, playwright, isAndroid }) => {
-  it.skip(isAndroid, 'No context per test');
+it('should fail when exceeding default maximum timeout', async ({ page, server, playwright, isAndroid, isElectron }) => {
+  it.skip(isAndroid || isElectron, 'No context per test');
 
   // Hang for request to the empty.html
   server.setRoute('/empty.html', (req, res) => { });
@@ -432,8 +451,8 @@ it('should fail when exceeding default maximum timeout', async ({ page, server, 
   expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
 });
 
-it('should fail when exceeding browser context timeout', async ({ page, server, playwright, isAndroid }) => {
-  it.skip(isAndroid, 'No context per test');
+it('should fail when exceeding browser context timeout', async ({ page, server, playwright, isAndroid, isElectron }) => {
+  it.skip(isAndroid || isElectron, 'No context per test');
 
   // Hang for request to the empty.html
   server.setRoute('/empty.html', (req, res) => { });

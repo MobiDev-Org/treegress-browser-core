@@ -16,7 +16,9 @@
  */
 
 import { contextTest as test, expect } from '../../config/browserTest';
-import { playwrightTest } from '../../config/browserTest';
+import { browserTest, playwrightTest } from '../../config/browserTest';
+
+import type { Page } from 'playwright-core';
 
 test('should create a worker from a service worker', async ({ page, server }) => {
   const [worker] = await Promise.all([
@@ -631,11 +633,11 @@ test('should throw when connecting twice to an already running persistent contex
   test.skip(!!channel?.startsWith('msedge'), 'Edge does not print the ProcessSingleton line');
   const userDataDir = await createUserDataDir();
   const browser = await browserType.launchPersistentContext(userDataDir, {
-    cdpPort: 9222,
+    args: ['--remote-debugging-port=9222'],
   } as any);
   try {
     const error = await browserType.launchPersistentContext(userDataDir, {
-      cdpPort: 9223,
+      args: ['--remote-debugging-port=9223'],
     } as any).catch(e => e);
     expect(error.message).toContain('This usually means that the profile is already in use by another instance of Chromium.');
   } finally {
@@ -745,4 +747,81 @@ test('should capture console.log from ServiceWorker start', async ({ context, pa
   const consoleMessage = await worker.waitForEvent('console');
   expect(consoleMessage.text()).toBe('Hello from the first line of sw.js');
   expect(consoleMessage.type()).toBe('log');
+});
+
+test.describe('WebUI navigation', () => {
+  const isEdge = (channel: string | undefined) => !!channel?.startsWith('msedge');
+  const gotoError = (page: Page, url: string) => page.goto(url).then(() => '', e => e.message);
+
+  test('should refuse WebUI pages that crash the browser in an isolated context', async ({ browser, page, channel }) => {
+    test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41935' });
+    test.skip(isEdge(channel), 'Edge only disallows chrome://history');
+
+    const hosts = ['apps', 'extensions', 'help', 'history', 'password-manager', 'settings'];
+    for (const url of [...hosts.map(host => `chrome://${host}`), 'chrome://extensions/', 'chrome://settings/help', 'chrome://SETTINGS', 'chrome:settings', 'chrome:///settings', 'view-source:chrome://settings'])
+      expect(await gotoError(page, url)).toContain(`Cannot navigate to "${url}"`);
+    // The refusal only matters because it keeps the browser process alive.
+    expect(browser.isConnected()).toBe(true);
+    expect(await page.evaluate(() => 1 + 1)).toBe(2);
+  });
+
+  test('should refuse WebUI pages that crash Edge in an isolated context', async ({ browser, page, channel }) => {
+    test.skip(!isEdge(channel), 'Edge has its own list of pages disallowed in InPrivate');
+
+    for (const url of ['edge://history', 'chrome://history', 'view-source:edge://history'])
+      expect(await gotoError(page, url)).toContain(`Cannot navigate to "${url}"`);
+    // Edge does allow these in InPrivate, so they must not be refused.
+    for (const url of ['edge://settings', 'edge://extensions'])
+      expect(await gotoError(page, url)).not.toContain('Cannot navigate to');
+    expect(browser.isConnected()).toBe(true);
+  });
+
+  test('should navigate to WebUI pages that work in an isolated context', async ({ page, headless }) => {
+    test.skip(headless, 'WebUI pages are not available in headless');
+
+    const response = await page.goto('chrome://version');
+    expect(response.status()).toBe(200);
+  });
+
+  test('should navigate to any WebUI page in a persistent context', async ({ browserType, createUserDataDir, headless }) => {
+    test.skip(headless, 'WebUI pages are not available in headless');
+
+    const context = await browserType.launchPersistentContext(await createUserDataDir());
+    try {
+      const page = await context.newPage();
+      // Committing the navigation is all this asserts - waiting for the WebUI to load is slow and beside the point.
+      const response = await page.goto('chrome://extensions', { waitUntil: 'commit' });
+      expect(response.status()).toBe(200);
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+test('should fire dialogclosed event when dialog is closed out of band', async ({ page }) => {
+  // Establish the CDP session up front: creating one while a dialog is blocking the page hangs.
+  const client = await page.context().newCDPSession(page);
+  await client.send('Page.enable');
+  const dialogPromise = page.waitForEvent('dialog');
+  const closedPromise = page.waitForEvent('dialogclosed');
+  const evaluatePromise = page.evaluate(() => alert('yo'));
+  const dialog = await dialogPromise;
+  // Handle the dialog out of band, similar to the user closing it in the headed browser.
+  await client.send('Page.handleJavaScriptDialog', { accept: true });
+  expect(await closedPromise).toBe(dialog);
+  await evaluatePromise;
+});
+
+browserTest('should not leak service worker session after context close', async ({ browser, server, toImpl }) => {
+  browserTest.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43009' });
+  const sessions: Map<string, unknown> = toImpl(browser)._connection._sessions;
+  const sessionCount = sessions.size;
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await Promise.all([
+    context.waitForEvent('serviceworker'),
+    page.goto(server.PREFIX + '/serviceworkers/empty/sw.html'),
+  ]);
+  await context.close();
+  await expect.poll(() => sessions.size).toBe(sessionCount);
 });

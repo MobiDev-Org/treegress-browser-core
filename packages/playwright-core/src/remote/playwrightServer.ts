@@ -14,18 +14,19 @@
  * limitations under the License.
  */
 
+import { Semaphore } from '@isomorphic/semaphore';
+import { DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT } from '@isomorphic/time';
+import { WSServer } from '@utils/wsServer';
+import { wrapInASCIIBox } from '@utils/ascii';
+import { SocksProxy } from '@utils/socksProxy';
+import { debugLogger } from '@utils/debugLogger';
+import { isUnderTest } from '@utils/debug';
+import { getPlaywrightVersion } from '../server/userAgent';
 import { PlaywrightConnection, PlaywrightInitializeResult } from './playwrightConnection';
 import { WebSocketServerTransport } from './serverTransport';
 import { createPlaywright } from '../server/playwright';
-import { Semaphore } from '../utils/isomorphic/semaphore';
-import { DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT } from '../utils/isomorphic/time';
-import { WSServer } from '../server/utils/wsServer';
-import { wrapInASCIIBox } from '../server/utils/ascii';
-import { getPlaywrightVersion } from '../server/utils/userAgent';
-import { debugLogger, isUnderTest } from '../utils';
-import { SocksProxy } from '../server/utils/socksProxy';
 import { Browser } from '../server/browser';
-import { ProgressController } from '../server/progress';
+import { nullProgress, ProgressController } from '../server/progress';
 
 import type { AndroidDevice } from '../server/android/android';
 import type { Playwright } from '../server/playwright';
@@ -41,6 +42,7 @@ type ServerOptions = {
   preLaunchedAndroidDevice?: AndroidDevice;
   preLaunchedSocksProxy?: SocksProxy;
   artifactsDir?: string;
+  unsafe?: boolean;
 };
 
 export class PlaywrightServer {
@@ -82,6 +84,8 @@ export class PlaywrightServer {
           return { error: `HTTP/${request.httpVersion} 428 Precondition Required\r\n\r\n${uaError}` };
       },
 
+      isAllowedPathname: pathname => pathname === this._options.path,
+
       onHeaders: headers => {
         if (process.env.PWTEST_SERVER_WS_HEADERS)
           headers.push(process.env.PWTEST_SERVER_WS_HEADERS!);
@@ -103,12 +107,13 @@ export class PlaywrightServer {
             launchOptions.timeout = DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT;
         } catch (e) {
         }
-        if (this._options.artifactsDir)
-          launchOptions.artifactsDir = this._options.artifactsDir;
 
         const isExtension = this._options.mode === 'extension';
-        const allowFSPaths = isExtension;
-        launchOptions = filterLaunchOptions(launchOptions, allowFSPaths);
+        launchOptions = filterLaunchOptions(launchOptions, isExtension, !!this._options.unsafe);
+
+        // Always override artifacts dir with the one from server options.
+        if (this._options.artifactsDir)
+          launchOptions.artifactsDir = this._options.artifactsDir;
 
         if (isExtension) {
           const connectFilter = url.searchParams.get('connect');
@@ -202,7 +207,7 @@ export class PlaywrightServer {
       if (this._dontReuseBrowsers.has(b))
         continue;
       if (b.options.name === browserName && b.options.channel === launchOptions.channel)
-        await b.close({ reason: 'Connection terminated' });
+        await b.close(nullProgress, { reason: 'Connection terminated' });
     }
 
     if (!browser) {
@@ -223,7 +228,7 @@ export class PlaywrightServer {
         // keep around browser so it can be reused by the next connection.
         for (const context of browser.contexts()) {
           if (!context.pages().length)
-            await context.close({ reason: 'Connection terminated' });
+            await context.close(nullProgress, { reason: 'Connection terminated' });
         }
       }
     };
@@ -257,7 +262,7 @@ export class PlaywrightServer {
     // In pre-launched mode, keep only the pre-launched browser.
     for (const b of this._playwright.allBrowsers()) {
       if (b !== browser)
-        await b.close({ reason: 'Connection terminated' });
+        await b.close(nullProgress, { reason: 'Connection terminated' });
     }
 
     return {
@@ -297,7 +302,7 @@ export class PlaywrightServer {
       socksProxy,
       denyLaunch: true,
       dispose: async () => {
-        await browser.close({ reason: 'Connection terminated' });
+        await browser.close(nullProgress, { reason: 'Connection terminated' });
         socksProxy?.close();
       },
     };
@@ -316,6 +321,10 @@ export class PlaywrightServer {
 
   async close() {
     await this._wsServer.close();
+    // Close all browsers that were launched by this server (e.g. in reuse mode)
+    // to avoid leaking browser processes that may hold connections to test servers.
+    for (const browser of this._playwright.allBrowsers())
+      await browser.close(nullProgress, { reason: 'Server closed' });
   }
 }
 
@@ -356,21 +365,22 @@ function launchOptionsHash(options: LaunchOptionsWithTimeout) {
   return JSON.stringify(copy);
 }
 
-function filterLaunchOptions(options: LaunchOptionsWithTimeout, allowFSPaths: boolean): LaunchOptionsWithTimeout {
+function filterLaunchOptions(options: LaunchOptionsWithTimeout, isExtension: boolean, unsafe: boolean): LaunchOptionsWithTimeout {
+  const allowUnsafe = isExtension || unsafe;
   return {
     channel: options.channel,
-    args: options.args,
-    ignoreAllDefaultArgs: options.ignoreAllDefaultArgs,
-    ignoreDefaultArgs: options.ignoreDefaultArgs,
+    args: allowUnsafe ? options.args : undefined,
+    ignoreAllDefaultArgs: allowUnsafe ? options.ignoreAllDefaultArgs : undefined,
+    ignoreDefaultArgs: allowUnsafe ? options.ignoreDefaultArgs : undefined,
     timeout: options.timeout,
     headless: options.headless,
     proxy: options.proxy,
-    chromiumSandbox: options.chromiumSandbox,
-    firefoxUserPrefs: options.firefoxUserPrefs,
+    chromiumSandbox: allowUnsafe ? options.chromiumSandbox : undefined,
+    firefoxUserPrefs: (isUnderTest() || allowUnsafe) ? options.firefoxUserPrefs : undefined,
     slowMo: options.slowMo,
-    executablePath: (isUnderTest() || allowFSPaths) ? options.executablePath : undefined,
-    downloadsPath: allowFSPaths ? options.downloadsPath : undefined,
-    artifactsDir: (isUnderTest() || allowFSPaths) ? options.artifactsDir : undefined,
+    executablePath: (isUnderTest() || allowUnsafe) ? options.executablePath : undefined,
+    downloadsPath: (isUnderTest() || isExtension) ? options.downloadsPath : undefined,
+    artifactsDir: (isUnderTest() || isExtension) ? options.artifactsDir : undefined,
   };
 }
 

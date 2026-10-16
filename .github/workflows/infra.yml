@@ -10,18 +10,15 @@ on:
       - main
       - release-*
 
-env:
-  ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-
 jobs:
   doc-and-lint:
     name: "docs & lint"
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/setup-node@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: 20
+        node-version: lts/*
     - run: npm ci
     - run: npm run build
     - run: npx playwright install --with-deps
@@ -40,17 +37,17 @@ jobs:
     name: "Lint snippets"
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/setup-node@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: 20
-    - uses: actions/setup-python@v6
+        node-version: lts/*
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
-    - uses: actions/setup-dotnet@v5
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         dotnet-version: 8.0.x
-    - uses: actions/setup-java@v5
+    - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
       with:
         distribution: 'zulu'
         java-version: '21'

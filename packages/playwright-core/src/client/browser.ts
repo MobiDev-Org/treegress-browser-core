@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
+
 import { Artifact } from './artifact';
 import { BrowserContext, prepareBrowserContextParams } from './browserContext';
 import { CDPSession } from './cdpSession';
@@ -21,12 +23,13 @@ import { ChannelOwner } from './channelOwner';
 import { isTargetClosedError } from './errors';
 import { Events } from './events';
 import { mkdirIfNeeded } from './fileUtils';
+import { kNoTimeout } from './timeoutSettings';
 
 import type { BrowserType } from './browserType';
 import type { Page } from './page';
 import type { BrowserContextOptions, LaunchOptions, Logger } from './types';
 import type * as api from '../../types/types';
-import type * as channels from '@protocol/channels';
+import type * as channels from './channels';
 
 export class Browser extends ChannelOwner<channels.BrowserChannel> implements api.Browser {
   readonly _contexts = new Set<BrowserContext>();
@@ -34,8 +37,7 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
   private _closedPromise: Promise<void>;
   _shouldCloseConnectionOnClose = false;
   _browserType!: BrowserType;
-  _options: LaunchOptions = {};
-  _userDataDir: string | undefined;
+  private _options: LaunchOptions = {};
   readonly _name: string;
   readonly _browserName: 'chromium' | 'webkit' | 'firefox';
   private _path: string | undefined;
@@ -74,14 +76,14 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
     for (const page of context.pages())
       page._onClose();
     context._onClose();
-    await this._channel.disconnectFromReusedContext({ reason });
+    await this._channel.disconnectFromReusedContext({ reason }, kNoTimeout);
   }
 
   async _innerNewContext(userOptions: BrowserContextOptions = {}, forReuse: boolean): Promise<BrowserContext> {
     const options = this._browserType._playwright.selectors._withSelectorOptions(userOptions);
     await this._instrumentation.runBeforeCreateBrowserContext(options);
-    const contextOptions = await prepareBrowserContextParams(this._platform, options);
-    const response = forReuse ? await this._channel.newContextForReuse(contextOptions) : await this._channel.newContext(contextOptions);
+    const contextOptions = await prepareBrowserContextParams(options);
+    const response = forReuse ? await this._channel.newContextForReuse(contextOptions, kNoTimeout) : await this._channel.newContext(contextOptions, kNoTimeout);
     const context = BrowserContext.from(response.context);
     if (forReuse)
       context._forReuse = true;
@@ -92,13 +94,12 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
     return context;
   }
 
-  _connectToBrowserType(browserType: BrowserType, browserOptions: LaunchOptions, logger: Logger | undefined, userDataDir?: string) {
+  _connectToBrowserType(browserType: BrowserType, browserOptions: LaunchOptions, logger: Logger | undefined) {
     // Note: when using connect(), `browserType` is different from `this._parent`.
     // This is why browser type is not wired up in the constructor,
     // and instead this separate method is called later on.
     this._browserType = browserType;
     this._options = browserOptions;
-    this._userDataDir = userDataDir;
     this._logger = logger;
     for (const context of this._contexts)
       this._setupBrowserContext(context);
@@ -111,11 +112,13 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
     // and will be configured later in `_connectToBrowserType`.
     if (this._browserType)
       this._setupBrowserContext(context);
+    this.emit(Events.Browser.Context, context);
   }
 
   private _setupBrowserContext(context: BrowserContext) {
     context._logger = this._logger;
     context.tracing._tracesDir = this._options.tracesDir;
+    context.request.tracing._tracesDir = this._options.tracesDir;
     this._browserType._contexts.add(context);
     this._browserType._playwright.selectors._contextsForSelectors.add(context);
     context.setDefaultTimeout(this._browserType._playwright._defaultContextTimeout);
@@ -130,12 +133,13 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
     return this._initializer.version;
   }
 
-  async _startServer(title: string, options: { wsPath?: string, workspaceDir?: string } = {}): Promise<{ wsEndpoint?: string, pipeName?: string }> {
-    return await this._channel.startServer({ title, ...options });
+  async bind(title: string, options: { workspaceDir?: string, metadata?: Record<string, any>, host?: string, port?: number } = {}): Promise<{ endpoint: string }> {
+    const { endpoint } = await this._channel.startServer({ title, ...options }, kNoTimeout);
+    return { endpoint };
   }
 
-  async _stopServer(): Promise<void> {
-    await this._channel.stopServer();
+  async unbind(): Promise<void> {
+    await this._channel.stopServer({}, kNoTimeout);
   }
 
   async newPage(options: BrowserContextOptions = {}): Promise<Page> {
@@ -153,21 +157,21 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
   }
 
   async newBrowserCDPSession(): Promise<api.CDPSession> {
-    return CDPSession.from((await this._channel.newBrowserCDPSession()).session);
+    return CDPSession.from((await this._channel.newBrowserCDPSession({}, kNoTimeout)).session);
   }
 
   async startTracing(page?: Page, options: { path?: string; screenshots?: boolean; categories?: string[]; } = {}) {
     this._path = options.path;
-    await this._channel.startTracing({ ...options, page: page ? page._channel : undefined });
+    await this._channel.startTracing({ ...options, page: page ? page._channel : undefined }, kNoTimeout);
   }
 
   async stopTracing(): Promise<Buffer> {
-    const artifact = Artifact.from((await this._channel.stopTracing()).artifact);
+    const artifact = Artifact.from((await this._channel.stopTracing({}, kNoTimeout)).artifact);
     const buffer = await artifact.readIntoBuffer();
     await artifact.delete();
     if (this._path) {
-      await mkdirIfNeeded(this._platform, this._path);
-      await this._platform.fs().promises.writeFile(this._path, buffer);
+      await mkdirIfNeeded(this._path);
+      await fs.promises.writeFile(this._path, buffer);
       this._path = undefined;
     }
     return buffer;
@@ -183,7 +187,7 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
       if (this._shouldCloseConnectionOnClose)
         this._connection.close();
       else
-        await this._channel.close(options);
+        await this._channel.close(options, kNoTimeout);
       await this._closedPromise;
     } catch (e) {
       if (isTargetClosedError(e))

@@ -19,9 +19,9 @@ import path from 'path';
 import { pathToFileURL } from 'url';
 
 import { playwrightTest as it, expect } from '../config/browserTest';
-import { formatCustomDomSnapshot } from '../../packages/playwright-core/src/tools/customDomSnapshotFormatter';
+import { formatCustomDomSnapshot } from '../../packages/playwright-core/src/tools/backend/customDomSnapshotFormatter';
 
-import type { AICustomDomSnapshotEnvelope, AICustomDomStableId, AICustomDomTreeNode } from '../../packages/playwright-core/src/utils/isomorphic/aiSnapshotTypes';
+import type { AICustomDomSnapshotEnvelope, AICustomDomStableId, AICustomDomTreeNode } from '../../packages/isomorphic/aiSnapshotTypes';
 
 it('should format the accessibility fixture with MCP-style enrichment', async ({ page }) => {
   const html = fs.readFileSync(path.join(__dirname, '../../debug-pages/accessibility-test.html'), 'utf8');
@@ -293,8 +293,7 @@ it('should surface high-signal class/data hints and form action/method through t
 
   await page.goto(target, { waitUntil: 'load' });
 
-  const snapshot = await (page as any)._snapshotForAI({ backend: 'custom-dom' });
-  const envelope: AICustomDomSnapshotEnvelope = snapshot.envelope;
+  const envelope: AICustomDomSnapshotEnvelope = await (page as any)._customDomSnapshot();
   const formatted = formatCustomDomSnapshot(envelope).snapshot;
 
   expect(formatted).not.toContain('[listens=');
@@ -315,8 +314,8 @@ it('should keep dynamically injected iframe content matched to the correct ifram
     return iframe?.contentDocument?.body?.textContent?.includes('I was dynamically injected!') ?? false;
   });
 
-  const snapshot = await (page as any)._snapshotForAI({ backend: 'custom-dom' });
-  const formatted = formatCustomDomSnapshot(snapshot.envelope).snapshot;
+  const envelope = await (page as any)._customDomSnapshot();
+  const formatted = formatCustomDomSnapshot(envelope).snapshot;
 
   const dynamicIframeBlock = extractIndentedBlock(formatted, /- iframe "Dynamically injected iframe"/);
   expect(dynamicIframeBlock).toContain('heading "I was dynamically injected!"');

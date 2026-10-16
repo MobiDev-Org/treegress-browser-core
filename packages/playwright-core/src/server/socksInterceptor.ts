@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -16,13 +16,13 @@
 
 import EventEmitter from 'events';
 
-import * as socks from './utils/socksProxy';
-import { ValidationError, findValidator } from '../protocol/validator';
-import { isUnderTest } from './utils/debug';
+import * as socks from '@utils/socksProxy';
+import { isUnderTest } from '@utils/debug';
+import { ValidationError, findValidator } from '@protocol/validator';
 
 import type { WebSocketTransport } from './transport';
-import type { ValidatorContext } from '../protocol/validator';
-import type * as channels from '@protocol/channels';
+import type { ValidatorContext } from '@protocol/validator';
+import type * as channels from '../client/channels'; // this file lives in server/, but since it runs via localUtils, client channels is still correct.
 
 export class SocksInterceptor {
   private _handler: socks.SocksProxyHandler;
@@ -44,17 +44,17 @@ export class SocksInterceptor {
             this._ids.add(id);
             const validator = findValidator('SocksSupport', prop, 'Params');
             params = validator(params, '', { tChannelImpl: tChannelForSocks, binary: 'toBase64', isUnderTest });
-            transport.send({ id, guid: this._socksSupportObjectGuid, method: prop, params, metadata: { stack: [], apiName: '', internal: true } } as any);
+            transport.send({ id, guid: this._socksSupportObjectGuid, method: prop, params, metadata: { stack: [], apiName: '', internal: true, timeout: 0 } } as any);
           } catch (e) {
           }
         };
       },
     }) as channels.SocksSupportChannel & EventEmitter;
-    this._handler.on(socks.SocksProxyHandler.Events.SocksConnected, (payload: socks.SocksSocketConnectedPayload) => this._channel.socksConnected(payload));
-    this._handler.on(socks.SocksProxyHandler.Events.SocksData, (payload: socks.SocksSocketDataPayload) => this._channel.socksData(payload));
-    this._handler.on(socks.SocksProxyHandler.Events.SocksError, (payload: socks.SocksSocketErrorPayload) => this._channel.socksError(payload));
-    this._handler.on(socks.SocksProxyHandler.Events.SocksFailed, (payload: socks.SocksSocketFailedPayload) => this._channel.socksFailed(payload));
-    this._handler.on(socks.SocksProxyHandler.Events.SocksEnd, (payload: socks.SocksSocketEndPayload) => this._channel.socksEnd(payload));
+    this._handler.on(socks.SocksProxyHandler.Events.SocksConnected, (payload: socks.SocksSocketConnectedPayload) => this._channel.socksConnected(payload, { signal: undefined, timeout: 0 }));
+    this._handler.on(socks.SocksProxyHandler.Events.SocksData, (payload: socks.SocksSocketDataPayload) => this._channel.socksData(payload, { signal: undefined, timeout: 0 }));
+    this._handler.on(socks.SocksProxyHandler.Events.SocksError, (payload: socks.SocksSocketErrorPayload) => this._channel.socksError(payload, { signal: undefined, timeout: 0 }));
+    this._handler.on(socks.SocksProxyHandler.Events.SocksFailed, (payload: socks.SocksSocketFailedPayload) => this._channel.socksFailed(payload, { signal: undefined, timeout: 0 }));
+    this._handler.on(socks.SocksProxyHandler.Events.SocksEnd, (payload: socks.SocksSocketEndPayload) => this._channel.socksEnd(payload, { signal: undefined, timeout: 0 }));
     this._channel.on('socksRequested', payload => this._handler.socketRequested(payload));
     this._channel.on('socksClosed', payload => this._handler.socketClosed(payload));
     this._channel.on('socksData', payload => this._handler.sendSocketData(payload));

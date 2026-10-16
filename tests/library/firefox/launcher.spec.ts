@@ -17,9 +17,9 @@
 import fs from 'fs';
 import { playwrightTest as it, expect } from '../../config/browserTest';
 import { TestServer } from '../../config/testserver';
+import { inheritAndCleanEnv } from '../../config/utils';
 
 it('should pass firefox user preferences', async ({ browserType, mode }) => {
-  it.skip(mode.startsWith('service'));
   const browser = await browserType.launch({
     firefoxUserPrefs: {
       'network.proxy.type': 1,
@@ -34,7 +34,6 @@ it('should pass firefox user preferences', async ({ browserType, mode }) => {
 });
 
 it('should pass firefox user preferences in persistent', async ({ mode, launchPersistent }) => {
-  it.skip(mode.startsWith('service'));
   const { page } = await launchPersistent({
     firefoxUserPrefs: {
       'network.proxy.type': 1,
@@ -47,8 +46,6 @@ it('should pass firefox user preferences in persistent', async ({ mode, launchPe
 });
 
 it('should support custom firefox policies', async ({ browserType, mode, asset, loopback }, testInfo) => {
-  it.skip(mode.startsWith('service'));
-
   const policies = {
     'policies': {
       'Certificates': {
@@ -59,7 +56,7 @@ it('should support custom firefox policies', async ({ browserType, mode, asset, 
   const policiesPath = testInfo.outputPath('policies.json');
   await fs.promises.writeFile(policiesPath, JSON.stringify(policies));
 
-  const port = 48112;
+  const port = 13122;
   const server = new TestServer(asset(''), port, loopback, {
     key: await fs.promises.readFile(asset('client-certificates/client/localhost/localhost.key')),
     cert: await fs.promises.readFile(asset('client-certificates/client/localhost/localhost.pem')),
@@ -67,7 +64,7 @@ it('should support custom firefox policies', async ({ browserType, mode, asset, 
   await server.waitUntilReady();
 
   const browser = await browserType.launch({
-    env: { ...process.env, 'PLAYWRIGHT_FIREFOX_POLICIES_JSON': policiesPath },
+    env: inheritAndCleanEnv({ 'PLAYWRIGHT_FIREFOX_POLICIES_JSON': policiesPath }),
   });
 
   const page = await browser.newPage();

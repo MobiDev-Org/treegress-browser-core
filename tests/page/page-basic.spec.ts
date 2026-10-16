@@ -85,6 +85,18 @@ it('page.title should return the page title', async ({ page, server }) => {
   expect(await page.title()).toBe('Woof-Woof');
 });
 
+it('page.title should not throw during navigation', async ({ page, server }) => {
+  await page.setContent('<title>hello</title>');
+  const promise = page.goto(server.PREFIX + '/title.html');
+  const [titleOrError] = await Promise.all([
+    page.title().catch(e => e),
+    promise,
+  ]);
+  expect(typeof titleOrError).toBe('string');
+  expect(titleOrError).toMatch(/^(hello|Loading http.*title.html||Woof-Woof)$/);
+  await expect(page).toHaveTitle('Woof-Woof');
+});
+
 it('page.close should work with window.close', async function({ page }) {
   const newPagePromise = page.waitForEvent('popup');
   await page.evaluate(() => window['newPage'] = window.open('about:blank'));
@@ -139,8 +151,10 @@ it('should have sane user agent', async ({ page, browserName, isElectron, isAndr
   expect(part3.startsWith('AppleWebKit/')).toBe(true);
   expect(part4).toBe('KHTML, like Gecko');
   // 5th part encodes real browser name and engine version.
-  const [engine, browser] = part5.split(' ');
-  expect(browser.startsWith('Safari/')).toBe(true);
+  const tokens = part5.split(' ');
+  const engine = tokens[0];
+  const browser = tokens.find(t => t.startsWith('Safari/'));
+  expect(browser?.startsWith('Safari/')).toBe(true);
   if (browserName === 'chromium')
     expect(engine.includes('Chrome/')).toBe(true);
   else
@@ -168,7 +182,9 @@ it('frame.press should work', async ({ page, server }) => {
   expect(await frame.evaluate(() => document.querySelector('textarea').value)).toBe('a');
 });
 
-it('has navigator.webdriver set to true', async ({ page }) => {
+it('has navigator.webdriver set to true', async ({ page, isAndroid }) => {
+  it.fixme(isAndroid);
+
   expect(await page.evaluate(() => navigator.webdriver)).toBe(true);
 });
 

@@ -40,7 +40,7 @@ test('should show selected test in sources', async ({ runUITest }) => {
         ◯ third
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts" [expanded]:
         - group:
@@ -103,7 +103,7 @@ test('should show top-level errors in file', async ({ runUITest }) => {
         ◯ third
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts"
       - treeitem "[icon-circle-outline] b.test.ts" [expanded]:
@@ -138,7 +138,7 @@ test('should show syntax errors in file', async ({ runUITest }) => {
       ◯ a.test.ts
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts"
   `);
@@ -207,7 +207,7 @@ test('should keep showing source when test is pending', async ({ runUITest }, te
 
   await page.getByTitle('Run all').click();
   await page.getByTestId('test-tree').getByText('second').click();
-  await expect(page.getByTestId('status-line')).toHaveText('Running 1/3 passed (33%)');
+  await expect(page.getByTestId('status-line')).toHaveText('Running 1/3 (33%) — 1 passed');
   await expect(page.getByTestId('source-code').locator('.source-tab-file-name')).toHaveText('a.test.ts');
   await expect(page.locator('.CodeMirror .source-line-running')).toHaveText(`7      test('second', () => {});`);
 });

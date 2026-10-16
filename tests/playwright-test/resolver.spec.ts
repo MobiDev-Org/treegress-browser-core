@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
+import path from 'path';
+
 import { test, expect } from './playwright-test-fixtures';
 
 test('should print tsconfig parsing error', async ({ runInlineTest }) => {
@@ -587,6 +590,137 @@ test('should resolve paths relative to the originating config when extending and
   expect(result.exitCode).toBe(0);
 });
 
+test('should resolve extends from an explicit node_modules subpath', async ({ runInlineTest }) => {
+  // The @tsconfig/* base packages are commonly referenced by an explicit subpath,
+  // e.g. "extends": "@tsconfig/node18/tsconfig.json". Playwright resolves such a
+  // value through the config's node_modules when it is not found relative to the
+  // config directory. Removing that fallback would break these configs.
+  const result = await runInlineTest({
+    'node_modules/@my/tsconfig-base/tsconfig.json': `{
+      "compilerOptions": {
+        "paths": {
+          "util/*": ["./mapped/*"],
+        },
+      },
+    }`,
+    'tsconfig.json': `{
+      "extends": "@my/tsconfig-base/tsconfig.json",
+      "compilerOptions": {
+        "baseUrl": ".",
+      },
+    }`,
+    'a.test.ts': `
+      import { foo } from 'util/file';
+      import { test, expect } from '@playwright/test';
+      test('test', () => {
+        expect(foo).toBe('foo');
+      });
+    `,
+    'mapped/file.ts': `
+      export const foo = 'foo';
+    `,
+  });
+
+  expect(result.passed).toBe(1);
+  expect(result.exitCode).toBe(0);
+});
+
+test('should ignore extends bare specifier resolvable only via node_modules walk-up', async ({ runInlineTest }, testInfo) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41989' });
+
+  const baseDir = testInfo.outputPath();
+  const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
+  // npm symlinks "file:" dependencies into node_modules. The realpath escapes node_modules,
+  // so the dependency goes through per-file tsconfig discovery.
+  await fs.promises.mkdir(path.join(baseDir, 'node_modules'), { recursive: true });
+  await fs.promises.symlink(path.join(baseDir, 'dep-src'), path.join(baseDir, 'node_modules', 'dep'), symlinkType);
+
+  const result = await runInlineTest({
+    'package.json': JSON.stringify({ name: 'repro', private: true, dependencies: { 'dep': 'file:./dep-src', 'foo': '1.0.0' } }),
+    // "foo" is hoisted to the root node_modules and is absent from dep's own node_modules.
+    // tsc resolves the "extends" below by walking up node_modules from dep-src.
+    'node_modules/foo/package.json': JSON.stringify({ name: 'foo', version: '1.0.0', main: 'index.js' }),
+    'node_modules/foo/index.js': `module.exports = 'foo';`,
+    'node_modules/foo/tsconfig.json': `{ "compilerOptions": {} }`,
+    'dep-src/package.json': JSON.stringify({ name: 'dep', version: '1.0.0', main: 'index.js' }),
+    'dep-src/tsconfig.json': `{ "extends": "foo/tsconfig.json" }`,
+    'dep-src/index.js': `
+      require('foo');
+      module.exports = 'dep';
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      const dep = require('dep');
+      test('test', () => {
+        expect(dep).toBe('dep');
+      });
+    `,
+  });
+
+  expect(result.passed).toBe(1);
+  expect(result.exitCode).toBe(0);
+});
+
+test('should ignore extends subpath resolvable only via package.json exports', async ({ runInlineTest }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41989' });
+
+  const result = await runInlineTest({
+    'package.json': JSON.stringify({ name: 'test-project' }),
+    // The "./next" subpath only exists in the exports map, there is no "next.json" file.
+    'node_modules/@repo/tsconfig/package.json': JSON.stringify({ name: '@repo/tsconfig', version: '1.0.0', exports: { './next': './tsconfig.next.json' } }),
+    'node_modules/@repo/tsconfig/tsconfig.next.json': `{ "compilerOptions": {} }`,
+    'tsconfig.json': `{ "extends": "@repo/tsconfig/next" }`,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('test', () => {});
+    `,
+  });
+
+  expect(result.passed).toBe(1);
+  expect(result.exitCode).toBe(0);
+});
+
+test('should ignore extends bare package name resolvable only via package.json exports', async ({ runInlineTest }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41989' });
+
+  const result = await runInlineTest({
+    'package.json': JSON.stringify({ name: 'test-project' }),
+    'node_modules/typescript-config-silverwind/package.json': JSON.stringify({ name: 'typescript-config-silverwind', version: '1.0.0', exports: './tsconfig.json' }),
+    'node_modules/typescript-config-silverwind/tsconfig.json': `{ "compilerOptions": {} }`,
+    'tsconfig.json': `{ "extends": "typescript-config-silverwind" }`,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('test', () => {});
+    `,
+  });
+
+  expect(result.passed).toBe(1);
+  expect(result.exitCode).toBe(0);
+});
+
+test('should ignore tsconfig references pointing to a directory', async ({ runInlineTest }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41998' });
+
+  const result = await runInlineTest({
+    // tsc resolves a directory-form reference to "./sub/tsconfig.json",
+    // as written by "tsc --build" and "nx sync".
+    'tsconfig.json': `{
+      "compilerOptions": { "composite": true },
+      "references": [{ "path": "./sub" }],
+    }`,
+    'sub/tsconfig.json': `{
+      "compilerOptions": { "composite": true },
+    }`,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('test', () => {});
+    `,
+  });
+
+  expect(result.passed).toBe(1);
+  expect(result.exitCode).toBe(0);
+});
+
 test('should respect tsconfig project references', async ({ runInlineTest }) => {
   test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/29256' });
 
@@ -817,7 +951,8 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"]
           }
         }
       `,
@@ -861,7 +996,8 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"]
           }
         }
       `,
@@ -899,7 +1035,9 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"],
+            "ignoreDeprecations": "6.0"
           }
         }
       `,
@@ -946,7 +1084,9 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"],
+            "ignoreDeprecations": "6.0"
           },
         }
       `,
@@ -996,7 +1136,8 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"]
           },
         }
       `,
@@ -1038,7 +1179,8 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"]
           },
         }
       `,
@@ -1082,7 +1224,9 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"],
+            "ignoreDeprecations": "6.0"
           }
         }
       `,
@@ -1134,7 +1278,9 @@ test.describe('directory imports', () => {
             "moduleResolution": "bundler",
             "module": "preserve",
             "noEmit": true,
-            "noImplicitAny": true
+            "noImplicitAny": true,
+            "types": ["node"],
+            "ignoreDeprecations": "6.0"
           }
         }
       `,

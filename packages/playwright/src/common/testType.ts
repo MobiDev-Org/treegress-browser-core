@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-import { errors } from 'playwright-core';
-import { getPackageManagerExecCommand, monotonicTime, raceAgainstDeadline, currentZone } from 'playwright-core/lib/utils';
+import { monotonicTime } from '@isomorphic/time';
+import { raceAgainstDeadline } from '@isomorphic/timeoutRunner';
+import { getPackageManagerExecCommand } from '@utils/env';
+import { currentZone } from '@utils/zones';
 
-import { currentTestInfo, currentlyLoadingFileSuite, setCurrentlyLoadingFileSuite } from './globals';
+import { currentTestInfo, currentlyLoadingFileSuite, setCurrentlyLoadingFileSuite } from '../globals';
 import { Suite, TestCase } from './test';
 import { expect } from '../matchers/expect';
 import { wrapFunctionWithLocation } from '../transform/transform';
@@ -56,6 +58,7 @@ export class TestTypeImpl {
     test.skip = wrapFunctionWithLocation(this._modifier.bind(this, 'skip'));
     test.fixme = wrapFunctionWithLocation(this._modifier.bind(this, 'fixme'));
     test.fail = wrapFunctionWithLocation(this._modifier.bind(this, 'fail'));
+    test.abort = wrapFunctionWithLocation(this._abort.bind(this));
     test.fail.only = wrapFunctionWithLocation(this._createTest.bind(this, 'fail.only'));
     test.slow = wrapFunctionWithLocation(this._modifier.bind(this, 'slow'));
     test.setTimeout = wrapFunctionWithLocation(this._setTimeout.bind(this));
@@ -82,6 +85,7 @@ export class TestTypeImpl {
         `- You are calling ${title} in a file that is imported by the configuration file.`,
         `- You have two different versions of @playwright/test. This usually happens`,
         `  when one of the dependencies in your package.json depends on @playwright/test.`,
+        `- You are calling ${title} from an async test.describe() block. Only sync ones are supported.`,
       ].join('\n'));
     }
     return suite;
@@ -108,6 +112,7 @@ export class TestTypeImpl {
     test._requireFile = suite._requireFile;
     test.annotations.push(...validatedDetails.annotations);
     test._tags.push(...validatedDetails.tags);
+    test._locks.push(...validatedDetails.locks);
     suite._addTest(test);
 
     if (type === 'only' || type === 'fail.only')
@@ -148,6 +153,7 @@ export class TestTypeImpl {
     child.location = location;
     child._staticAnnotations.push(...validatedDetails.annotations);
     child._tags.push(...validatedDetails.tags);
+    child._locks.push(...validatedDetails.locks);
     suite._addSuite(child);
 
     if (type === 'only' || type === 'serial.only' || type === 'parallel.only')
@@ -183,11 +189,14 @@ export class TestTypeImpl {
     suite._hooks.push({ type: name, fn: fn!, title, location });
   }
 
-  private _configure(location: Location, options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number }) {
+  private _configure(location: Location, options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number, lock?: string | string[] }) {
     throwIfRunningInsideJest();
     const suite = this._currentSuite(location, `test.describe.configure()`);
     if (!suite)
       return;
+
+    if (options.lock !== undefined)
+      suite._locks.push(...validateTestDetails({ lock: options.lock }, location).locks);
 
     if (options.timeout !== undefined)
       suite._timeout = options.timeout;
@@ -241,6 +250,13 @@ export class TestTypeImpl {
     testInfo._modifier(type, location, modifierArgs as [any, any]);
   }
 
+  private _abort(location: Location, message?: string) {
+    const testInfo = currentTestInfo();
+    if (!testInfo)
+      throw new Error(`test.abort() can only be called inside a test or fixture`);
+    testInfo._abort(location, message);
+  }
+
   private _setTimeout(location: Location, timeout: number) {
     const suite = currentlyLoadingFileSuite();
     if (suite) {
@@ -261,17 +277,18 @@ export class TestTypeImpl {
     suite._use.push({ fixtures, location });
   }
 
-  async _step<T>(expectation: 'pass'|'skip', title: string, body: (step: TestStepInfo) => T | Promise<T>, options: {box?: boolean, location?: Location, timeout?: number } = {}): Promise<T> {
+  async _step<T>(expectation: 'pass'|'skip', title: string, body: (step: TestStepInfo) => T | Promise<T>, options: {box?: boolean, location?: Location, timeout?: number, params?: Record<string, any>, subtitle?: string } = {}): Promise<T> {
     const testInfo = currentTestInfo();
     if (!testInfo)
       throw new Error(`test.step() can only be called from a test`);
-    const step = testInfo._addStep({ category: 'test.step', title, location: options.location, box: options.box });
+    await testInfo._onUserStepBegin?.(title);
+    const step = testInfo._addStep({ category: 'test.step', title, subtitle: options.subtitle, stack: options.location ? [options.location] : undefined, box: options.box, params: options.params });
     return await currentZone().with('stepZone', step).run(async () => {
       try {
         let result: Awaited<ReturnType<typeof raceAgainstDeadline<T>>> | undefined = undefined;
         result = await raceAgainstDeadline(async () => {
           try {
-            return await step.info._runStepBody(expectation === 'skip', body, step.location);
+            return await step.info._runStepBody(expectation === 'skip', body, step.stack[0]);
           } catch (e) {
             // If the step timed out, the test fixtures will tear down, which in turn
             // will abort unfinished actions in the step body. Record such errors here.
@@ -281,12 +298,14 @@ export class TestTypeImpl {
           }
         }, options.timeout ? monotonicTime() + options.timeout : 0);
         if (result.timedOut)
-          throw new errors.TimeoutError(`Step timeout of ${options.timeout}ms exceeded.`);
+          throw new TimeoutError(`Step timeout of ${options.timeout}ms exceeded.`);
         step.complete({});
         return result.result;
       } catch (error) {
         step.complete({ error });
         throw error;
+      } finally {
+        await testInfo._onUserStepEnd?.();
       }
     });
   }
@@ -323,4 +342,11 @@ export function mergeTests(...tests: TestType<any, any>[]) {
     result = new TestTypeImpl([...result.fixtures, ...newFixtures]);
   }
   return result.test;
+}
+
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TimeoutError';
+  }
 }

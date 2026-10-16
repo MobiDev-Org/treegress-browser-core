@@ -14,12 +14,15 @@
  * limitations under the License.
  */
 
+import { takeBranchCounters, takeCounters } from '@isomorphic/istanbulCoverage';
 import { SnapshotServer } from '@isomorphic/trace/snapshotServer';
 import { TraceLoader } from '@isomorphic/trace/traceLoader';
 import { TraceVersionError } from '@isomorphic/trace/traceModernizer';
 
 import { Progress, splitProgress } from './progress';
 import { FetchTraceLoaderBackend, ZipTraceLoaderBackend } from './traceLoaderBackends';
+
+import type { IstanbulCoverage } from '@isomorphic/istanbulCoverage';
 
 type Client = {
   id: string;
@@ -111,7 +114,7 @@ async function innerLoadTrace(traceUri: string, progress: Progress): Promise<Loa
     // Allow 10% to hop from sw to page.
     const [fetchProgress, unzipProgress] = splitProgress(progress, [0.5, 0.4, 0.1]);
     const backend = isLiveTrace(traceUri) || traceUri.endsWith('traces.dir') ? new FetchTraceLoaderBackend(traceUri) : new ZipTraceLoaderBackend(traceUri, fetchProgress);
-    await traceLoader.load(backend, unzipProgress);
+    await traceLoader.load(backend, undefined, unzipProgress);
   } catch (error: any) {
     // eslint-disable-next-line no-console
     console.error(error);
@@ -128,7 +131,7 @@ async function innerLoadTrace(traceUri: string, progress: Progress): Promise<Loa
 
     throw new Error(message);
   }
-  const snapshotServer = new SnapshotServer(traceLoader.storage(), sha1 => traceLoader.resourceForSha1(sha1));
+  const snapshotServer = new SnapshotServer(traceLoader.storage(), file => traceLoader.resourceEntry(file));
   return { traceLoader, snapshotServer };
 }
 
@@ -152,11 +155,14 @@ async function doFetch(event: FetchEvent): Promise<Response> {
   if (relativePath === '/ping')
     return new Response(null, { status: 200 });
 
+  if (relativePath === '/coverage')
+    return new Response(JSON.stringify(takeCoverage()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
   const isNavigation = !!event.resultingClientId;
   const client = event.clientId ? await self.clients.get(event.clientId) : undefined;
 
-  if (isNavigation && !relativePath?.startsWith('/sha1/')) {
-    // Navigation request. Download is a /sha1/ navigation, ignore them here.
+  if (isNavigation && !relativePath?.startsWith('/file/')) {
+    // Navigation request. Download is a /file/ navigation, ignore them here.
 
     // Snapshot iframe navigation request.
     if (relativePath?.startsWith('/snapshot/')) {
@@ -164,10 +170,10 @@ async function doFetch(event: FetchEvent): Promise<Response> {
       const { errorResponse, loadedTrace } = await loadTraceOrError(event.resultingClientId!, url, noopProgress);
       if (errorResponse)
         return errorResponse;
-      const pageOrFrameId = relativePath.substring('/snapshot/'.length);
-      const response = loadedTrace!.snapshotServer.serveSnapshot(pageOrFrameId, url.searchParams, url.href);
+      const callId = decodeURIComponent(relativePath.substring('/snapshot/'.length));
+      const response = loadedTrace!.snapshotServer.serveSnapshot(callId, url.searchParams, url.href);
       if (isDeployedAsHttps)
-        response.headers.set('Content-Security-Policy', 'upgrade-insecure-requests');
+        response.headers.append('Content-Security-Policy', 'upgrade-insecure-requests');
       return response;
     }
 
@@ -196,7 +202,7 @@ async function doFetch(event: FetchEvent): Promise<Response> {
   }
 
   // These commands all require a loaded trace.
-  if (relativePath === '/contexts' || relativePath.startsWith('/snapshotInfo/') || relativePath.startsWith('/closest-screenshot/') || relativePath.startsWith('/sha1/')) {
+  if (relativePath === '/contexts' || relativePath.startsWith('/snapshotInfo/') || relativePath.startsWith('/closest-screenshot/') || relativePath.startsWith('/file/')) {
     if (!client)
       return new Response('Sub-resource without a client', { status: 500 });
 
@@ -212,17 +218,17 @@ async function doFetch(event: FetchEvent): Promise<Response> {
     }
 
     if (relativePath.startsWith('/snapshotInfo/')) {
-      const pageOrFrameId = relativePath.substring('/snapshotInfo/'.length);
-      return loadedTrace!.snapshotServer.serveSnapshotInfo(pageOrFrameId, url.searchParams);
+      const callId = decodeURIComponent(relativePath.substring('/snapshotInfo/'.length));
+      return loadedTrace!.snapshotServer.serveSnapshotInfo(callId, url.searchParams);
     }
 
     if (relativePath.startsWith('/closest-screenshot/')) {
-      const pageOrFrameId = relativePath.substring('/closest-screenshot/'.length);
-      return loadedTrace!.snapshotServer.serveClosestScreenshot(pageOrFrameId, url.searchParams);
+      const callId = decodeURIComponent(relativePath.substring('/closest-screenshot/'.length));
+      return loadedTrace!.snapshotServer.serveClosestScreenshot(callId, url.searchParams);
     }
 
-    if (relativePath.startsWith('/sha1/')) {
-      const blob = await loadedTrace!.traceLoader.resourceForSha1(relativePath.slice('/sha1/'.length));
+    if (relativePath.startsWith('/file/')) {
+      const blob = await loadedTrace!.traceLoader.resourceEntry(relativePath.slice('/file/'.length));
       if (blob)
         return new Response(blob, { status: 200, headers: downloadHeaders(url.searchParams) });
       return new Response(null, { status: 404 });
@@ -231,6 +237,18 @@ async function doFetch(event: FetchEvent): Promise<Response> {
 
   // Pass through to the server for file requests and static content.
   return fetch(event.request);
+}
+
+// Reading resets the counters, so every response is a delta.
+function takeCoverage(): IstanbulCoverage {
+  const coverage: IstanbulCoverage = (self as any).__coverage__ || {};
+  const result = JSON.parse(JSON.stringify(coverage));
+  for (const file of Object.values(coverage)) {
+    takeCounters(file.s);
+    takeCounters(file.f);
+    takeBranchCounters(file.b);
+  }
+  return result;
 }
 
 function downloadHeaders(searchParams: URLSearchParams): Headers | undefined {

@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-import { assert } from '../../utils/isomorphic/assert';
-import { eventsHelper } from '../utils/eventsHelper';
-import { rewriteErrorMessage } from '../../utils/isomorphic/stackTrace';
+import { assert } from '@isomorphic/assert';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { eventsHelper } from '@utils/eventsHelper';
 import * as dialog from '../dialog';
 import * as dom from '../dom';
 import * as frames from '../frames';
@@ -31,21 +31,39 @@ import { createHandle, CRExecutionContext } from './crExecutionContext';
 import { RawKeyboardImpl, RawMouseImpl, RawTouchscreenImpl } from './crInput';
 import { CRNetworkManager } from './crNetworkManager';
 import { CRPDF } from './crPdf';
-import { exceptionToError, releaseObject, toConsoleMessageLocation } from './crProtocolHelper';
+import { exceptionToError, releaseObject, stackTraceToLocation } from './crProtocolHelper';
 import { platformToFontFamilies } from './defaultFontFamilies';
 import { TargetClosedError } from '../errors';
 import { isSessionClosedError } from '../protocolError';
+import { startAutomaticVideoRecording } from '../videoRecorder';
+import { nullProgress } from '../progress';
 
 import type { CRSession } from './crConnection';
 import type { Protocol } from './protocol';
-import type { RegisteredListener } from '../utils/eventsHelper';
+import type { RegisteredListener } from '@utils/eventsHelper';
 import type { InitScript, PageDelegate } from '../page';
 import type { Progress } from '../progress';
 import type * as types from '../types';
-import type * as channels from '@protocol/channels';
+import type * as channels from '../channels';
 
 
 export type WindowBounds = { top?: number, left?: number, width?: number, height?: number };
+
+// Browsers disallow these WebUI hosts in off-the-record profiles and redirect them to the original
+// profile, which crashes when the profile was created over CDP. Edge allows most of them in InPrivate.
+// See https://github.com/microsoft/playwright/issues/41935.
+const kCrashingWebUIHosts = {
+  chromium: new Set(['apps', 'extensions', 'help', 'history', 'password-manager', 'settings']),
+  edge: new Set(['history']),
+};
+
+// Chromium canonicalizes WebUI urls as standard ones, so "VIEW-SOURCE:Chrome:Settings" ends up
+// being "chrome://settings/".
+function webUIHost(url: string): string {
+  const match = /^(?:view-source:)?(?:chrome|edge):\/*([^/?#]+)/i.exec(url);
+  const authority = match ? `http://${match[1]}` : '';
+  return URL.canParse(authority) ? new URL(authority).hostname : '';
+}
 
 export class CRPage implements PageDelegate {
   readonly utilityWorldName: string;
@@ -150,7 +168,16 @@ export class CRPage implements PageDelegate {
   }
 
   async navigateFrame(frame: frames.Frame, url: string, referrer: string | undefined): Promise<frames.GotoResult> {
+    this._assertNavigationDoesNotCrashBrowser(url);
     return this._sessionForFrame(frame)._navigate(frame, url, referrer);
+  }
+
+  private _assertNavigationDoesNotCrashBrowser(url: string) {
+    if (this._browserContext.isPersistentContext())
+      return;
+    const isEdge = this._browserContext._browser.userAgent().includes('Edg/');
+    if ((isEdge ? kCrashingWebUIHosts.edge : kCrashingWebUIHosts.chromium).has(webUIHost(url)))
+      throw new Error(`Cannot navigate to "${url}": this page is not available in an isolated browser context, and opening it crashes the browser. Use browserType.launchPersistentContext() instead.`);
   }
 
   async updateExtraHTTPHeaders(): Promise<void> {
@@ -245,7 +272,7 @@ export class CRPage implements PageDelegate {
     await this._mainFrameSession._client.send('Emulation.setDefaultBackgroundColorOverride', { color });
   }
 
-  async takeScreenshot(progress: Progress, format: 'png' | 'jpeg', documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, quality: number | undefined, fitsViewport: boolean, scale: 'css' | 'device'): Promise<Buffer> {
+  async takeScreenshot(progress: Progress, format: 'png' | 'jpeg' | 'webp', documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, quality: number | undefined, fitsViewport: boolean, scale: 'css' | 'device'): Promise<Buffer> {
     const { visualViewport, contentSize, cssContentSize } = await progress.race(this._mainFrameSession._client.send('Page.getLayoutMetrics'));
     if (!documentRect) {
       documentRect = {
@@ -267,6 +294,11 @@ export class CRPage implements PageDelegate {
       clip.scale /= deviceScaleFactor;
     }
     const result = await progress.race(this._mainFrameSession._client.send('Page.captureScreenshot', { format, quality, clip, captureBeyondViewport: !fitsViewport }));
+    if (!fitsViewport && this._browserContext._options.hasTouch) {
+      // Capturing beyond viewport resets touch emulation in Chromium, so we re-apply it.
+      // See https://issues.chromium.org/issues/558509412 and https://github.com/microsoft/playwright/issues/42607.
+      await progress.race(this._mainFrameSession._client.send('Emulation.setTouchEmulationEnabled', { enabled: true }));
+    }
     return Buffer.from(result.data, 'base64');
   }
 
@@ -286,17 +318,18 @@ export class CRPage implements PageDelegate {
     return this._sessionForHandle(handle)._scrollRectIntoViewIfNeeded(handle, rect);
   }
 
-  async startScreencast(options: { width: number; height: number; quality: number; }): Promise<void> {
-    await this._mainFrameSession._client.send('Page.startScreencast', {
+  startScreencast(options: { width: number; height: number; quality: number; fps?: number }) {
+    this._mainFrameSession._client.send('Page.startScreencast', {
       format: 'jpeg',
       quality: options.quality,
       maxWidth: options.width,
       maxHeight: options.height,
-    });
+      maxFramesInFlight: (options.fps ?? 0) > 30 ? 10 : 5,
+    }).catch(() => {});
   }
 
-  async stopScreencast() {
-    await this._mainFrameSession._client._sendMayFail('Page.stopScreencast');
+  stopScreencast() {
+    this._mainFrameSession._client._sendMayFail('Page.stopScreencast').catch(() => {});
   }
 
   rafCountForStablePosition(): number {
@@ -307,15 +340,15 @@ export class CRPage implements PageDelegate {
     return this._sessionForHandle(handle)._getContentQuads(handle);
   }
 
-  async setInputFilePaths(handle: dom.ElementHandle<HTMLInputElement>, files: string[]): Promise<void> {
-    const frame = await handle.ownerFrame();
+  async setInputFilePaths(progress: Progress, handle: dom.ElementHandle<HTMLInputElement>, files: string[]): Promise<void> {
+    const frame = await handle.ownerFrame(progress);
     if (!frame)
       throw new Error('Cannot set input files to detached input element');
     const parentSession = this._sessionForFrame(frame);
-    await parentSession._client.send('DOM.setFileInputFiles', {
+    await progress.race(parentSession._client.send('DOM.setFileInputFiles', {
       objectId: handle._objectId,
       files
-    });
+    }));
   }
 
   async adoptElementHandle<T extends Node>(handle: dom.ElementHandle<T>, to: dom.FrameExecutionContext): Promise<dom.ElementHandle<T>> {
@@ -352,7 +385,7 @@ export class CRPage implements PageDelegate {
     parent = frame.parentFrame();
     if (!parent)
       throw new Error('Frame has been detached.');
-    return parentSession._adoptBackendNodeId(backendNodeId, await parent._mainContext());
+    return parentSession._adoptBackendNodeId(backendNodeId, await parent.mainContext());
   }
 
   shouldToggleStyleSheetToSyncAnimations(): boolean {
@@ -415,6 +448,7 @@ class FrameSession {
       eventsHelper.addEventListener(this._client, 'Page.frameNavigated', event => this._onFrameNavigated(event.frame, false)),
       eventsHelper.addEventListener(this._client, 'Page.frameRequestedNavigation', event => this._onFrameRequestedNavigation(event)),
       eventsHelper.addEventListener(this._client, 'Page.javascriptDialogOpening', event => this._onDialog(event)),
+      eventsHelper.addEventListener(this._client, 'Page.javascriptDialogClosed', () => this._onDialogClosed()),
       eventsHelper.addEventListener(this._client, 'Page.navigatedWithinDocument', event => this._onFrameNavigatedWithinDocument(event.frameId, event.url)),
       eventsHelper.addEventListener(this._client, 'Runtime.bindingCalled', event => this._onBindingCalled(event)),
       eventsHelper.addEventListener(this._client, 'Runtime.consoleAPICalled', event => this._onConsoleAPI(event)),
@@ -427,8 +461,8 @@ class FrameSession {
 
   private _addBrowserListeners() {
     this._eventListeners.push(...[
-      eventsHelper.addEventListener(this._client, 'Target.attachedToTarget', event => this._onAttachedToTarget(event)),
-      eventsHelper.addEventListener(this._client, 'Target.detachedFromTarget', event => this._onDetachedFromTarget(event)),
+      eventsHelper.addEventListener(this._client, 'Target.attachedToTarget', event => this._onAttachedToTarget(this._client, event)),
+      eventsHelper.addEventListener(this._client, 'Target.detachedFromTarget', event => this._onDetachedFromTarget(this._client, event)),
       eventsHelper.addEventListener(this._client, 'Inspector.targetCrashed', event => this._onTargetCrashed()),
       eventsHelper.addEventListener(this._client, 'Page.screencastFrame', event => this._onScreencastFrame(event)),
       eventsHelper.addEventListener(this._client, 'Page.windowOpen', event => this._onWindowOpen(event)),
@@ -436,20 +470,23 @@ class FrameSession {
   }
 
   async _initialize(hasUIWindow: boolean) {
+    const browserOptions = this._crPage._browserContext._browser.options;
     if (!this._page.isStorageStatePage && hasUIWindow &&
       !this._crPage._browserContext._browser.isClank() &&
       !this._crPage._browserContext._options.noDefaultViewport) {
-      const { windowId } = await this._client.send('Browser.getWindowForTarget');
-      this._windowId = windowId;
+      try {
+        const { windowId } = await this._client.send('Browser.getWindowForTarget');
+        this._windowId = windowId;
+      } catch {
+        // Some pages in Edge, like internal UIs, are mis-classified as "page", but do
+        // not actually have a browser window. That's fine, we won't resize them.
+      }
     }
 
-    let videoOptions: types.VideoOptions | undefined;
     if (this._isMainFrame() && hasUIWindow && !this._page.isStorageStatePage)
-      videoOptions = this._crPage._page.screencast.launchAutomaticVideoRecorder();
+      startAutomaticVideoRecording(this._crPage._page);
 
     let lifecycleEventsEnabled: Promise<any>;
-    if (!this._isMainFrame())
-      this._addRendererListeners();
     this._addBrowserListeners();
 
     // Buffer attachedToTarget events until we receive the frame tree.
@@ -461,18 +498,16 @@ class FrameSession {
     const promises: Promise<any>[] = [
       this._client.send('Page.enable'),
       this._client.send('Page.getFrameTree').then(({ frameTree }) => {
-        if (this._isMainFrame()) {
-          this._handleFrameTree(frameTree);
-          this._addRendererListeners();
-        }
+        const localFrames: frames.Frame[] = [];
+        this._handleFrameTree(frameTree, localFrames);
+        this._addRendererListeners();
 
         // Now that we have the frame tree, it is possible to insert oopif targets at the right place.
         const attachedToTargetEvents = this._bufferedAttachedToTargetEvents || [];
         this._bufferedAttachedToTargetEvents = undefined;
         for (const event of attachedToTargetEvents)
-          this._onAttachedToTarget(event);
+          this._onAttachedToTarget(this._client, event);
 
-        const localFrames = this._isMainFrame() ? this._page.frames() : [this._page.frameManager.frame(this._targetId)!];
         for (const frame of localFrames) {
           // Note: frames might be removed before we send these.
           this._client._sendMayFail('Page.createIsolatedWorld', {
@@ -482,7 +517,8 @@ class FrameSession {
           });
         }
 
-        const isInitialEmptyPage = this._isMainFrame() && this._page.mainFrame().url() === ':';
+        // In r1651606 Chromium changed the URL it reports for the initial empty document from the ":" to "".
+        const isInitialEmptyPage = this._isMainFrame() && (this._page.mainFrame().url() === ':' || this._page.mainFrame().url() === '');
         if (isInitialEmptyPage) {
           // Ignore lifecycle events, worlds and bindings for the initial empty page. It is never the final page
           // hence we are going to get more lifecycle updates after the actual navigation has
@@ -505,10 +541,14 @@ class FrameSession {
       this._crPage._networkManager.addSession(this._client, undefined, this._isMainFrame()),
       this._client.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }),
     ];
-    if (!this._page.isStorageStatePage) {
+    if (this._page.isStorageStatePage) {
+      promises.push(this._client.send('Network.setBypassServiceWorker', { bypass: true }));
+    } else {
+      const skipDefaultOverrides = browserOptions.noDefaults &&
+          this._crPage._browserContext === this._crPage._browserContext._browser._defaultContext;
       if (this._crPage._browserContext.needsPlaywrightBinding())
         promises.push(this.exposePlaywrightBinding());
-      if (this._isMainFrame())
+      if (this._isMainFrame() && !skipDefaultOverrides)
         promises.push(this._client.send('Emulation.setFocusEmulationEnabled', { enabled: true }));
       const options = this._crPage._browserContext._options;
       if (options.bypassCSP)
@@ -527,25 +567,45 @@ class FrameSession {
         promises.push(emulateLocale(this._client, options.locale));
       if (options.timezoneId)
         promises.push(emulateTimezone(this._client, options.timezoneId));
-      if (!this._crPage._browserContext._browser.options.headful)
+      if (!browserOptions.headful)
         promises.push(this._setDefaultFontFamilies(this._client));
       promises.push(this._updateGeolocation(true));
-      promises.push(this._updateEmulateMedia());
+      if (!skipDefaultOverrides)
+        promises.push(this._updateEmulateMedia());
       promises.push(this._updateFileChooserInterception(true));
       for (const initScript of this._crPage._page.allInitScripts())
         promises.push(this._evaluateOnNewDocument(initScript, 'main', true /* runImmediately */));
-      if (videoOptions)
-        promises.push(this._crPage._page.screencast.startVideoRecording(videoOptions));
+    }
+    if (this._isMainFrame() && this._crPage._browserContext._browser._isConnecting && !browserOptions.noInspectorEnableOnConnect) {
+      // An existing page without a renderer, e.g. crashed or discarded, never responds to the commands above.
+      // Get notified with Inspector.targetCrashed right away, so that such a page is reported as closed,
+      // and we do not stall while connecting to the browser.
+      promises.push(this._client._sendMayFail('Inspector.enable'));
     }
     promises.push(this._client.send('Runtime.runIfWaitingForDebugger'));
     promises.push(this._firstNonInitialNavigationCommittedPromise);
     await Promise.all(promises);
+
+    if (browserOptions.isWebView) {
+      // Android WebView's devtools endpoint sometimes acknowledges Runtime.enable
+      // without replaying the pre-existing execution contexts. Cycle
+      // Runtime.disable/enable until the default context is reported.
+      for (let attempt = 0; attempt < 10; ++attempt) {
+        if ([...this._contextIdToContext.values()].some(context => context.world === 'main'))
+          break;
+        await this._client._sendMayFail('Runtime.disable');
+        await this._client._sendMayFail('Runtime.enable');
+        await new Promise(f => setTimeout(f, 250));
+      }
+    }
   }
 
   dispose() {
     this._firstNonInitialNavigationCommittedReject(new TargetClosedError(this._page.closeReason()));
     for (const childSession of this._childSessions)
       childSession.dispose();
+    for (const sessionId of this._workerSessions.keys())
+      this._removeWorkerSession(sessionId);
     if (this._parentSession)
       this._parentSession._childSessions.delete(this);
     eventsHelper.removeEventListeners(this._eventListeners);
@@ -572,14 +632,24 @@ class FrameSession {
       this._page.frameManager.frameLifecycleEvent(event.frameId, 'domcontentloaded');
   }
 
-  _handleFrameTree(frameTree: Protocol.Page.FrameTree) {
-    this._onFrameAttached(frameTree.frame.id, frameTree.frame.parentId || null);
-    this._onFrameNavigated(frameTree.frame, true);
-    if (!frameTree.childFrames)
+  _handleFrameTree(frameTree: Protocol.Page.FrameTree, collectedLocalFrames: frames.Frame[]) {
+    const isOopif = !this._isMainFrame() && frameTree.frame.id === this._targetId;
+    // Note: OOPIF frame has been already attached in the parent session, so skip it.
+    if (!isOopif)
+      this._onFrameAttached(frameTree.frame.id, frameTree.frame.parentId || null);
+
+    const isInitialOopifDocument = isOopif && (frameTree.frame.url === '' || frameTree.frame.url === ':');
+    // Note: do not fake an empty document commit in a newly created OOPIF.
+    if (!isInitialOopifDocument)
+      this._onFrameNavigated(frameTree.frame, true);
+
+    const frame = this._page.frameManager.frame(frameTree.frame.id);
+    if (!frame)
       return;
 
-    for (const child of frameTree.childFrames)
-      this._handleFrameTree(child);
+    collectedLocalFrames.push(frame);
+    for (const child of frameTree.childFrames || [])
+      this._handleFrameTree(child, collectedLocalFrames);
   }
 
   private _eventBelongsToStaleFrame(frameId: string)  {
@@ -669,7 +739,7 @@ class FrameSession {
       worldName = 'utility';
     const context = new dom.FrameExecutionContext(delegate, frame, worldName);
     if (worldName)
-      frame._contextCreated(worldName, context);
+      frame.contextCreated(worldName, context);
     this._contextIdToContext.set(contextPayload.id, context);
   }
 
@@ -678,7 +748,7 @@ class FrameSession {
     if (!context)
       return;
     this._contextIdToContext.delete(executionContextId);
-    context.frame._contextDestroyed(context);
+    context.frame.contextDestroyed(context);
   }
 
   _onExecutionContextsCleared() {
@@ -686,13 +756,13 @@ class FrameSession {
       this._onExecutionContextDestroyed(contextId);
   }
 
-  _onAttachedToTarget(event: Protocol.Target.attachedToTargetPayload) {
+  _onAttachedToTarget(parentSession: CRSession, event: Protocol.Target.attachedToTargetPayload) {
     if (this._bufferedAttachedToTargetEvents) {
       this._bufferedAttachedToTargetEvents.push(event);
       return;
     }
 
-    const session = this._client.createChildSession(event.sessionId);
+    const session = parentSession.createChildSession(event.sessionId);
 
     if (event.targetInfo.type === 'iframe') {
       // Frame id equals target id.
@@ -701,7 +771,8 @@ class FrameSession {
       if (!frame && event.targetInfo.parentFrameId) {
         // When connecting to an existing page with an iframe, there is an "iframe" target,
         // but no local frame is reported in getFrameTree. We can create a remote frame here.
-        frame = this._page.frameManager.frameAttached(targetId, event.targetInfo.parentFrameId);
+        const parentFrame = this._page.frameManager.frame(event.targetInfo.parentFrameId) ?? this._page.mainFrame();
+        frame = this._page.frameManager.frameAttached(targetId, parentFrame._id);
       }
       if (!frame)
         return; // Subtree may be already gone due to renderer/browser race.
@@ -734,32 +805,41 @@ class FrameSession {
       worker.workerScriptLoaded();
     // This might fail if the target is closed before we initialize.
     session._sendMayFail('Runtime.enable');
-    // TODO: attribute workers to the right frame.
-    this._crPage._networkManager.addSession(session, this._page.frameManager.frame(this._targetId) ?? undefined).catch(() => {});
+    this._crPage._networkManager.addSession(session, this._page.frameManager.frame(event.targetInfo.parentFrameId ?? this._targetId) ?? undefined).catch(() => {});
     session._sendMayFail('Runtime.runIfWaitingForDebugger');
     session._sendMayFail('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-    session.on('Target.attachedToTarget', event => this._onAttachedToTarget(event));
-    session.on('Target.detachedFromTarget', event => this._onDetachedFromTarget(event));
+    session.on('Target.attachedToTarget', event => this._onAttachedToTarget(session, event));
+    session.on('Target.detachedFromTarget', event => this._onDetachedFromTarget(session, event));
     session.on('Runtime.consoleAPICalled', event => {
       const args = event.args.map(o => createHandle(worker.existingExecutionContext!, o));
-      this._page.addConsoleMessage(worker, event.type, args, toConsoleMessageLocation(event.stackTrace), undefined, event.timestamp);
+      this._page.addConsoleMessage(worker, event.type, args, stackTraceToLocation(event.stackTrace), undefined, event.timestamp);
     });
-    session.on('Runtime.exceptionThrown', exception => this._page.addPageError(exceptionToError(exception.exceptionDetails)));
+    session.on('Runtime.exceptionThrown', exception => this._page.addPageError(exceptionToError(exception.exceptionDetails), stackTraceToLocation(exception.exceptionDetails.stackTrace)));
   }
 
-  _onDetachedFromTarget(event: Protocol.Target.detachedFromTargetPayload) {
+  private _removeWorkerSession(sessionId: string): boolean {
+    const workerSession = this._workerSessions.get(sessionId);
+    if (!workerSession)
+      return false;
+    this._workerSessions.delete(sessionId);
+    this._crPage._networkManager.removeSession(workerSession);
+    workerSession.dispose();
+    this._page.removeWorker(sessionId);
+    return true;
+  }
+
+  _onDetachedFromTarget(parentSession: CRSession, event: Protocol.Target.detachedFromTargetPayload) {
     // This might be a worker...
-    const workerSession = this._workerSessions.get(event.sessionId);
-    if (workerSession) {
-      workerSession.dispose();
-      this._page.removeWorker(event.sessionId);
+    if (this._removeWorkerSession(event.sessionId))
       return;
-    }
 
     // ... or an oopif.
     const childFrameSession = this._crPage._sessions.get(event.targetId!);
-    if (!childFrameSession)
+    if (!childFrameSession) {
+      // Something else - perhaps a stalled service worker? Just dispose of it to reject all the callbacks.
+      parentSession.disposeChildSession(event.sessionId);
       return;
+    }
 
     // Usually, we get frameAttached in this session first and mark child as swappedIn.
     if (childFrameSession._swappedIn) {
@@ -805,7 +885,7 @@ class FrameSession {
     if (!context)
       return;
     const values = event.args.map(arg => createHandle(context, arg));
-    this._page.addConsoleMessage(null, event.type, values, toConsoleMessageLocation(event.stackTrace), undefined, event.timestamp);
+    this._page.addConsoleMessage(null, event.type, values, stackTraceToLocation(event.stackTrace), undefined, event.timestamp);
   }
 
   async _onBindingCalled(event: Protocol.Runtime.bindingCalledPayload) {
@@ -833,13 +913,22 @@ class FrameSession {
         event.defaultPrompt));
   }
 
-  _handleException(exceptionDetails: Protocol.Runtime.ExceptionDetails) {
-    this._page.addPageError(exceptionToError(exceptionDetails));
+  _onDialogClosed() {
+    this._page.browserContext.dialogManager.dialogWasClosedInBrowser(this._page);
   }
 
-  async _onTargetCrashed() {
+  _handleException(exceptionDetails: Protocol.Runtime.ExceptionDetails) {
+    this._page.addPageError(exceptionToError(exceptionDetails), stackTraceToLocation(exceptionDetails.stackTrace));
+  }
+
+  _onTargetCrashed() {
     this._client._markAsCrashed();
     this._page._didCrash();
+    if (this._crPage._browserContext._browser._isConnecting && !this._page.initializedOrUndefined()) {
+      // When connecting, any crashed/discarded/unloaded page is reported as closed right away.
+      this._crPage._browserContext._browser._crPages.delete(this._crPage._targetId);
+      this._crPage.didClose();
+    }
   }
 
   _onLogEntryAdded(event: Protocol.Log.entryAddedPayload) {
@@ -864,7 +953,7 @@ class FrameSession {
       return;
     let handle;
     try {
-      const utilityContext = await frame._utilityContext();
+      const utilityContext = await frame.utilityContext();
       handle = await this._adoptBackendNodeId(event.backendNodeId, utilityContext);
     } catch (e) {
       // During async processing, frame/context may go away. We should not throw.
@@ -882,15 +971,14 @@ class FrameSession {
   }
 
   _onScreencastFrame(payload: Protocol.Page.screencastFramePayload) {
-    this._page.screencast.throttleFrameAck(() => {
-      this._client._sendMayFail('Page.screencastFrameAck', { sessionId: payload.sessionId });
-    });
     const buffer = Buffer.from(payload.data, 'base64');
-    this._page.screencast.onScreencastFrame({
+    void this._page.screencast.onScreencastFrame({
       buffer,
       frameSwapWallTime: payload.metadata.timestamp ? payload.metadata.timestamp * 1000 : Date.now(),
       viewportWidth: payload.metadata.deviceWidth,
       viewportHeight: payload.metadata.deviceHeight,
+    }).then(() => {
+      this._client._sendMayFail('Page.screencastFrameAck', { sessionId: payload.sessionId });
     });
   }
 
@@ -1081,8 +1169,8 @@ class FrameSession {
       return null;
     if (frame === this._page.mainFrame())
       return { x: 0, y: 0 };
-    const element = await frame.frameElement();
-    const box = await element.boundingBox();
+    using element = await frame.frameElement(nullProgress);
+    const box = await element.boundingBox(nullProgress);
     return box;
   }
 
@@ -1160,7 +1248,7 @@ async function emulateTimezone(session: CRSession, timezoneId: string) {
 }
 
 // Chromium reference: https://source.chromium.org/chromium/chromium/src/+/main:components/embedder_support/user_agent_utils.cc;l=434;drc=70a6711e08e9f9e0d8e4c48e9ba5cab62eb010c2
-function calculateUserAgentMetadata(options: types.BrowserContextOptions) {
+export function calculateUserAgentMetadata(options: types.BrowserContextOptions) {
   const ua = options.userAgent;
   if (!ua)
     return undefined;

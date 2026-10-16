@@ -15,12 +15,14 @@
  */
 
 import { expect, playwrightTest as baseTest } from '../config/browserTest';
-import { PlaywrightServer } from '../../packages/playwright-core/lib/remote/playwrightServer';
-import { createGuid } from '../../packages/playwright-core/lib/server/utils/crypto';
+import { remote, utils } from '../../packages/playwright-core/lib/coreBundle';
+const { PlaywrightServer } = remote;
 import { Backend } from '../config/debugControllerBackend';
 import type { Browser, BrowserContext } from '@playwright/test';
-import type * as channels from '@protocol/channels';
+import type * as channels from '../../packages/playwright-core/src/client/channels';
 import { roundBox } from '../config/utils';
+
+const { createGuid } = utils;
 
 type BrowserWithReuse = Browser & { newContextForReuse: () => Promise<BrowserContext> };
 type Fixtures = {
@@ -74,7 +76,7 @@ const test = baseTest.extend<Fixtures>({
 });
 
 test.slow(true, 'All controller tests are slow');
-test.skip(({ mode }) => mode.startsWith('service') || mode === 'driver');
+test.skip(({ mode }) => mode === 'driver');
 
 // Force a separate worker to avoid registered selector engines from other tests.
 // See https://github.com/microsoft/playwright/pull/37103.
@@ -84,7 +86,7 @@ test('should pick element', async ({ backend, connectedBrowser }) => {
   const events = [];
   backend.on('inspectRequested', event => events.push(event));
 
-  await backend.setRecorderMode({ mode: 'inspecting' });
+  await backend.setRecorderMode({ mode: 'inspecting' }, undefined);
 
   const context = await connectedBrowser.newContextForReuse();
   const [page] = context.pages();
@@ -106,7 +108,7 @@ test('should pick element', async ({ backend, connectedBrowser }) => {
   ]);
 
   // No events after mode disabled
-  await backend.setRecorderMode({ mode: 'none' });
+  await backend.setRecorderMode({ mode: 'none' }, undefined);
   await page.locator('body').click();
   expect(events).toHaveLength(2);
 });
@@ -114,7 +116,7 @@ test('should pick element', async ({ backend, connectedBrowser }) => {
 test('should report pages', async ({ backend, connectedBrowser }) => {
   const events = [];
   backend.on('stateChanged', event => events.push(event));
-  await backend.setReportStateChanged({ enabled: true });
+  await backend.setReportStateChanged({ enabled: true }, undefined);
 
   const context = await connectedBrowser.newContextForReuse();
   const page1 = await context.newPage();
@@ -122,7 +124,7 @@ test('should report pages', async ({ backend, connectedBrowser }) => {
   await page1.close();
   await page2.close();
 
-  await backend.setReportStateChanged({ enabled: false });
+  await backend.setReportStateChanged({ enabled: false }, undefined);
   const page3 = await context.newPage();
   await page3.close();
 
@@ -163,10 +165,10 @@ test('should highlight all', async ({ backend, connectedBrowser }) => {
   const page2 = await context.newPage();
   await page1.goto('data:text/html,<button>Submit</button>');
   await page2.goto('data:text/html,<button>Submit</button>');
-  await backend.highlight({ selector: 'button' });
+  await backend.highlight({ selector: 'button' }, undefined);
   await expect(page1.getByText('locator(\'button\')')).toBeVisible();
   await expect(page2.getByText('locator(\'button\')')).toBeVisible();
-  await backend.hideHighlight();
+  await backend.hideHighlight({}, undefined);
   await expect(page1.getByText('locator(\'button\')')).toBeHidden({ timeout: 1000000 });
   await expect(page2.getByText('locator(\'button\')')).toBeHidden();
 });
@@ -175,7 +177,7 @@ test('should record', async ({ backend, connectedBrowser }) => {
   const events = [];
   backend.on('sourceChanged', event => events.push(event));
 
-  await backend.setRecorderMode({ mode: 'recording' });
+  await backend.setRecorderMode({ mode: 'recording' }, undefined);
 
   const context = await connectedBrowser.newContextForReuse();
   const [page] = context.pages();
@@ -200,10 +202,39 @@ test('test', async ({ page }) => {
 });`
   });
   // No events after mode disabled
-  await backend.setRecorderMode({ mode: 'none' });
+  await backend.setRecorderMode({ mode: 'none' }, undefined);
   const length = events.length;
   await page.getByRole('button').click();
   expect(events).toHaveLength(length);
+});
+
+test('should record expect signal', async ({ backend, connectedBrowser }) => {
+  const events = [];
+  backend.on('sourceChanged', event => events.push(event));
+
+  await backend.setRecorderMode({ mode: 'recording', generateAutoExpect: true }, undefined);
+
+  const context = await connectedBrowser.newContextForReuse();
+  const [page] = context.pages();
+
+  // Clicking "Show" reveals "Saved", which becomes the precondition of the next action.
+  await page.setContent(`
+    <button onclick="document.getElementById('msg').style.display = 'block'">Show</button>
+    <button>Other</button>
+    <button id=msg style="display: none">Saved</button>
+  `);
+
+  await page.getByRole('button', { name: 'Show' }).click();
+  // A click is buffered for a while to detect a double click, so wait for it to be recorded.
+  await expect.poll(() => events[events.length - 1]?.actions.length).toBe(2);
+  await page.getByRole('button', { name: 'Other' }).click();
+
+  // The signal is attached to the "Show" click, so the assertion renders right after it.
+  await expect.poll(() => events[events.length - 1]?.actions).toEqual([
+    `  await page.goto('about:blank');`,
+    `  await page.getByRole('button', { name: 'Show' }).click();\n  await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();`,
+    `  await page.getByRole('button', { name: 'Other' }).click();`,
+  ]);
 });
 
 test('should record custom data-testid', async ({ backend, connectedBrowser }) => {
@@ -219,7 +250,7 @@ test('should record custom data-testid', async ({ backend, connectedBrowser }) =
   await page.setContent(`<div data-custom-id='one'>One</div>`);
 
   // 2. "Record at cursor".
-  await backend.setRecorderMode({ mode: 'recording', testIdAttributeName: 'data-custom-id' });
+  await backend.setRecorderMode({ mode: 'recording', testIdAttributeName: 'data-custom-id' }, undefined);
 
   // 3. Record a click action.
   await page.locator('div').click();
@@ -239,6 +270,57 @@ test('test', async ({ page }) => {
   await page.getByTestId('one').click();
 });`
   });
+});
+
+test('should not leak actions from the previous recording session', async ({ backend, connectedBrowser }, testInfo) => {
+  testInfo.annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42218' });
+
+  const events: any[] = [];
+  backend.on('sourceChanged', event => events.push(event));
+
+  // Session 1: "Record at cursor" and record a click.
+  await backend.setRecorderMode({ mode: 'recording' }, undefined);
+  const context = await connectedBrowser.newContextForReuse();
+  const [page] = context.pages();
+  await page.setContent('<button>Submit</button>');
+  await page.getByRole('button', { name: 'Submit' }).click();
+  await expect.poll(() => events[events.length - 1]?.actions).toEqual([
+    `  await page.goto('about:blank');`,
+    `  await page.getByRole('button', { name: 'Submit' }).click();`,
+  ]);
+
+  // Stop recording, like "Record at cursor" toggle off.
+  await backend.setRecorderMode({ mode: 'none' }, undefined);
+
+  // Session 2 on the same page: "Record at cursor" again, record another click.
+  // Avoid navigation here (setContent is recorded as a goto on Firefox),
+  // the assertion below should only contain the click.
+  events.length = 0;
+  await backend.setRecorderMode({ mode: 'recording' }, undefined);
+  await page.evaluate(() => {
+    document.body.innerHTML = '<button>Other</button>';
+  });
+  await page.getByRole('button', { name: 'Other' }).click();
+
+  // New session starts from scratch: previous session's actions must not be
+  // re-sent, otherwise the client re-inserts the stale last action into the editor.
+  await expect.poll(() => events[events.length - 1]?.actions).toEqual([
+    `  await page.getByRole('button', { name: 'Other' }).click();`,
+  ]);
+
+  // Pause via the recorder toolbar's Record toggle ("standby") must also
+  // start a new session. 'standby' is not settable via the protocol, only
+  // through the toolbar UI.
+  await page.click('x-pw-tool-item.record');
+  events.length = 0;
+  await backend.setRecorderMode({ mode: 'recording' }, undefined);
+  await page.evaluate(() => {
+    document.body.innerHTML = '<button>Third</button>';
+  });
+  await page.getByRole('button', { name: 'Third' }).click();
+  await expect.poll(() => events[events.length - 1]?.actions).toEqual([
+    `  await page.getByRole('button', { name: 'Third' }).click();`,
+  ]);
 });
 
 test('should reset routes before reuse', async ({ server, connectedBrowserFactory }) => {
@@ -277,16 +359,16 @@ test('should highlight inside iframe', async ({ backend, connectedBrowser }, tes
 
   const highlight = page.frameLocator('iframe').locator('x-pw-highlight');
   await expect(highlight).not.toHaveCount(0);
-  await backend.hideHighlight();
+  await backend.hideHighlight({}, undefined);
   await expect(highlight).toHaveCount(0);
 
-  await backend.highlight({ selector: `frameLocator('iframe').getByText('bar')` });
+  await backend.highlight({ selector: `frameLocator('iframe').getByText('bar')` }, undefined);
   await expect(highlight).not.toHaveCount(0);
 
-  await backend.highlight({ selector: `frameLocator('iframe').frameLocator('iframe').getByText('bar')` });
+  await backend.highlight({ selector: `frameLocator('iframe').frameLocator('iframe').getByText('bar')` }, undefined);
   await expect(highlight).toHaveCount(0);
 
-  await backend.highlight({ selector: `getByText('bar')` });
+  await backend.highlight({ selector: `getByText('bar')` }, undefined);
   await expect(highlight).toHaveCount(1);
   await expect(page.locator('x-pw-highlight')).toHaveCount(1);
 });
@@ -299,16 +381,16 @@ test('should highlight aria template', async ({ backend, connectedBrowser }, tes
   const button = page.getByRole('button');
   const highlight = page.locator('x-pw-highlight');
 
-  await backend.highlight({ ariaTemplate: `- button "Submit2"` });
+  await backend.highlight({ ariaTemplate: `- button "Submit2"` }, undefined);
   await expect(highlight).toHaveCount(0);
 
-  await backend.highlight({ ariaTemplate: `- button "Submit"` });
+  await backend.highlight({ ariaTemplate: `- button "Submit"` }, undefined);
   const box1 = roundBox(await button.boundingBox());
   const box2 = roundBox(await highlight.boundingBox());
   expect(box1).toEqual(box2);
 });
 
 test('should report error in aria template', async ({ backend }) => {
-  const error = await backend.highlight({ ariaTemplate: `- button "Submit` }).catch(e => e);
+  const error = await backend.highlight({ ariaTemplate: `- button "Submit` }, undefined).catch(e => e);
   expect(error.message).toContain('Unterminated string:');
 });

@@ -15,11 +15,11 @@
  * limitations under the License.
  */
 
+import { assert } from '@isomorphic/assert';
+import { parseEvaluationResultValue } from '@isomorphic/utilityScriptSerializers';
 import * as js from '../javascript';
 import * as dom from '../dom';
 import { isSessionClosedError } from '../protocolError';
-import { assert } from '../../utils/isomorphic/assert';
-import { parseEvaluationResultValue } from '../../utils/isomorphic/utilityScriptSerializers';
 
 import type { Protocol } from './protocol';
 import type { WKSession } from './wkConnection';
@@ -105,6 +105,10 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
     if (!handle._objectId)
       return;
     await this._session.send('Runtime.releaseObject', { objectId: handle._objectId });
+  }
+
+  shouldPrependErrorPrefix(): boolean {
+    return false;
   }
 }
 

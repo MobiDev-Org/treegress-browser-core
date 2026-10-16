@@ -65,7 +65,7 @@ it('should add cookies with empty value', async ({ context, page, server }) => {
   expect(await page.evaluate(() => document.cookie)).toEqual('marker=');
 });
 
-it('should set cookies with SameSite attribute and no secure attribute', async ({ context, browserName, isWindows, isLinux, defaultSameSiteCookieValue, channel }) => {
+it('should set cookies with SameSite attribute and no secure attribute', async ({ context, browserName, isWindows, isLinux, defaultSameSiteCookieValue, channel, isBidi }) => {
   // Use domain instead of URL to ensure that the `secure` attribute is not set.
   await context.addCookies([{
     domain: 'foo.com',
@@ -101,7 +101,7 @@ it('should set cookies with SameSite attribute and no secure attribute', async (
     httpOnly: false,
     secure: false,
     sameSite: defaultSameSiteCookieValue,
-  }, ...(browserName === 'chromium' || (browserName === 'webkit' && (isLinux || channel === 'webkit-wsl')) ? [] : [{
+  }, ...(browserName === 'chromium' || (browserName === 'webkit' && (isLinux || channel === 'webkit-wsl')) || isBidi ? [] : [{
     name: 'same-site-none',
     value: '1',
     domain: 'foo.com',
@@ -423,7 +423,7 @@ it('should set cookies for a frame', async ({ context, page, server }) => {
   expect(await page.frames()[1].evaluate('document.cookie')).toBe('frame-cookie=value');
 });
 
-it('should allow unnamed cookies', async ({ page, context, server, browserName, platform }) => {
+it('should allow unnamed cookies', async ({ page, context, server, browserName, platform, isBidi }) => {
   server.setRoute('/cookies', (req, res) => {
     res.write(req.headers.cookie ?? 'undefined-on-server');
     res.end();
@@ -435,7 +435,7 @@ it('should allow unnamed cookies', async ({ page, context, server, browserName, 
   }]);
   // Round-trip behavior
   const resp = await page.goto(server.PREFIX + '/cookies');
-  if (browserName === 'webkit' && platform === 'darwin') {
+  if ((browserName === 'webkit' && platform === 'darwin') || (browserName === 'firefox' && isBidi)) {
     expect.soft(await resp!.text()).toBe('undefined-on-server');
     expect.soft(await page.evaluate('document.cookie')).toBe('');
   } else {
@@ -446,7 +446,7 @@ it('should allow unnamed cookies', async ({ page, context, server, browserName, 
   await page.goto(server.EMPTY_PAGE);
   await page.evaluate(() => document.cookie = '=unnamed-via-js;');
   await context.addCookies(await context.cookies());
-  if (browserName === 'webkit' && platform === 'darwin')
+  if ((browserName === 'webkit' && platform === 'darwin') || (browserName === 'firefox' && isBidi))
     expect.soft(await page.evaluate('document.cookie')).toBe('');
   else
     expect.soft(await page.evaluate('document.cookie')).toBe('unnamed-via-js');

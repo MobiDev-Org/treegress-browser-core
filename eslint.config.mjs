@@ -21,6 +21,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import stylistic from "@stylistic/eslint-plugin";
 import importRules from "eslint-plugin-import";
+import progressPlugin from "./utils/eslint-plugin-progress/index.js";
 import { fixupConfigRules } from "@eslint/compat";
 import { FlatCompat } from "@eslint/eslintrc";
 import js from "@eslint/js";
@@ -40,21 +41,23 @@ const ignores = [
   "*.js",
   "**/.cache/",
   "**/*.d.ts",
+  "coverage/",
   "index.d.ts",
   "node_modules/",
   "output/",
   "**/playwright-report/",
   "examples",
   "packages/*/lib/",
-  "packages/playwright-core/bundles/zip/src/third_party/",
+  "packages/playwright-core/bundles/utils/src/third_party/",
+  "packages/utils/webp/webp_codec.js",
   "packages/playwright-core/src/generated/*",
   "packages/playwright-core/src/third_party/",
   "packages/playwright-core/types/*",
-  "packages/playwright-ct-core/src/generated/*",
   "packages/playwright/bundles/expect/third_party/",
+  "packages/playwright-core/src/tools/skills/",
   "packages/html-reporter/bundle.ts",
   "packages/html-reporter/playwright.config.ts",
-  "packages/html-reporter/playwright/*",
+  "packages/html-reporter/tests/*",
   "packages/html-reporter/vite.config.ts",
   "test-results/",
   "tests/assets/",
@@ -108,6 +111,7 @@ export const baseRules = {
   "new-parens": 2,
   "arrow-parens": [2, "as-needed"],
   "prefer-const": 2,
+  "one-var": [2, "never"],
   "quote-props": [2, "consistent"],
   "nonblock-statement-body-position": [2, "below"],
 
@@ -234,6 +238,7 @@ const noWebGlobalsRuleList = [
   { name: "cancelIdleCallback", message: "Use InjectedScript.utils.builtins.cancelIdleCallback instead" },
   { name: "Date", message: "Use InjectedScript.utils.builtins.Date instead" },
   { name: "Intl", message: "Use InjectedScript.utils.builtins.Intl instead" },
+  { name: "Temporal", message: "Use InjectedScript.utils.builtins.Temporal instead" },
   { name: "performance", message: "Use InjectedScript.utils.builtins.performance instead" },
 ];
 
@@ -285,9 +290,16 @@ const reactFiles = [
   `packages/recorder/src/**/*.tsx`,
   `packages/trace-viewer/src/**/*.ts`,
   `packages/trace-viewer/src/**/*.tsx`,
+  `packages/dashboard/src/**/*.ts`,
+  `packages/dashboard/src/**/*.tsx`,
   `packages/web/src/**/*.ts`,
   `packages/web/src/**/*.tsx`,
 ];
+
+const noProcessExitSyntax = {
+  selector: "CallExpression[callee.name='processExit']",
+  message: "Please use gracefullyProcessExitDoNotHang function to exit the process.",
+};
 
 function reactPackageSection(packageName) {
   return {
@@ -341,6 +353,10 @@ export default [
         { object: "process", property: "stdout" },
         { object: "process", property: "stderr" },
       ],
+      "no-restricted-syntax": [
+        "error",
+        noProcessExitSyntax,
+      ],
     },
   },
   {
@@ -356,8 +372,78 @@ export default [
     },
   },
   {
+    files: ["packages/playwright-core/src/**/*.ts"],
+    ignores: [
+      "packages/playwright-core/src/entry/**",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [{
+            group: ["**/coreBundle"],
+            message: "coreBundle can only be imported from entry/ files. Use direct imports instead.",
+          }],
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/playwright-core/src/**/*.ts"],
+    ignores: [
+      "packages/playwright-core/src/package.ts",
+      "packages/playwright-core/src/cli/programWithTestStub.ts",
+    ],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "process",
+          property: "exit",
+          message:
+            "Please use gracefullyProcessExitDoNotHang function to exit the process.",
+        },
+        { object: "process", property: "stdout" },
+        { object: "process", property: "stderr" },
+        {
+          object: "require",
+          property: "resolve",
+          message: "Use libPath() from package.ts instead of require.resolve.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/playwright-core/src/tools/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/client", "**/client/**"],
+              message: "tools/ must not import from client/",
+            },
+            {
+              group: ["**/coreBundle"],
+              message: "coreBundle can only be imported from entry/ files. Use direct imports instead.",
+            },
+          ],
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        noProcessExitSyntax,
+        {
+          selector: "TSAsExpression > TSAnyKeyword",
+          message: "Avoid 'as any' — risk of accidentally casting to client interfaces. Use a precise type or add an eslint-disable with justification.",
+        },
+      ],
+    },
+  },
+  {
     files: [
-      "packages/playwright-core/src/utils/**/*.ts",
+      "packages/isomorphic/**/*.ts",
     ],
     languageOptions: languageOptionsWithTsConfig,
     rules: {
@@ -387,7 +473,7 @@ export default [
   {
     files: [
       "packages/playwright-core/src/client/**/*.ts",
-      "packages/playwright-core/src/protocol/**/*.ts",
+      "packages/protocol/src/**/*.ts",
     ],
     languageOptions: languageOptionsWithTsConfig,
     rules: {
@@ -397,6 +483,19 @@ export default [
       ],
       ...noFloatingPromisesRules,
       ...noBooleanCompareRules,
+    },
+  },
+  {
+    files: [
+      "packages/playwright-core/src/server/**/*.ts",
+      "packages/utils/**/*.ts",
+    ],
+    plugins: {
+      "progress": progressPlugin,
+    },
+    languageOptions: languageOptionsWithTsConfig,
+    rules: {
+      "progress/await-must-use-progress": "error",
     },
   },
   {
@@ -411,6 +510,29 @@ export default [
     },
     rules: {
       ...noFloatingPromisesRules,
+    },
+  },
+  {
+    files: ["packages/extension/src/**/*.ts", "packages/extension/src/**/*.tsx"],
+    ignores: ["packages/extension/src/ui/**"],
+    languageOptions: {
+      parser: tsParser,
+      ecmaVersion: 9,
+      sourceType: "module",
+      parserOptions: {
+        project: path.join(__dirname, "packages", "extension", "tsconfig.json"),
+      },
+    },
+  },
+  {
+    files: ["packages/extension/src/ui/**/*.ts", "packages/extension/src/ui/**/*.tsx"],
+    languageOptions: {
+      parser: tsParser,
+      ecmaVersion: 9,
+      sourceType: "module",
+      parserOptions: {
+        project: path.join(__dirname, "packages", "extension", "tsconfig.ui.json"),
+      },
     },
   },
   ...reactBaseConfig.map((config) => ({

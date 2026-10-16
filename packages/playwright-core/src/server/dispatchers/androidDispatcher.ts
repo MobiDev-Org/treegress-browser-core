@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -14,24 +14,28 @@
  * limitations under the License.
  */
 
+import { eventsHelper } from '@utils/eventsHelper';
 import { BrowserContextDispatcher } from './browserContextDispatcher';
 import { Dispatcher } from './dispatcher';
 import { AndroidDevice } from '../android/android';
-import { eventsHelper } from '../utils/eventsHelper';
 import { SdkObject } from '../instrumentation';
 
 import type { RootDispatcher } from './dispatcher';
 import type { Android, SocketBackend } from '../android/android';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 export class AndroidDispatcher extends Dispatcher<Android, channels.AndroidChannel, RootDispatcher> implements channels.AndroidChannel {
   _type_Android = true;
-  constructor(scope: RootDispatcher, android: Android) {
+  private readonly _denyLaunch: boolean;
+  constructor(scope: RootDispatcher, android: Android, denyLaunch: boolean) {
     super(scope, android, 'Android', {});
+    this._denyLaunch = denyLaunch;
   }
 
   async devices(params: channels.AndroidDevicesParams, progress: Progress): Promise<channels.AndroidDevicesResult> {
+    if (this._denyLaunch)
+      throw new Error(`Connecting to Android devices is not allowed.`);
     const devices = await this._object.devices(progress, params);
     return {
       devices: devices.map(d => AndroidDeviceDispatcher.from(this, d))
@@ -40,7 +44,6 @@ export class AndroidDispatcher extends Dispatcher<Android, channels.AndroidChann
 }
 
 export class AndroidDeviceDispatcher extends Dispatcher<AndroidDevice, channels.AndroidDeviceChannel, AndroidDispatcher> implements channels.AndroidDeviceChannel {
-  _type_EventTarget = true;
   _type_AndroidDevice = true;
 
   static from(scope: AndroidDispatcher, device: AndroidDevice): AndroidDeviceDispatcher {
@@ -61,48 +64,48 @@ export class AndroidDeviceDispatcher extends Dispatcher<AndroidDevice, channels.
   }
 
   async wait(params: channels.AndroidDeviceWaitParams, progress: Progress) {
-    await progress.race(this._object.send('wait', params));
+    await this._object.send(progress, 'wait', params);
   }
 
   async fill(params: channels.AndroidDeviceFillParams, progress: Progress) {
-    await progress.race(this._object.send('click', { selector: params.androidSelector }));
-    await progress.race(this._object.send('fill', params));
+    await this._object.send(progress, 'click', { selector: params.androidSelector });
+    await this._object.send(progress, 'fill', params);
   }
 
   async tap(params: channels.AndroidDeviceTapParams, progress: Progress) {
-    await progress.race(this._object.send('click', params));
+    await this._object.send(progress, 'click', params);
   }
 
   async drag(params: channels.AndroidDeviceDragParams, progress: Progress) {
-    await progress.race(this._object.send('drag', params));
+    await this._object.send(progress, 'drag', params);
   }
 
   async fling(params: channels.AndroidDeviceFlingParams, progress: Progress) {
-    await progress.race(this._object.send('fling', params));
+    await this._object.send(progress, 'fling', params);
   }
 
   async longTap(params: channels.AndroidDeviceLongTapParams, progress: Progress) {
-    await progress.race(this._object.send('longClick', params));
+    await this._object.send(progress, 'longClick', params);
   }
 
   async pinchClose(params: channels.AndroidDevicePinchCloseParams, progress: Progress) {
-    await progress.race(this._object.send('pinchClose', params));
+    await this._object.send(progress, 'pinchClose', params);
   }
 
   async pinchOpen(params: channels.AndroidDevicePinchOpenParams, progress: Progress) {
-    await progress.race(this._object.send('pinchOpen', params));
+    await this._object.send(progress, 'pinchOpen', params);
   }
 
   async scroll(params: channels.AndroidDeviceScrollParams, progress: Progress) {
-    await progress.race(this._object.send('scroll', params));
+    await this._object.send(progress, 'scroll', params);
   }
 
   async swipe(params: channels.AndroidDeviceSwipeParams, progress: Progress) {
-    await progress.race(this._object.send('swipe', params));
+    await this._object.send(progress, 'swipe', params);
   }
 
-  async info(params: channels.AndroidDeviceTapParams, progress: Progress): Promise<channels.AndroidDeviceInfoResult> {
-    const info = await progress.race(this._object.send('info', params));
+  async info(params: channels.AndroidDeviceInfoParams, progress: Progress): Promise<channels.AndroidDeviceInfoResult> {
+    const info = await this._object.send(progress, 'info', params);
     fixupAndroidElementInfo(info);
     return { info };
   }
@@ -116,33 +119,33 @@ export class AndroidDeviceDispatcher extends Dispatcher<AndroidDevice, channels.
         throw new Error('No mapping for ' + text[i] + ' found');
       keyCodes.push(code);
     }
-    await progress.race(Promise.all(keyCodes.map(keyCode => this._object.send('inputPress', { keyCode }))));
+    await progress.race(Promise.all(keyCodes.map(keyCode => this._object.send(progress, 'inputPress', { keyCode }))));
   }
 
   async inputPress(params: channels.AndroidDeviceInputPressParams, progress: Progress) {
     if (!keyMap.has(params.key))
       throw new Error('Unknown key: ' + params.key);
-    await progress.race(this._object.send('inputPress', { keyCode: keyMap.get(params.key) }));
+    await this._object.send(progress, 'inputPress', { keyCode: keyMap.get(params.key) });
   }
 
   async inputTap(params: channels.AndroidDeviceInputTapParams, progress: Progress) {
-    await progress.race(this._object.send('inputClick', params));
+    await this._object.send(progress, 'inputClick', params);
   }
 
   async inputSwipe(params: channels.AndroidDeviceInputSwipeParams, progress: Progress) {
-    await progress.race(this._object.send('inputSwipe', params));
+    await this._object.send(progress, 'inputSwipe', params);
   }
 
   async inputDrag(params: channels.AndroidDeviceInputDragParams, progress: Progress) {
-    await progress.race(this._object.send('inputDrag', params));
+    await this._object.send(progress, 'inputDrag', params);
   }
 
   async screenshot(params: channels.AndroidDeviceScreenshotParams, progress: Progress): Promise<channels.AndroidDeviceScreenshotResult> {
-    return { binary: await progress.race(this._object.screenshot()) };
+    return { binary: await this._object.screenshot(progress) };
   }
 
   async shell(params: channels.AndroidDeviceShellParams, progress: Progress): Promise<channels.AndroidDeviceShellResult> {
-    return { result: await progress.race(this._object.shell(params.command)) };
+    return { result: await this._object.shell(progress, params.command) };
   }
 
   async open(params: channels.AndroidDeviceOpenParams, progress: Progress): Promise<channels.AndroidDeviceOpenResult> {
@@ -155,7 +158,7 @@ export class AndroidDeviceDispatcher extends Dispatcher<AndroidDevice, channels.
   }
 
   async push(params: channels.AndroidDevicePushParams, progress: Progress) {
-    await progress.race(this._object.push(progress, params.file, params.path, params.mode));
+    await this._object.push(progress, params.file, params.path, params.mode);
   }
 
   async launchBrowser(params: channels.AndroidDeviceLaunchBrowserParams, progress: Progress): Promise<channels.AndroidDeviceLaunchBrowserResult> {
@@ -164,7 +167,7 @@ export class AndroidDeviceDispatcher extends Dispatcher<AndroidDevice, channels.
   }
 
   async close(params: channels.AndroidDeviceCloseParams, progress: Progress) {
-    await this._object.close();
+    await this._object.close(progress);
   }
 
   async connectToWebView(params: channels.AndroidDeviceConnectToWebViewParams, progress: Progress): Promise<channels.AndroidDeviceConnectToWebViewResult> {

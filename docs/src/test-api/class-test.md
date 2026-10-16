@@ -85,6 +85,23 @@ You can also add annotations during runtime by manipulating [`property: TestInfo
 
 Learn more about [test annotations](../test-annotations.md).
 
+**Locks**
+
+You can declare named locks to prevent specific tests from running at the same time, while all other tests continue to run in parallel. Tests that share a lock name never run concurrently, even when they are declared in different files or belong to different [projects](../test-projects.md). This is useful when a few tests access a shared resource that does not support concurrent access.
+
+```js
+import { test, expect } from '@playwright/test';
+
+test('update user settings', {
+  lock: 'user-settings',
+}, async ({ page }) => {
+  // This test never runs concurrently with other tests
+  // that declare the 'user-settings' lock.
+});
+```
+
+Learn more about [test locks](../test-parallel.md#test-locks).
+
 ### param: Test.(call).title
 * since: v1.10
 - `title` <[string]>
@@ -98,6 +115,7 @@ Test title.
   - `annotation` ?<[Object]|[Array]<[Object]>>
     - `type` <[string]> Annotation type, for example `'issue'`.
     - `description` ?<[string]> Optional annotation description, for example an issue url.
+  - `lock` ?<[string]|[Array]<[string]>>
 
 Additional test details.
 
@@ -427,6 +445,26 @@ test.describe('two annotated tests', {
 
 Learn more about [test annotations](../test-annotations.md).
 
+**Locks**
+
+You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name never run concurrently. Learn more about [test locks](../test-parallel.md#test-locks).
+
+```js
+import { test, expect } from '@playwright/test';
+
+test.describe('two tests with a lock', {
+  lock: 'user-settings',
+}, () => {
+  test('one', async ({ page }) => {
+    // ...
+  });
+
+  test('two', async ({ page }) => {
+    // ...
+  });
+});
+```
+
 ### param: Test.describe.title
 * since: v1.10
 - `title` ?<[string]>
@@ -440,6 +478,7 @@ Group title.
   - `annotation` ?<[Object]|[Array]<[Object]>>
     - `type` <[string]>
     - `description` ?<[string]>
+  - `lock` ?<[string]|[Array]<[string]>>
 
 Additional details for all tests in the group.
 
@@ -502,6 +541,14 @@ Learn more about the execution modes [here](../test-parallel.md).
   test('runs second', async ({ page }) => {});
   ```
 
+* Declaring locks for all tests in a scope.
+
+  ```js
+  test.describe.configure({ lock: 'user-settings' });
+  test('update user settings', async ({ page }) => {});
+  test('reset user settings', async ({ page }) => {});
+  ```
+
 * Run multiple describes in parallel, but tests inside each describe in order.
 
   ```js
@@ -519,6 +566,12 @@ Learn more about the execution modes [here](../test-parallel.md).
     test('in order B2', async ({ page }) => {});
   });
   ```
+
+### option: Test.describe.configure.lock
+* since: v1.64
+- `lock` <[string]|[Array]<[string]>>
+
+Additional named locks for all tests in the enclosing scope, including nested groups.  Locks are added to those declared in [`method: Test.describe`] details and previous calls to [`method: Test.describe.configure`].
 
 ### option: Test.describe.configure.mode
 * since: v1.10
@@ -1041,6 +1094,33 @@ Learn more about [fixtures](../test-fixtures.md) and [parametrizing tests](../te
 
 An object containing fixtures and/or options. Learn more about [fixtures format](../test-fixtures.md).
 
+
+
+
+## method: Test.abort
+* since: v1.60
+
+Aborts the currently running test by throwing an error. The test is immediately marked as failed and execution stops. This is useful from inside a fixture or a route handler when you have detected an unrecoverable misuse and want to fail the test right away.
+
+**Usage**
+
+```js
+import { test, expect } from '@playwright/test';
+
+test('does not publish to shared page', async ({ page }) => {
+  await page.route('**/publish', route => {
+    test.abort('Tests must not publish to the shared page. Use the `clone` option.');
+    return route.abort();
+  });
+  // ...
+});
+```
+
+### param: Test.abort.message
+* since: v1.60
+- `message` ?<[string]>
+
+Optional message describing the reason for the abort. It will be included in the failure error.
 
 
 
@@ -1778,6 +1858,18 @@ Whether to box the step in the report. Defaults to `false`. When the step is box
 
 Specifies a custom location for the step to be shown in test reports and trace viewer. By default, location of the [`method: Test.step`] call is shown.
 
+### option: Test.step.params
+* since: v1.63
+- `params` <[Object]<[string], [any]>>
+
+Arbitrary serializable parameters describing the step. They are reported to the reporters as `testStep.params` and are shown in the trace viewer.
+
+### option: Test.step.subtitle
+* since: v1.63
+- `subtitle` <[string]>
+
+Step subtitle that complements the title, for example the target of the step. It is reported to the reporters as `testStep.subtitle` and is shown next to the title in test reports and the trace viewer.
+
 ## async method: Test.step.skip
 * since: v1.50
 - returns: <[void]>
@@ -1824,6 +1916,18 @@ Whether to box the step in the report. Defaults to `false`. When the step is box
 - `location` <[Location]>
 
 Specifies a custom location for the step to be shown in test reports and trace viewer. By default, location of the [`method: Test.step`] call is shown.
+
+### option: Test.step.skip.params
+* since: v1.63
+- `params` <[Object]<[string], [any]>>
+
+Arbitrary serializable parameters describing the step. They are reported to the reporters as `testStep.params` and are shown in the trace viewer.
+
+### option: Test.step.skip.subtitle
+* since: v1.63
+- `subtitle` <[string]>
+
+Step subtitle that complements the title, for example the target of the step. It is reported to the reporters as `testStep.subtitle` and is shown next to the title in test reports and the trace viewer.
 
 ### option: Test.step.skip.timeout
 * since: v1.50

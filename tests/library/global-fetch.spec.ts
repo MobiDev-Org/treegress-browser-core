@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
 import os from 'os';
 import * as util from 'util';
-import { getPlaywrightVersion } from '../../packages/playwright-core/lib/server/utils/userAgent';
+import { getPlaywrightVersion, utils } from '../../packages/playwright-core/lib/coreBundle';
 import { expect, playwrightTest as base } from '../config/browserTest';
-import { kTargetClosedErrorMessage } from 'tests/config/errors';
 
 const it = base.extend({
   context: async ({}, use) => {
@@ -87,6 +87,28 @@ it('should propagate extra http headers with redirects', async ({ playwright, se
   expect(req1.headers['my-secret']).toBe('Value');
   expect(req2.headers['my-secret']).toBe('Value');
   expect(req3.headers['my-secret']).toBe('Value');
+  await request.dispose();
+});
+
+it('should preserve authorization on same-origin redirect but strip on cross-origin', async ({ playwright, server }) => {
+  server.setRedirect('/same/redirect', '/same/dest');
+  server.setRedirect('/cross/redirect', server.CROSS_PROCESS_PREFIX + '/cross/dest');
+  const request = await playwright.request.newContext({
+    extraHTTPHeaders: { 'Authorization': 'Bearer secret' },
+  });
+
+  const [sameDestReq] = await Promise.all([
+    server.waitForRequest('/same/dest'),
+    request.get(`${server.PREFIX}/same/redirect`),
+  ]);
+  expect(sameDestReq.headers['authorization']).toBe('Bearer secret');
+
+  const [crossDestReq] = await Promise.all([
+    server.waitForRequest('/cross/dest'),
+    request.get(`${server.PREFIX}/cross/redirect`),
+  ]);
+  expect(crossDestReq.headers['authorization']).toBeUndefined();
+
   await request.dispose();
 });
 
@@ -198,6 +220,49 @@ it('should support HTTPCredentials.send', async ({ playwright, server }) => {
   await request.dispose();
 });
 
+it('should support multiple httpCredentials', async ({ playwright, server }) => {
+  server.setAuth('/empty.html', 'user1', 'pass1');
+  const request = await playwright.request.newContext({
+    httpCredentials: [
+      { username: 'user1', password: 'pass1', origin: server.PREFIX },
+      { username: 'user2', password: 'pass2', origin: server.CROSS_PROCESS_PREFIX },
+    ]
+  });
+  const response1 = await request.get(server.EMPTY_PAGE);
+  expect(response1.status()).toBe(200);
+  // Wrong credentials are picked for the other origin.
+  const response2 = await request.get(server.CROSS_PROCESS_PREFIX + '/empty.html');
+  expect(response2.status()).toBe(401);
+  await request.dispose();
+});
+
+it('should support HTTPCredentials.send with multiple httpCredentials', async ({ playwright, server }) => {
+  const request = await playwright.request.newContext({
+    httpCredentials: [
+      { username: 'user1', password: 'pass1', origin: server.PREFIX, send: 'always' },
+      { username: 'user2', password: 'pass2', origin: server.CROSS_PROCESS_PREFIX, send: 'unauthorized' },
+    ]
+  });
+  {
+    const [serverRequest, response] = await Promise.all([
+      server.waitForRequest('/empty.html'),
+      request.get(server.EMPTY_PAGE)
+    ]);
+    expect(serverRequest.headers.authorization).toBe('Basic ' + Buffer.from('user1:pass1').toString('base64'));
+    expect(response.status()).toBe(200);
+  }
+  {
+    const [serverRequest, response] = await Promise.all([
+      server.waitForRequest('/empty.html'),
+      request.get(server.CROSS_PROCESS_PREFIX + '/empty.html')
+    ]);
+    // This origin has send: 'unauthorized', so credentials are not sent proactively.
+    expect(serverRequest.headers.authorization).toBe(undefined);
+    expect(response.status()).toBe(200);
+  }
+  await request.dispose();
+});
+
 it('should support global ignoreHTTPSErrors option', async ({ playwright, httpsServer }) => {
   const request = await playwright.request.newContext({ ignoreHTTPSErrors: true });
   const response = await request.get(httpsServer.EMPTY_PAGE);
@@ -211,6 +276,71 @@ it('should propagate ignoreHTTPSErrors on redirects', async ({ playwright, https
   const response = await request.get(httpsServer.PREFIX + '/redir', { ignoreHTTPSErrors: true });
   expect(response.status()).toBe(200);
   await request.dispose();
+});
+
+it('should return server address from response', async ({ playwright, server }) => {
+  const request = await playwright.request.newContext();
+  // The second request reuses the keep-alive socket and should report the address as well.
+  for (let i = 0; i < 2; i++) {
+    const response = await request.get(server.EMPTY_PAGE);
+    const addr = await response.serverAddr();
+    expect(addr!.ipAddress).toMatch(/^(127\.0\.0\.1|::1)$/);
+    expect(addr!.port).toBe(server.PORT);
+  }
+  await request.dispose();
+});
+
+it('should return security details from response', async ({ playwright, httpsServer }) => {
+  const request = await playwright.request.newContext({ ignoreHTTPSErrors: true });
+  // The second request reuses the keep-alive socket and should report the details as well.
+  for (let i = 0; i < 2; i++) {
+    const response = await request.get(httpsServer.EMPTY_PAGE);
+    expect(await response.securityDetails()).toEqual({ issuer: 'playwright-test', protocol: 'TLSv1.3', subjectName: 'playwright-test', validFrom: 1691708270, validTo: 2007068270 });
+  }
+  await request.dispose();
+});
+
+it('should return security details for a resumed TLS session', async ({ playwright, httpsServer }) => {
+  const expected = { issuer: 'playwright-test', protocol: 'TLSv1.3', subjectName: 'playwright-test', validFrom: 1691708270, validTo: 2007068270 };
+  const request = await playwright.request.newContext({ ignoreHTTPSErrors: true });
+  // 'Connection: close' drops the socket, so the next request opens a new one and resumes
+  // the cached TLS session. A resumed session does not carry the server certificate.
+  const first = await request.get(httpsServer.EMPTY_PAGE, { headers: { connection: 'close' } });
+  expect(await first.securityDetails()).toEqual(expected);
+  const second = await request.get(httpsServer.EMPTY_PAGE);
+  expect(await second.securityDetails()).toEqual(expected);
+  await request.dispose();
+});
+
+it('should return null security details for http response', async ({ playwright, server }) => {
+  const request = await playwright.request.newContext();
+  const response = await request.get(server.EMPTY_PAGE);
+  expect(await response.securityDetails()).toBeNull();
+  await request.dispose();
+});
+
+it('should return security details for certificate with multiple CN attributes', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41815' },
+}, async ({ playwright, asset }) => {
+  const server = utils.createHttpsServer({
+    key: fs.readFileSync(asset('multi-value-rdn/key.pem')),
+    cert: fs.readFileSync(asset('multi-value-rdn/cert.pem')),
+  }, (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const request = await playwright.request.newContext({ ignoreHTTPSErrors: true });
+    const response = await request.get(`https://localhost:${server.address().port}/`);
+    expect(response.status()).toBe(200);
+    const securityDetails = await response.securityDetails();
+    expect(securityDetails.subjectName).toBe('localhost');
+    expect(securityDetails.issuer).toBe('localhost');
+    await request.dispose();
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 it('should resolve url relative to global baseURL option', async ({ playwright, server }) => {
@@ -302,7 +432,7 @@ it('should abort redirected requests when context is disposed', async ({ playwri
     server.waitForRequest('/test').then(() => request.dispose())
   ]);
   expect(result instanceof Error).toBeTruthy();
-  expect(result.message).toContain(kTargetClosedErrorMessage);
+  expect(result.message).toMatch(/Request context disposed|Target page, context or browser has been closed/);
   await connectionClosed;
   await request.dispose();
 });
@@ -586,6 +716,64 @@ it('should retry ECONNRESET', {
   expect(response.status()).toBe(200);
   expect(await response.text()).toBe('Hello!');
   expect(requestCount).toBe(4);
+  await request.dispose();
+});
+
+it('should expose node error code on network errors', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42532' }
+}, async ({ playwright, server }) => {
+  // Reset the connection so that node reports a system error instead of a plain 'socket hang up'.
+  server.setRoute('/reset', req => req.socket.resetAndDestroy());
+  const request = await playwright.request.newContext();
+  const error = await request.get(server.PREFIX + '/reset', { maxRetries: 0 }).catch(e => e);
+  expect(error.message).toContain('ECONNRESET');
+  expect(error.code).toBe('ECONNRESET');
+  expect(error.syscall).toBe(undefined);
+  expect(error.errno).toBe(undefined);
+  await request.dispose();
+});
+
+it('should append node error code to the message', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42532' }
+}, async ({ playwright, server }) => {
+  // Node reports this one as a plain 'socket hang up' that does not mention the code.
+  server.setRoute('/hangup', req => req.socket.destroy());
+  const request = await playwright.request.newContext();
+  const error = await request.get(server.PREFIX + '/hangup', { maxRetries: 0 }).catch(e => e);
+  expect(error.message).toContain('socket hang up (ECONNRESET)');
+  expect(error.code).toBe('ECONNRESET');
+  await request.dispose();
+});
+
+it('should not crash when server refuses body before reading it', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42074' }
+}, async ({ playwright, server }) => {
+  // Respond without reading the body, then reset. Node emits a late write
+  // EPIPE/ECONNRESET on the request socket; without a listener that becomes an
+  // unhandled 'error' and kills the process.
+  server.setRoute('/refuse', (req, res) => {
+    req.pause();
+    setTimeout(() => {
+      res.writeHead(413, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'too large' }));
+      req.socket.destroy();
+    }, 50);
+  });
+
+  const request = await playwright.request.newContext();
+  // Large body so the client is still writing when the reset lands.
+  // Prefer CROSS_PROCESS_PREFIX (127.0.0.1) over PREFIX (localhost/::1) for a stable race.
+  const result = await request.post(server.CROSS_PROCESS_PREFIX + '/refuse', {
+    data: Buffer.alloc(20 * 1024 * 1024, 0x78),
+    headers: { 'content-type': 'text/plain' },
+    maxRetries: 0,
+  }).catch(e => e);
+  if (result instanceof Error) {
+    expect(result.message).toMatch(/apiRequestContext\.post|ECONNRESET|EPIPE|ECONNABORTED|socket/i);
+  } else {
+    expect(result.status()).toBe(413);
+    expect(await result.text()).toBe(JSON.stringify({ error: 'too large' }));
+  }
   await request.dispose();
 });
 

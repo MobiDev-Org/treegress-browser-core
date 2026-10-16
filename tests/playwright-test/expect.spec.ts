@@ -16,7 +16,8 @@
 
 import path from 'path';
 import { test, expect, parseTestRunnerOutput, stripAnsi } from './playwright-test-fixtures';
-const { spawnAsync } = require('../../packages/playwright-core/lib/utils');
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
+const { spawnAsync } = utils;
 
 test('should not expand huge arrays', async ({ runInlineTest }) => {
   const result = await runInlineTest({
@@ -229,7 +230,9 @@ test('should work with default expect matchers and esModuleInterop=false', async
         'rootDir': '.',
         'esModuleInterop': false,
         'allowSyntheticDefaultImports': true,
-        'lib': ['esnext', 'dom', 'DOM.Iterable']
+        'lib': ['esnext', 'dom', 'DOM.Iterable'],
+        'types': ['node'],
+        'ignoreDeprecations': '6.0',
       },
       'exclude': [
         'node_modules'
@@ -411,72 +414,18 @@ test('should return void/Promise when appropriate', async ({ runTSC }) => {
   expect(result.exitCode).toBe(0);
 });
 
-test.describe('helpful expect errors', () => {
-  test('top-level', async ({ runInlineTest }) => {
-    const result = await runInlineTest({
-      'a.spec.ts': `
-        import { test, expect } from '@playwright/test';
-        test('explodes', () => {
-          expect(1).nope();
-        });
-      `
-    });
-
-    expect(result.output).toContain(`expect: Property 'nope' not found.`);
+test('bare expect call should not throw', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.spec.ts': `
+      import { test, expect } from '@playwright/test';
+      test('explodes', () => {
+        expect('');
+      });
+    `
   });
 
-  test('soft', async ({ runInlineTest }) => {
-    const result = await runInlineTest({
-      'a.spec.ts': `
-        import { test, expect } from '@playwright/test';
-        test('explodes', () => {
-          expect.soft(1).nope();
-        });
-      `
-    });
-
-    expect(result.output).toContain(`expect: Property 'nope' not found.`);
-  });
-
-  test('poll', async ({ runInlineTest }) => {
-    const result = await runInlineTest({
-      'a.spec.ts': `
-        import { test, expect } from '@playwright/test';
-        test('explodes', () => {
-          expect.poll(() => {}).nope();
-        });
-      `
-    });
-
-    expect(result.output).toContain(`expect: Property 'nope' not found.`);
-  });
-
-  test('not', async ({ runInlineTest }) => {
-    const result = await runInlineTest({
-      'a.spec.ts': `
-        import { test, expect } from '@playwright/test';
-        test('explodes', () => {
-          expect(1).not.nope();
-        });
-      `
-    });
-
-    expect(result.output).toContain(`expect: Property 'nope' not found.`);
-  });
-
-  test('bare', async ({ runInlineTest }) => {
-    const result = await runInlineTest({
-      'a.spec.ts': `
-        import { test, expect } from '@playwright/test';
-        test('explodes', () => {
-          expect('');
-        });
-      `
-    });
-
-    expect(result.exitCode).toBe(0);
-    expect(result.passed).toBe(1);
-  });
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
 });
 
 test('should reasonably work in global setup', async ({ runInlineTest }) => {
@@ -991,6 +940,32 @@ test('should support mergeExpects', async ({ runInlineTest }) => {
   expect(result.exitCode).toBe(0);
 });
 
+test('should support mergeExpects with builtin matcher overrides', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.spec.ts': `
+      import { test, mergeExpects, expect as baseExpect } from '@playwright/test';
+
+      const expect1 = baseExpect.extend({
+        async toBeVisible(locator) {
+          await baseExpect(locator).toBeVisible();
+          console.log('%%merged custom');
+          return { pass: true, message: () => '' };
+        }
+      });
+
+      const expect = mergeExpects(expect1);
+
+      test('custom matcher', async ({ page }) => {
+        await page.setContent('<h1>Installation</h1>');
+        await expect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
+        await baseExpect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
+      });
+    `
+  }, { workers: 1 });
+  expect(result.outputLines).toEqual(['merged custom']);
+  expect(result.exitCode).toBe(0);
+});
+
 test('should respect timeout from configured expect when used outside of the test runner', async ({ runInlineTest, writeFiles, runTSC }) => {
 
   const files = {
@@ -1165,6 +1140,52 @@ test('expect.extend should fall back to legacy behavior', async ({ runInlineTest
   ]);
 });
 
+test('expect.extend should not override builtin matchers on base expect', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'expect-test.spec.ts': `
+      import { test, expect } from '@playwright/test';
+
+      const customExpect = expect.extend({
+        async toBeVisible(locator) {
+          await expect(locator).toBeVisible();
+          console.log('%%custom');
+          return { pass: true, message: () => 'custom matcher' };
+        },
+      });
+
+      test('custom matcher can call builtin matcher with the same name', async ({ page }) => {
+        await page.setContent('<h1>Installation</h1>');
+        await customExpect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
+      });
+    `
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual(['custom']);
+});
+
+test('expect.extend should not override builtin matchers through legacy behavior', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'expect-test.spec.ts': `
+      import { test, expect } from '@playwright/test';
+
+      expect.extend({
+        async toBeVisible(locator) {
+          await expect(locator).toBeVisible();
+          console.log('%%legacy custom');
+          return { pass: true, message: () => 'custom matcher' };
+        },
+      });
+
+      test('base expect keeps builtin matcher', async ({ page }) => {
+        await page.setContent('<h1>Installation</h1>');
+        await expect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
+      });
+    `
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual([]);
+});
+
 test('custom asymmetric matchers should work with expect.extend', async ({ runInlineTest }) => {
   const result = await runInlineTest({
     'expect-test.spec.ts': `
@@ -1318,6 +1339,28 @@ test('should support arrayOf', async ({ runInlineTest }) => {
   expect(result.passed).toBe(1);
   expect(result.failed).toBe(1);
   expect(result.output).toContain('ArrayOf Any<Number>');
+});
+
+test('should support arrayOf with constructor', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'expect-test.spec.ts': `
+      import { test, expect } from '@playwright/test';
+      class Example {}
+      test('pass', () => {
+        expect(['a', 'b', 'c']).toEqual(expect.arrayOf(String));
+        expect([1, 2, 3]).toEqual(expect.arrayOf(Number));
+        expect([new Example(), new Example()]).toEqual(expect.arrayOf(Example));
+        expect(['a', 1]).toEqual(expect.not.arrayOf(String));
+      });
+      test('fail', () => {
+        expect(['a', 'b', 3]).toEqual(expect.arrayOf(String));
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.passed).toBe(1);
+  expect(result.failed).toBe(1);
+  expect(result.output).toContain('ArrayOf Any<String>');
 });
 
 test('should account for undefined matcherResult', async ({ runInlineTest }) => {

@@ -24,10 +24,8 @@ env:
 jobs:
   test_bidi:
     name: BiDi
-    environment: ${{ github.event_name == 'push' && 'allow-uploading-flakiness-results' || null }}
     runs-on: ubuntu-24.04
     permissions:
-      id-token: write   # This is required for OIDC login (azure/login) to succeed
       contents: read    # This is required for actions/checkout to succeed
     strategy:
       fail-fast: false
@@ -39,13 +37,13 @@ jobs:
         - isPullRequest: true
           channel: bidi-chromium
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       if: github.event_name != 'workflow_dispatch'
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       if: github.event_name == 'workflow_dispatch'
       with:
         ref: ${{ github.event.inputs.ref }}
-    - uses: actions/setup-node@v6
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: 20
     - run: npm ci
@@ -55,6 +53,8 @@ jobs:
     - run: npx playwright install --with-deps chromium
     - if: matrix.channel == 'moz-firefox-nightly'
       run: |
+        sudo apt-get update
+        sudo apt-get install -y libavcodec60
         echo "BIDI_FFPATH=$(npx -y @puppeteer/browsers install firefox@nightly | tail -n1 | sed 's/^[^ ]* *//')" >> "$GITHUB_ENV"
     - name: Run tests
       run: xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" -- npm run biditest -- --retries=${{ matrix.isPullRequest && 2 || 0 }} --project=${{ matrix.channel }}*
@@ -62,7 +62,7 @@ jobs:
         PWTEST_USE_BIDI_EXPECTATIONS: ${{ matrix.isPullRequest && '1' || '' }}
     - name: Upload csv report to GitHub
       if: ${{ !cancelled() }}
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: csv-report-${{ matrix.channel }}
         path: test-results/report.csv
@@ -70,25 +70,14 @@ jobs:
 
     - name: Upload json report to GitHub
       if: ${{ !cancelled() }}
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: json-report-${{ matrix.channel }}
         path: test-results/report.json
         retention-days: 7
 
-    - name: Azure Login
-      if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
-      uses: azure/login@v2
+    - name: Upload parquet report
+      if: ${{ !cancelled() }}
+      uses: ./.github/actions/upload-parquet-report
       with:
-        client-id: ${{ secrets.AZURE_BLOB_REPORTS_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_BLOB_REPORTS_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_BLOB_REPORTS_SUBSCRIPTION_ID }}
-
-    - name: Upload report.csv to Azure
-      if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
-      run: |
-        REPORT_DIR='bidi-reports'
-        azcopy cp "./test-results/report.csv" "https://mspwblobreport.blob.core.windows.net/\$web/$REPORT_DIR/${{ matrix.channel }}.csv"
-        echo "Report url: https://mspwblobreport.z1.web.core.windows.net/$REPORT_DIR/${{ matrix.channel }}.csv"
-      env:
-        AZCOPY_AUTO_LOGIN_TYPE: AZCLI
+        job_name: ${{ matrix.channel }}

@@ -58,7 +58,7 @@
  */
 
 import type { TraceModel } from '@isomorphic/trace/traceModel';
-import type { Entry } from '@trace/har';
+import type { Entry } from '@isomorphic/trace/versions/har';
 
 // The following function is derived from Chromium's source code
 // https://github.com/ChromeDevTools/devtools-frontend/blob/5d4c12362e84535371d8b966b0c7e421c236b720/front_end/panels/network/NetworkLogView.ts#L2441
@@ -290,7 +290,7 @@ export async function generateFetchCall(model: TraceModel | undefined, resource:
 }
 
 async function fetchRequestPostData(model: TraceModel | undefined, resource: Entry) {
-  return (model && resource.request.postData?._sha1) ?
-    await fetch(model.createRelativeUrl(`sha1/${resource.request.postData._sha1}`)).then(r => r.text())
+  return (model && resource.request.postData?._file) ?
+    await fetch(model.createRelativeUrl(`file/${resource.request.postData._file}`)).then(r => r.text())
     : resource.request.postData?.text;
 }

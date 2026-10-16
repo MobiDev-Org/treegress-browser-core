@@ -63,7 +63,7 @@ test('should succeed', async ({ runInlineTest }) => {
 test('should report suite errors', async ({ runInlineTest }) => {
   const { exitCode, failed, output } = await runInlineTest({
     'suite-error.spec.ts': `
-      if (new Error().stack.includes('workerMain'))
+      if (process.env.TEST_WORKER_INDEX)
         throw new Error('Suite error');
 
       import { test, expect } from '@playwright/test';
@@ -409,6 +409,37 @@ test('should support describe() without a title', async ({ runInlineTest }) => {
   expect(result.exitCode).toBe(0);
   expect(result.passed).toBe(1);
   expect(result.output).toContain('a.spec.ts:6:17 › suite1 › suite2 › my test');
+});
+
+test('should hint at async describe() callbacks when test() is called too late', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'data.json': `{"entries":{"a":{"id":"a","title":"A"},"b":{"id":"b","title":"B"}}}`,
+    'a.spec.ts': `
+      import { test, expect } from '@playwright/test';
+      test.describe('theme', async () => {
+        const { default: data } = await import('./data.json', { with: { type: 'json' } });
+        for (const entry of Object.values(data.entries))
+          test(entry.title, async () => {});
+      });
+    `,
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain('Playwright Test did not expect test() to be called here.');
+  expect(result.output).toContain('You are calling test() from an async test.describe() block. Only sync ones are supported.');
+});
+
+test('should allow async describe() callback that registers tests synchronously', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.spec.ts': `
+      import { test, expect } from '@playwright/test';
+      test.describe('theme', async () => {
+        test('one', async () => {});
+        test('two', async () => {});
+      });
+    `,
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(2);
 });
 
 test('test.{skip,fixme} should define a skipped test', async ({ runInlineTest }) => {

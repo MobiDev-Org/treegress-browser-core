@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -20,18 +20,18 @@ import net from 'net';
 import stream from 'stream';
 import tls from 'tls';
 
-import { SocksProxy } from './utils/socksProxy';
-import { escapeHTML, generateSelfSignedCertificate, rewriteErrorMessage } from '../utils';
+import { getProxyForUrl } from 'proxy-from-env';
+import { SocksProxy } from '@utils/socksProxy';
+import { debugLogger } from '@utils/debugLogger';
+import { escapeHTML } from '@isomorphic/stringUtils';
+import { generateSelfSignedCertificate } from '@utils/crypto';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { createProxyAgent, createSocket } from '@utils/network';
 import { verifyClientCertificates } from './browserContext';
-import { createProxyAgent } from './utils/network';
-import { debugLogger } from './utils/debugLogger';
-import { createSocket } from './utils/happyEyeballs';
-import { getProxyForUrl } from '../utilsBundle';
-
 import type * as types from './types';
-import type { SocksSocketClosedPayload, SocksSocketDataPayload, SocksSocketRequestedPayload } from './utils/socksProxy';
+import type { SocksSocketClosedPayload, SocksSocketDataPayload, SocksSocketRequestedPayload } from '@utils/socksProxy';
 import type https from 'https';
-import type { Progress } from '@protocol/progress';
+import type { Progress } from './progress';
 
 let dummyServerTlsOptions: tls.TlsOptions | undefined = undefined;
 function loadDummyServerCertsIfNeeded() {
@@ -108,7 +108,8 @@ class SocksProxyConnection {
     this.uid = uid;
     this.host = host;
     this.port = port;
-    this._serverCloseEventListener = () => {
+    this._serverCloseEventListener = async () => {
+      await this._brorwserDecrypted?.catch(() => {});
       this._browserEncrypted.destroy();
     };
     this._browserEncrypted = new stream.Duplex({
@@ -128,7 +129,7 @@ class SocksProxyConnection {
   }
 
   async connect() {
-    const proxyAgent = this.socksProxy.getProxyAgent(this.host, this.port);
+    const proxyAgent = this.socksProxy._getProxyAgent(this.host, this.port);
     if (proxyAgent)
       this._serverEncrypted = await proxyAgent.connect(new EventEmitter() as any, { host: rewriteToLocalhostIfNeeded(this.host), port: this.port, secureEndpoint: false });
     else
@@ -147,21 +148,23 @@ class SocksProxyConnection {
     });
   }
 
-  public onClose() {
+  onClose() {
     // Close the other end and cleanup TLS resources.
     this._serverEncrypted.destroy();
     this._browserEncrypted.destroy();
     this._closed = true;
   }
 
-  public onData(data: Buffer) {
+  onData(data: Buffer) {
     // HTTP / TLS are client-hello based protocols. This allows us to detect
     // the protocol on the first package and attach appropriate listeners.
     if (!this._firstPackageReceived) {
       this._firstPackageReceived = true;
-      // 0x16 is SSLv3/TLS "handshake" content type: https://en.wikipedia.org/wiki/Transport_Layer_Security#TLS_record
-      if (data[0] === 0x16)
-        this._establishTlsTunnel(this._browserEncrypted, data);
+      // 0x16 is the TLS "handshake" content type. Only intercept it when the origin has a client
+      // certificate; otherwise pass the connection through so the browser talks TLS to the server directly.
+      const secureContext = data[0] === 0x16 ? this.socksProxy.secureContextMap.get(normalizeOrigin(`https://${this.host}:${this.port}`)) : undefined;
+      if (secureContext)
+        this._establishTlsTunnel(this._browserEncrypted, data, secureContext);
       else
         this._establishPlaintextTunnel(this._browserEncrypted);
     }
@@ -175,18 +178,20 @@ class SocksProxyConnection {
     this._serverEncrypted.pipe(browserEncrypted);
   }
 
-  private _establishTlsTunnel(browserEncrypted: stream.Duplex, clientHello: Buffer) {
+  private _establishTlsTunnel(browserEncrypted: stream.Duplex, clientHello: Buffer, secureContext: tls.SecureContext) {
     const browserALPNProtocols = parseALPNFromClientHello(clientHello) || ['http/1.1'];
     debugLogger.log('client-certificates', `Browser->Proxy ${this.host}:${this.port} offers ALPN ${browserALPNProtocols}`);
+
+    const rejectUnauthorized = !this.socksProxy.ignoreHTTPSErrors;
 
     const serverDecrypted = tls.connect({
       socket: this._serverEncrypted,
       host: this.host,
       port: this.port,
-      rejectUnauthorized: !this.socksProxy.ignoreHTTPSErrors,
+      rejectUnauthorized,
       ALPNProtocols: browserALPNProtocols,
       servername: !net.isIP(this.host) ? this.host : undefined,
-      secureContext: this.socksProxy.secureContextMap.get(new URL(`https://${this.host}:${this.port}`).origin),
+      secureContext,
     }, async () => {
       const browserDecrypted = await this._upgradeToTLSIfNeeded(browserEncrypted, serverDecrypted.alpnProtocol);
       debugLogger.log('client-certificates', `Proxy->Server ${this.host}:${this.port} chooses ALPN ${browserDecrypted.alpnProtocol}`);
@@ -219,7 +224,6 @@ class SocksProxyConnection {
       if (browserDecrypted.alpnProtocol === 'h2') {
         // This method is available only in Node.js 20+
         if ('performServerHandshake' in http2) {
-          // @ts-expect-error
           const session: http2.ServerHttp2Session = http2.performServerHandshake(browserDecrypted);
           session.on('error', error => {
             this._browserEncrypted.destroy(error);
@@ -309,11 +313,11 @@ export class ClientCertificatesProxy {
     loadDummyServerCertsIfNeeded();
   }
 
-  getProxyAgent(host: string, port: number) {
-    const proxyFromOptions = createProxyAgent(this._proxy);
-    if (proxyFromOptions)
-      return proxyFromOptions;
-    const proxyFromEnv = getProxyForUrl(`https://${host}:${port}`);
+  _getProxyAgent(host: string, port: number) {
+    const url = new URL(`https://${net.isIPv6(host) ? `[${host}]` : host}:${port}`);
+    if (this._proxy)
+      return createProxyAgent(this._proxy, url);
+    const proxyFromEnv = getProxyForUrl(url.href);
     if (proxyFromEnv)
       return createProxyAgent({ server: proxyFromEnv });
   }
@@ -345,7 +349,7 @@ export class ClientCertificatesProxy {
       await progress.race(proxy._socksProxy.listen(0, '127.0.0.1'));
       return proxy;
     } catch (error) {
-      await proxy.close();
+      await progress.race(proxy.close());
       throw error;
     }
   }

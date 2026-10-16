@@ -15,9 +15,10 @@
  * limitations under the License.
  */
 
-import type { Size } from '../utils/isomorphic/types';
-import type * as channels from '@protocol/channels';
-export type { HeadersArray, Point, Quad, Rect, Size } from '../utils/isomorphic/types';
+import type { Size } from '@isomorphic/types';
+import type { HttpCredentials } from '@protocol/structs';
+import type * as channels from './channels';
+export type { HeadersArray, Point, Quad, Rect, Size } from '@isomorphic/types';
 
 type LoggerSeverity = 'verbose' | 'info' | 'warning' | 'error';
 export interface Logger {
@@ -25,7 +26,7 @@ export interface Logger {
   log(name: string, severity: LoggerSeverity, message: string | Error, args: any[], hints: { color?: string }): void;
 }
 
-export type TimeoutOptions = { timeout?: number };
+export type TimeoutOptions = { timeout?: number, signal?: AbortSignal };
 export type StrictOptions = { strict?: boolean };
 export type Headers = { [key: string]: string };
 
@@ -35,13 +36,18 @@ export type WaitForFunctionOptions = TimeoutOptions & { polling?: 'raf' | number
 export type SelectOption = { value?: string, label?: string, index?: number, valueOrLabel?: string };
 export type SelectOptionOptions = TimeoutOptions & { force?: boolean };
 export type FilePayload = { name: string, mimeType: string, buffer: Buffer };
+export type DropPayload = {
+  files?: string | FilePayload | string[] | FilePayload[],
+  data?: { [mimeType: string]: string },
+};
 export type StorageState = {
   cookies: channels.NetworkCookie[],
   origins: (Omit<channels.OriginStorage, 'indexedDB'>)[],
 };
 export type SetStorageState = {
   cookies?: channels.SetNetworkCookie[],
-  origins?: (Omit<channels.SetOriginStorage, 'indexedDB'> & { indexedDB?: unknown[] })[]
+  origins?: (Omit<channels.SetOriginStorage, 'indexedDB'> & { indexedDB?: unknown[] })[],
+  credentials?: unknown[],
 };
 
 export type LifecycleEvent = channels.LifecycleEvent;
@@ -58,12 +64,11 @@ export type ClientCertificate = {
   passphrase?: string;
 };
 
-export type BrowserContextOptions = Omit<channels.BrowserNewContextOptions, 'viewport' | 'noDefaultViewport' | 'extraHTTPHeaders' | 'clientCertificates' | 'storageState' | 'recordHar' | 'colorScheme' | 'reducedMotion' | 'forcedColors' | 'acceptDownloads' | 'contrast' | 'agent'> & {
+export type BrowserContextOptions = Omit<channels.BrowserNewContextOptions, 'viewport' | 'noDefaultViewport' | 'extraHTTPHeaders' | 'clientCertificates' | 'storageState' | 'recordHar' | 'colorScheme' | 'reducedMotion' | 'forcedColors' | 'acceptDownloads' | 'contrast' | 'agent' | 'httpCredentials'> & {
   viewport?: Size | null;
   extraHTTPHeaders?: Headers;
+  httpCredentials?: HttpCredentials | HttpCredentials[];
   logger?: Logger;
-  videosPath?: string;
-  videoSize?: Size;
   storageState?: string | SetStorageState;
   har?: {
     path: string;
@@ -102,7 +107,6 @@ export type ConnectOptions = {
   exposeNetwork?: string;
   slowMo?: number;
   timeout?: number;
-  logger?: Logger;
 };
 export type LaunchServerOptions = LaunchOptions & {
   host?: string,
@@ -120,6 +124,14 @@ export type LaunchAndroidServerOptions = {
   wsPath?: string,
 };
 
+export type StartServerOptions = {
+  host?: string,
+  port?: number,
+  wsPath?: string,
+  workspaceDir?: string,
+  metadata?: Record<string, any>,
+};
+
 export type SelectorEngine = {
   /**
    * Returns the first element matching given selector in the root's subtree.
@@ -131,7 +143,10 @@ export type SelectorEngine = {
   queryAll(root: HTMLElement, selector: string): HTMLElement[];
 };
 
+export type AnnotatePosition = 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right';
+export type AnnotateOptions = { duration?: number, position?: AnnotatePosition, fontSize?: number };
+
 export type RemoteAddr = channels.RemoteAddr;
 export type SecurityDetails = channels.SecurityDetails;
 
-export type FrameExpectParams = Omit<channels.FrameExpectParams, 'selector'|'expression'|'expectedValue'> & { expectedValue?: any };
+export type FrameExpectParams = Omit<channels.FrameExpectParams, 'selector'|'expression'|'expectedValue'> & { expectedValue?: any, timeout: number, signal?: AbortSignal, title?: string };

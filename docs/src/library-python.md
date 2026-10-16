@@ -5,9 +5,19 @@ title: "Getting started - Library"
 
 ## Installation
 
-### Pip
-
 [<img src="https://badge.fury.io/py/playwright.svg" alt="PyPI version" width="132" height="20" />](https://pypi.python.org/pypi/playwright/)
+
+<Tabs
+  groupId="package-managers"
+  defaultValue="pip"
+  values={[
+    {label: 'Pip', value: 'pip'},
+    {label: 'Poetry', value: 'poetry'},
+    {label: 'uv', value: 'uv'}
+  ]
+}>
+
+<TabItem value="pip">
 
 ```bash
 pip install --upgrade pip
@@ -15,16 +25,29 @@ pip install playwright
 playwright install
 ```
 
-### Conda
+</TabItem>
 
-[<img src="https://img.shields.io/conda/v/microsoft/playwright" alt="Anaconda version" width="160" height="20" />](https://anaconda.org/Microsoft/playwright)
+<TabItem value="poetry">
 
 ```bash
-conda config --add channels conda-forge
-conda config --add channels microsoft
-conda install playwright
+poetry self update
+poetry add playwright
 playwright install
 ```
+
+</TabItem>
+
+<TabItem value="uv">
+
+```bash
+uv self update
+uv add playwright
+playwright install
+```
+
+</TabItem>
+
+</Tabs>
 
 These commands download the Playwright package and install browser binaries for Chromium, Firefox and WebKit. To modify this behavior see [installation parameters](./browsers.md#install-browsers).
 
@@ -176,3 +199,7 @@ On Windows Python 3.7, Playwright sets the default event loop to `ProactorEventL
 ### Threading
 
 Playwright's API is not thread-safe. If you are using Playwright in a multi-threaded environment, you should create a playwright instance per thread. See [threading issue](https://github.com/microsoft/playwright-python/issues/623) for more details.
+
+### Cancelling `asyncio` tasks
+
+Cancelling a task that is running a Playwright call is not supported and results in undefined behavior. If an operation has to outlive its caller, run it in a separate task and protect it with [`asyncio.shield()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.shield).

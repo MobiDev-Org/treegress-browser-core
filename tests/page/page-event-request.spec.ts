@@ -85,7 +85,6 @@ it('should report requests and responses handled by service worker', async ({ pa
 it('should report requests and responses handled by service worker with routing', async ({ page, server, isAndroid, isElectron, mode, browserName, platform }) => {
   it.fixme(isAndroid);
   it.fixme(isElectron);
-  it.fixme(mode.startsWith('service') && platform === 'linux', 'Times out for no clear reason');
 
   const interceptedUrls = [];
   await page.route('**/*', route => {
@@ -261,9 +260,11 @@ it('main resource xhr should have type xhr', async ({ page, server }) => {
 });
 
 it('should finish 204 request', {
-  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/32752' }
-}, async ({ page, server, browserName }) => {
-  it.fixme(browserName === 'chromium');
+  annotation: [
+    { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/32752' },
+    { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42786' },
+  ],
+}, async ({ page, server }) => {
   server.setRoute('/204', (req, res) => {
     res.writeHead(204, { 'Content-type': 'text/plain' });
     res.end();

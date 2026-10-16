@@ -55,6 +55,25 @@ it('should snapshot list with accessible name', async ({ page }) => {
   `);
 });
 
+it('should quote names that look like regexes', async ({ page }) => {
+  await page.setContent(`
+    <nav>
+      <a href="/">/</a>
+      <a href="/docs/">/docs/</a>
+      <a href="/a(b/">/a(b/</a>
+    </nav>
+  `);
+  await checkAndMatchSnapshot(page.locator('nav'), `
+    - navigation:
+      - link "/":
+        - /url: /
+      - link "/docs/":
+        - /url: /docs/
+      - link "/a(b/":
+        - /url: /a(b/
+  `);
+});
+
 it('should snapshot complex', async ({ page }) => {
   await page.setContent(`
     <ul>
@@ -694,4 +713,114 @@ it('match values both against regex and string', async ({ page }) => {
     - link "Log in":
       - /url: /auth?r=/
   `);
+});
+
+it('auto-waits the locator and does not include iframes', async ({ page }) => {
+  await page.setContent(`
+    <div>Hello</div>
+  `);
+
+  const snapshotPromise = page.locator('#target').ariaSnapshot();
+  await page.waitForTimeout(2000);
+  await page.setContent(`
+    <div id=target>
+      Hello
+      <iframe srcdoc="<ul><li>Item 1</li><li>Item 2</li></ul>"></iframe>
+    </div>
+  `);
+  expect(await snapshotPromise).toContainYaml(`
+    - text: Hello
+  `);
+});
+
+it('should limit depth', async ({ page }) => {
+  await page.setContent(`
+    <ul id=target>
+      <li>item2</li>
+      <li>
+        <ul>
+          <li>item3</li>
+        </ul>
+      </li>
+    </ul>
+  `);
+
+  const snapshot = await page.locator('#target').ariaSnapshot({ depth: 1 });
+  expect(snapshot).toContainYaml(`
+    - list:
+      - listitem: item2
+      - listitem
+  `);
+});
+
+it('should snapshot a locator inside an iframe', async ({ page }) => {
+  await page.setContent(`
+    <h1>Main Page</h1>
+    <iframe srcdoc="<ul><li>Item 1</li><li>Item 2</li></ul>"></iframe>
+  `);
+
+  const list = page.frames()[1].locator('ul');
+  const snapshot = await list.ariaSnapshot();
+  expect(snapshot).toContainYaml(`
+    - list:
+      - listitem: Item 1
+      - listitem: Item 2
+  `);
+});
+
+it('should include frames on frameset pages', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41784' } }, async ({ page, server }) => {
+  server.setRoute('/frameset.html', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<frameset cols="50%,50%"><frame src="/frames/frame.html"><frame src="/frames/frame.html"></frameset>`);
+  });
+  await page.goto(server.PREFIX + '/frameset.html');
+  // Like iframes, frames are listed in the snapshot, but their content is not included.
+  expect(await page.ariaSnapshot({ timeout: 3000 })).toBe(unshift(`
+    - iframe
+    - iframe
+  `));
+});
+
+it('should snapshot a locator inside a frameset frame', async ({ page, server }) => {
+  await page.goto(server.PREFIX + '/frames/frameset.html');
+  await checkAndMatchSnapshot(page.frameLocator('frame').first().locator('body'), `
+    - text: Hi, I'm frame
+  `);
+});
+
+it('should snapshot with box from page', async ({ page }) => {
+  await page.setContent(`
+    <button style="position:absolute;left:100px;top:50px;width:80px;height:40px;margin:0;padding:0;border:0;">click</button>
+  `);
+
+  const snapshot = await page.ariaSnapshot({ boxes: true });
+  expect(snapshot).toBe(`- button "click" [box=100,50,80,40]`);
+});
+
+it('should snapshot with box from locator', async ({ page }) => {
+  await page.setContent(`
+    <div style="position:absolute;left:10px;top:20px;width:200px;height:100px;">
+      <button style="position:absolute;left:5px;top:5px;width:60px;height:30px;margin:0;padding:0;border:0;">ok</button>
+    </div>
+  `);
+
+  const snapshot = await page.locator('div').ariaSnapshot({ boxes: true });
+  expect(snapshot).toBe(`- button "ok" [box=15,25,60,30]`);
+});
+
+it('should not include box when option is omitted', async ({ page }) => {
+  await page.setContent(`<button>click</button>`);
+  const snapshot = await page.ariaSnapshot();
+  expect(snapshot).not.toMatch(/\[box=/);
+});
+
+it('should not include hidden iframes', async ({ page }) => {
+  await page.setContent(`
+    <iframe name="visible" srcdoc="<button>Visible</button>"></iframe>
+    <iframe name="hidden" style="visibility: hidden" srcdoc="<button>Hidden</button>"></iframe>
+    <iframe name="none" style="display: none" srcdoc="<button>None</button>"></iframe>
+  `);
+  expect(await page.ariaSnapshot()).toBe(unshift(`
+    - iframe
+  `));
 });

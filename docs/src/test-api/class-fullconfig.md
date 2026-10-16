@@ -4,11 +4,34 @@
 
 Resolved configuration which is accessible via [`property: TestInfo.config`] and is passed to the test reporters. To see the format of Playwright configuration file, please see [TestConfig] instead.
 
+## property: FullConfig.argv
+* since: v1.61
+- type: <[Array]<[string]>>
+
+Snapshot of [`process.argv`](https://nodejs.org/api/process.html#processargv)
+captured in the runner process. Useful for reading custom command-line
+arguments — for example, args supplied after the `--` separator
+(`npx playwright test -- --build-path=./out`). Playwright does not parse
+these; consumers are responsible for slicing and interpreting them with
+any argument-parsing library.
+
 ## property: FullConfig.configFile
 * since: v1.20
 - type: ?<[string]>
 
 Path to the configuration file used to run the tests. The value is an empty string if no config file was used.
+
+## property: FullConfig.failOnFlakyTests
+* since: v1.61
+- type: <[boolean]>
+
+See [`property: TestConfig.failOnFlakyTests`].
+
+## property: FullConfig.filteredProjects
+* since: v1.64
+- type: <[Array]<[FullProject]>>
+
+List of projects that were selected to run, after applying the `--project` command line filter. When no filter is specified, this is the same as [`property: FullConfig.projects`].
 
 ## property: FullConfig.forbidOnly
 * since: v1.10
@@ -84,7 +107,7 @@ See [`property: TestConfig.quiet`].
 
 ## property: FullConfig.reporter
 * since: v1.10
-- type: <[string]|[Array]<[Object]>|[BuiltInReporter]<"list"|"dot"|"line"|"github"|"json"|"junit"|"null"|"html">>
+- type: <[string]|[Array]<[Object]>|[BuiltInReporter]<"list"|"dot"|"line"|"github"|"json"|"junit"|"null"|"html"|"blob"|"perfetto">>
   - `0` <[string]> Reporter name or module or file path
   - `1` <[Object]> An object with reporter options if any
 
@@ -104,15 +127,6 @@ See [`property: TestConfig.reportSlowTests`].
 
 Base directory for all relative paths used in the reporters.
 
-## property: FullConfig.runAgents
-* since: v1.58
-- type: <['RunAgentsMode]<"all"|"missing"|"none">>
-
-Whether to run LLM agent for [PageAgent]:
-* "all" disregards existing cache and performs all actions via LLM
-* "missing" only performs actions that don't have generated cache actions
-* "none" does not talk to LLM at all, relies on the cached actions (default)
-
 ## property: FullConfig.shard
 * since: v1.10
 - type: <[null]|[Object]>
@@ -129,7 +143,7 @@ Resolved global tags. See [`property: TestConfig.tag`].
 
 ## property: FullConfig.updateSnapshots
 * since: v1.10
-- type: <[UpdateSnapshots]<"all"|"changed"|"missing"|"none">>
+- type: <[UpdateSnapshots]<"all"|"changed"|"missing"|"none"|"default">>
 
 See [`property: TestConfig.updateSnapshots`].
 

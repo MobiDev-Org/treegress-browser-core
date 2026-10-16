@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import type * as channels from '@protocol/channels';
+import type { SerializedError } from '@isomorphic/trace/trace';
 import * as React from 'react';
 import './consoleTab.css';
 import type { TraceModel } from '@isomorphic/trace/traceModel';
 import { ListView } from '@web/components/listView';
 import type { Boundaries } from './geometry';
-import { clsx, msToString } from '@web/uiUtils';
+import { msToString } from '@isomorphic/formatUtils';
 import { ansi2html } from '@web/ansi2html';
 import { PlaceholderPanel } from './placeholderPanel';
 
@@ -30,27 +30,42 @@ export type ConsoleEntry = {
     bodyString: string;
     location: string;
   },
-  browserError?: channels.SerializedError;
+  browserError?: SerializedError;
   nodeMessage?: {
     html: string;
   },
   isError: boolean;
   isWarning: boolean;
   timestamp: number;
+  pageId: string;
   repeat: number;
 };
 
 type ConsoleTabModel = {
   entries: ConsoleEntry[],
+  hasMultiplePages: boolean,
+  showSource: boolean,
 };
 
 const ConsoleListView = ListView<ConsoleEntry>;
 
+const ansiColours = {
+  log: {
+    bg: 'var(--vscode-editor-background)', fg: 'var(--vscode-editor-foreground)'
+  },
+  warning: {
+    fg: 'var(--vscode-list-warningForeground)', bg: 'var(--vscode-inputValidation-warningBackground)'
+  },
+  error: {
+    fg: 'var(--vscode-list-errorForeground)', bg: 'var(--vscode-inputValidation-errorBackground)'
+  }
+};
 
-export function useConsoleTabModel(model: TraceModel | undefined, selectedTime: Boundaries | undefined): ConsoleTabModel {
+export function useConsoleTabModel(model: TraceModel | undefined, selectedTime: Boundaries | undefined, pageId?: string): ConsoleTabModel {
   const { entries } = React.useMemo(() => {
     if (!model)
       return { entries: [] };
+    const pageTitle = (id: string | undefined) => (id && model.resourceOwnerRefToTitle.get(id)) || '';
     const entries: ConsoleEntry[] = [];
     function addEntry(entry: Omit<ConsoleEntry, 'repeat'>) {
       const lastEntry = entries[entries.length - 1];
@@ -62,6 +77,7 @@ export function useConsoleTabModel(model: TraceModel | undefined, selectedTime: 
         && entry.nodeMessage?.html === lastEntry.nodeMessage?.html
         && entry.isError === lastEntry.isError
         && entry.isWarning === lastEntry.isWarning
+        && entry.pageId === lastEntry.pageId
         && entry.timestamp - lastEntry.timestamp < 1000;
       if (isSameAsLast)
         lastEntry.repeat++;
@@ -75,7 +91,10 @@ export function useConsoleTabModel(model: TraceModel | undefined, selectedTime: 
     });
     for (const event of logEvents) {
       if (event.type === 'console') {
-        const body = event.args && event.args.length ? format(event.args) : formatAnsi(event.text);
+        if (pageId && event.pageId !== pageId)
+          continue;
+        const colours = event.messageType === 'error' ? ansiColours.error : event.messageType === 'warning' ? ansiColours.warning : ansiColours.log;
+        const body = event.args && event.args.length ? format(event.args, colours) : formatAnsi(event.text, colours);
         const url = event.location.url;
         const filename = url ? url.substring(url.lastIndexOf('/') + 1) : '<anonymous>';
         const location = `${filename}:${event.location.lineNumber}`;
@@ -88,34 +107,40 @@ export function useConsoleTabModel(model: TraceModel | undefined, selectedTime: 
           },
           isError: event.messageType === 'error',
           isWarning: event.messageType === 'warning',
+          pageId: pageTitle(event.pageId),
           timestamp: event.time,
         });
       }
       if (event.type === 'event' && event.method === 'pageError') {
+        if (pageId && event.pageId !== pageId)
+          continue;
         addEntry({
           browserError: event.params.error,
           isError: true,
           isWarning: false,
+          pageId: pageTitle(event.pageId),
           timestamp: event.time,
         });
       }
       if (event.type === 'stderr' || event.type === 'stdout') {
         let html = '';
+        const colours = event.type === 'stderr' ? ansiColours.error : ansiColours.log;
         if (event.text)
-          html = ansi2html(event.text.trim()) || '';
+          html = ansi2html(event.text.trim(), colours) || '';
         if (event.base64)
-          html = ansi2html(atob(event.base64).trim()) || '';
+          html = ansi2html(atob(event.base64).trim(), colours) || '';
 
         addEntry({
           nodeMessage: { html },
           isError: event.type === 'stderr',
           isWarning: false,
+          pageId: '',
           timestamp: event.timestamp,
         });
       }
     }
     return { entries };
-  }, [model]);
+  }, [model, pageId]);
 
   const filteredEntries = React.useMemo(() => {
     if (!selectedTime)
@@ -123,14 +148,19 @@ export function useConsoleTabModel(model: TraceModel | undefined, selectedTime: 
     return entries.filter(entry => entry.timestamp >= selectedTime.minimum && entry.timestamp <= selectedTime.maximum);
   }, [entries, selectedTime]);
 
-  return { entries: filteredEntries };
+  const hasMultiplePages = React.useMemo(() => new Set(filteredEntries.map(entry => entry.pageId).filter(Boolean)).size > 1, [filteredEntries]);
+  // Only show the source badge when it carries information: either messages come
+  // from multiple pages, or there are test (runner) messages alongside page messages.
+  const showSource = React.useMemo(() => hasMultiplePages || filteredEntries.some(entry => !entry.browserMessage && !entry.browserError), [filteredEntries, hasMultiplePages]);
+
+  return { entries: filteredEntries, hasMultiplePages, showSource };
 }
 
 export const ConsoleTab: React.FunctionComponent<{
   boundaries: Boundaries,
   consoleModel: ConsoleTabModel,
   selectedTime?: Boundaries | undefined,
-  onEntryHovered?: (ordinal: number | undefined) => void,
+  onEntryHovered?: (time: Boundaries | undefined) => void,
   onAccepted?: (entry: ConsoleEntry) => void,
 }> = ({ consoleModel, boundaries, onEntryHovered, onAccepted }) => {
   if (!consoleModel.entries.length)
@@ -140,15 +170,16 @@ export const ConsoleTab: React.FunctionComponent<{
     <ConsoleListView
       name='console'
       onAccepted={onAccepted}
-      onHighlighted={entry => onEntryHovered?.(entry ? consoleModel.entries.indexOf(entry) : undefined)}
+      onHighlighted={entry => onEntryHovered?.(entry ? { minimum: entry.timestamp, maximum: entry.timestamp } : undefined)}
       items={consoleModel.entries}
       isError={entry => entry.isError}
       isWarning={entry => entry.isWarning}
       render={entry => {
         const timestamp = msToString(entry.timestamp - boundaries.minimum);
         const timestampElement = <span className='console-time'>{timestamp}</span>;
-        const errorSuffix = entry.isError ? 'status-error' : entry.isWarning ? 'status-warning' : 'status-none';
-        const statusElement = entry.browserMessage || entry.browserError ? <span className={clsx('codicon', 'codicon-browser', errorSuffix)} title='Browser message'></span> : <span className={clsx('codicon', 'codicon-file', errorSuffix)} title='Runner message'></span>;
+        const isBrowserMessage = !!(entry.browserMessage || entry.browserError);
+        const source = !isBrowserMessage ? 'test' : (consoleModel.hasMultiplePages ? (entry.pageId || 'page') : 'page');
+        const sourceElement = consoleModel.showSource ? <span className='console-source' title={isBrowserMessage ? 'Browser message' : 'Runner message'}>{source}</span> : undefined;
         let locationText: string | undefined;
         let messageBody: React.JSX.Element[] | string | undefined;
         let messageInnerHTML: string | undefined;
@@ -175,7 +206,7 @@ export const ConsoleTab: React.FunctionComponent<{
 
         return <div className='console-line'>
           {timestampElement}
-          {statusElement}
+          {sourceElement}
           {locationText && <span className='console-location'>{locationText}</span>}
           {entry.repeat > 1 && <span className='console-repeat'>{entry.repeat}</span>}
           {messageBody && <span className='console-line-message'>{messageBody}</span>}
@@ -187,9 +218,9 @@ export const ConsoleTab: React.FunctionComponent<{
   </div>;
 };
 
-function format(args: { preview: string, value: any }[]): React.JSX.Element[] {
+function format(args: { preview: string, value: any }[], colours: { fg: string, bg: string }): React.JSX.Element[] {
   if (args.length === 1)
-    return formatAnsi(args[0].preview);
+    return formatAnsi(args[0].preview, colours);
 
   const hasMessageFormat = typeof args[0].value === 'string' && args[0].value.includes('%');
   const messageFormat = hasMessageFormat ? args[0].value as string : '';
@@ -236,9 +267,9 @@ function format(args: { preview: string, value: any }[]): React.JSX.Element[] {
   return formatted;
 }
 
-function formatAnsi(text: string): React.JSX.Element[] {
+function formatAnsi(text: string, colours: { fg: string, bg: string }): React.JSX.Element[] {
   // eslint-disable-next-line react/jsx-key
-  return [<span dangerouslySetInnerHTML={{ __html: ansi2html(text.trim()) }}></span>];
+  return [<span dangerouslySetInnerHTML={{ __html: ansi2html(text.trim(), colours) }}></span>];
 }
 
 function parseCSSStyle(cssFormat: string): Record<string, string | number> {

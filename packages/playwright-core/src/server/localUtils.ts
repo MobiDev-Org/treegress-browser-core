@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -18,19 +18,19 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { calculateSha1 } from './utils/crypto';
+import * as yauzl from 'yauzl';
+import * as yazl from 'yazl';
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { serializeClientSideCallMetadata } from '@isomorphic/trace/traceUtils';
+import { assert } from '@isomorphic/assert';
+import { calculateSha1 } from '@utils/crypto';
+import { ZipFile } from '@utils/zipFile';
+import { removeFolders, resolveWithinRoot } from '@utils/fileUtils';
 import { HarBackend } from './harBackend';
-import { ManualPromise } from '../utils/isomorphic/manualPromise';
-import { ZipFile } from './utils/zipFile';
-import { yauzl, yazl } from '../zipBundle';
-import { serializeClientSideCallMetadata } from '../utils/isomorphic/traceUtils';
-import { assert } from '../utils/isomorphic/assert';
-import { removeFolders } from './utils/fileUtils';
-
-import type * as channels from '@protocol/channels';
-import type * as har from '@trace/har';
+import type * as channels from './channels';
+import type * as har from '@isomorphic/trace/versions/har';
 import type EventEmitter from 'events';
-import type { Progress } from '@protocol/progress';
+import type { Progress } from './progress';
 
 
 export type StackSession = {
@@ -75,7 +75,7 @@ export async function zip(progress: Progress, stackSessions: Map<string, StackSe
         sourceFiles.add(file);
     }
     for (const sourceFile of sourceFiles)
-      addFile(sourceFile, 'resources/src@' + calculateSha1(sourceFile) + '.txt');
+      addFile(sourceFile, 'src/' + calculateSha1(sourceFile) + path.extname(sourceFile));
   }
 
   if (params.mode === 'write') {
@@ -101,7 +101,26 @@ export async function zip(progress: Progress, stackSessions: Map<string, StackSe
       return;
     }
     assert(inZipFile);
+    inZipFile.on('error', error => promise.reject(error));
     let pendingEntries = inZipFile.entryCount;
+
+    const finalizeRepack = () => {
+      zipFile.end(undefined, () => {
+        zipFile.outputStream.pipe(fs.createWriteStream(params.zipFile))
+            .on('close', () => {
+              fs.promises.unlink(tempFile).then(() => {
+                promise.resolve();
+              }).catch(error => promise.reject(error));
+            })
+            .on('error', error => promise.reject(error));
+      });
+    };
+
+    if (pendingEntries === 0) {
+      finalizeRepack();
+      return;
+    }
+
     inZipFile.on('entry', entry => {
       inZipFile.openReadStream(entry, (err, readStream) => {
         if (err) {
@@ -109,15 +128,8 @@ export async function zip(progress: Progress, stackSessions: Map<string, StackSe
           return;
         }
         zipFile.addReadStream(readStream!, entry.fileName);
-        if (--pendingEntries === 0) {
-          zipFile.end(undefined, () => {
-            zipFile.outputStream.pipe(fs.createWriteStream(params.zipFile)).on('close', () => {
-              fs.promises.unlink(tempFile).then(() => {
-                promise.resolve();
-              }).catch(error => promise.reject(error));
-            });
-          });
-        }
+        if (--pendingEntries === 0)
+          finalizeRepack();
       });
     });
   });
@@ -129,6 +141,7 @@ async function deleteStackSession(progress: Progress, stackSessions: Map<string,
   const session = stacksId ? stackSessions.get(stacksId) : undefined;
   if (!session)
     return;
+  await progress.race(session.writer);
   stackSessions.delete(stacksId!);
   if (session.tmpDir)
     await progress.race(removeFolders([session.tmpDir]));
@@ -174,15 +187,24 @@ export function harClose(harBackends: Map<string, HarBackend>, params: channels.
 }
 
 export async function harUnzip(progress: Progress, params: channels.LocalUtilsHarUnzipParams): Promise<void> {
-  const dir = path.dirname(params.zipFile);
+  const resourcesDir = params.resourcesDir ?? path.dirname(params.zipFile);
   const zipFile = new ZipFile(params.zipFile);
+  let resourcesDirCreated = false;
   try {
     for (const entry of await progress.race(zipFile.entries())) {
       const buffer = await progress.race(zipFile.read(entry));
-      if (entry === 'har.har')
+      if (entry === 'har.har') {
         await progress.race(fs.promises.writeFile(params.harFile, buffer));
-      else
-        await progress.race(fs.promises.writeFile(path.join(dir, entry), buffer));
+      } else {
+        if (!resourcesDirCreated) {
+          await progress.race(fs.promises.mkdir(resourcesDir, { recursive: true }));
+          resourcesDirCreated = true;
+        }
+        const outPath = resolveWithinRoot(resourcesDir, entry);
+        if (!outPath)
+          throw new Error(`HAR zip entry '${entry}' escapes output directory`);
+        await progress.race(fs.promises.writeFile(outPath, buffer));
+      }
     }
     await progress.race(fs.promises.unlink(params.zipFile));
   } finally {
@@ -195,6 +217,9 @@ export async function tracingStarted(progress: Progress, stackSessions: Map<stri
   if (!params.tracesDir)
     tmpDir = await progress.race(fs.promises.mkdtemp(path.join(os.tmpdir(), 'playwright-tracing-')));
   const traceStacksFile = path.join(params.tracesDir || tmpDir!, params.traceName + '.stacks');
+  // Ensure the directory exists before addStackToTracingNoReply races ahead of
+  // the tracing recorder's own (separately queued) mkdir.
+  await progress.race(fs.promises.mkdir(path.dirname(traceStacksFile), { recursive: true }));
   stackSessions.set(traceStacksFile, { callStacks: [], file: traceStacksFile, writer: Promise.resolve(), tmpDir, live: params.live });
   return { stacksId: traceStacksFile };
 }

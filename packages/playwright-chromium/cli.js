@@ -15,5 +15,8 @@
  * limitations under the License.
  */
 
-const { program } = require('playwright-core/lib/cli/program');
+require('playwright-core/lib/bootstrap');
+const { program } = require('playwright-core/lib/utilsBundle');
+const { libCli } = require('playwright-core/lib/coreBundle');
+libCli.decorateProgram(program);
 program.parse(process.argv);

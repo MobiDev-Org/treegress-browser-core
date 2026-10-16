@@ -23,6 +23,7 @@ export type PlatformWorkerFixtures = {
   isMac: boolean;
   isLinux: boolean;
   macVersion: number; // major only, 11 or later, zero if not mac
+  nodeVersion: { major: number, minor: number, patch: number };
 };
 
 function platform(): 'win32' | 'darwin' | 'linux' {
@@ -38,7 +39,11 @@ function platform(): 'win32' | 'darwin' | 'linux' {
 function macVersion() {
   if (process.platform !== 'darwin')
     return 0;
-  return +os.release().split('.')[0] - 9;
+  const darwinMajor = +os.release().split('.')[0];
+  // Apple jumped from macOS 15 (Sequoia) to macOS 26 (Tahoe), so Darwin 25 = macOS 26.
+  if (darwinMajor >= 25)
+    return darwinMajor + 1;
+  return darwinMajor - 9;
 }
 
 export const platformTest = test.extend<{}, PlatformWorkerFixtures>({
@@ -47,4 +52,8 @@ export const platformTest = test.extend<{}, PlatformWorkerFixtures>({
   isMac: [platform() === 'darwin', { scope: 'worker' }],
   isLinux: [platform() === 'linux', { scope: 'worker' }],
   macVersion: [macVersion(), { scope: 'worker' }],
+  nodeVersion: [async ({}, use) => {
+    const [major, minor, patch] = process.versions.node.split('.');
+    await use({ major: +major, minor: +minor, patch: +patch });
+  }, { scope: 'worker' }],
 });

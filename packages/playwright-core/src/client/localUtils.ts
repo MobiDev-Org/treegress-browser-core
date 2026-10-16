@@ -15,9 +15,10 @@
  */
 
 import { ChannelOwner } from './channelOwner';
+import { kNoTimeout } from './timeoutSettings';
 
 import type { Size } from './types';
-import type * as channels from '@protocol/channels';
+import type * as channels from './channels';
 
 type DeviceDescriptor = {
   userAgent: string,
@@ -40,34 +41,34 @@ export class LocalUtils extends ChannelOwner<channels.LocalUtilsChannel> {
   }
 
   async zip(params: channels.LocalUtilsZipParams): Promise<void> {
-    return await this._channel.zip(params);
+    return await this._channel.zip(params, kNoTimeout);
   }
 
   async harOpen(params: channels.LocalUtilsHarOpenParams): Promise<channels.LocalUtilsHarOpenResult> {
-    return await this._channel.harOpen(params);
+    return await this._channel.harOpen(params, kNoTimeout);
   }
 
   async harLookup(params: channels.LocalUtilsHarLookupParams): Promise<channels.LocalUtilsHarLookupResult> {
-    return await this._channel.harLookup(params);
+    return await this._channel.harLookup(params, kNoTimeout);
   }
 
   async harClose(params: channels.LocalUtilsHarCloseParams): Promise<void> {
-    return await this._channel.harClose(params);
+    return await this._channel.harClose(params, kNoTimeout);
   }
 
   async harUnzip(params: channels.LocalUtilsHarUnzipParams): Promise<void> {
-    return await this._channel.harUnzip(params);
+    return await this._channel.harUnzip(params, kNoTimeout);
   }
 
   async tracingStarted(params: channels.LocalUtilsTracingStartedParams): Promise<channels.LocalUtilsTracingStartedResult> {
-    return await this._channel.tracingStarted(params);
+    return await this._channel.tracingStarted(params, kNoTimeout);
   }
 
   async traceDiscarded(params: channels.LocalUtilsTraceDiscardedParams): Promise<void> {
-    return await this._channel.traceDiscarded(params);
+    return await this._channel.traceDiscarded(params, kNoTimeout);
   }
 
   async addStackToTracingNoReply(params: channels.LocalUtilsAddStackToTracingNoReplyParams): Promise<void> {
-    return await this._channel.addStackToTracingNoReply(params);
+    return await this._channel.addStackToTracingNoReply(params, kNoTimeout);
   }
 }

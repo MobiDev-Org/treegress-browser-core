@@ -3,7 +3,29 @@ id: test-assertions
 title: "Assertions"
 ---
 
-## List of assertions
+## Introduction
+
+Playwright includes web-specific assertions that automatically retry until the expected condition is met.  Consider the following example:
+
+```python
+expect(page.get_by_test_id("status")).to_have_text("Submitted")
+```
+
+```java
+assertThat(page.getByTestId("status")).hasText("Submitted");
+```
+
+```csharp
+await Expect(Page.GetByTestId("status")).ToHaveTextAsync("Submitted");
+```
+
+Playwright will re-test the element with the test ID of `status` until it has the `"Submitted"` text.  It will re-fetch the element and check it repeatedly until the condition is met or the timeout is reached.
+
+By default, the timeout for assertions is 5 seconds.
+
+## Auto-retrying assertions
+
+The following assertions will retry until the assertion passes or the assertion timeout is reached.
 
 | Assertion | Description |
 | :- | :- |
@@ -24,7 +46,7 @@ title: "Assertions"
 | [`method: LocatorAssertions.toHaveAttribute`] | Element has a DOM attribute |
 | [`method: LocatorAssertions.toHaveClass`] | Element has a class property |
 | [`method: LocatorAssertions.toHaveCount`] | List has exact number of children |
-| [`method: LocatorAssertions.toHaveCSS#1`] | Element has CSS property |
+| [`method: LocatorAssertions.toHaveCSS`] | Element has CSS property |
 | [`method: LocatorAssertions.toHaveId`] | Element has an ID |
 | [`method: LocatorAssertions.toHaveJSProperty`] | Element has a JavaScript property |
 | [`method: LocatorAssertions.toHaveRole`] | Element has a specific [ARIA role](https://www.w3.org/TR/wai-aria-1.2/#roles) |
@@ -36,8 +58,30 @@ title: "Assertions"
 | [`method: PageAssertions.toHaveURL`] | Page has a URL |
 | [`method: APIResponseAssertions.toBeOK`] | Response has an OK status |
 
-## Custom Expect Message
+## Soft assertions
 * langs: python
+
+By default, failed assertion will terminate test execution. Playwright also
+supports *soft assertions*: failed soft assertions **do not** terminate test
+execution, but mark the test as failed.
+
+```python
+# Make a few checks that will not stop the test when failed...
+expect.soft(page.get_by_test_id("status")).to_have_text("Success")
+expect.soft(page.get_by_test_id("eta")).to_have_text("1 day")
+
+# ... and continue the test to check more things.
+page.get_by_role("link", name="next page").click()
+expect.soft(page.get_by_role("heading", name="Make another order")).to_be_visible()
+```
+
+Note that soft assertions only work with the
+[`pytest-playwright`](https://pypi.org/project/pytest-playwright/) (or
+[`pytest-playwright-asyncio`](https://pypi.org/project/pytest-playwright-asyncio/))
+plugin, version `0.8.0` or newer.
+
+## Custom Expect Message
+* langs: python, csharp
 
 You can specify a custom expect message as a second argument to the `expect` function, for example:
 
@@ -45,9 +89,13 @@ You can specify a custom expect message as a second argument to the `expect` fun
 expect(page.get_by_text("Name"), "should be logged in").to_be_visible()
 ```
 
+```csharp
+await Expect(Page.GetByText("Name"), "should be logged in").ToBeVisibleAsync();
+```
+
 When expect fails, the error would look like this:
 
-```bash
+```bash lang=python
     def test_foobar(page: Page) -> None:
 >       expect(page.get_by_text("Name"), "should be logged in").to_be_visible()
 E       AssertionError: should be logged in
@@ -60,8 +108,17 @@ E       waiting for get_by_text("Name")
 tests/test_foobar.py:22: AssertionError
 ```
 
+```bash lang=csharp
+Microsoft.Playwright.PlaywrightException : should be logged in
+
+Locator expected to be visible
+Call log:
+- Expect "ToBeVisibleAsync" with timeout 5000ms
+- waiting for GetByText("Name")
+```
+
 ## Setting a custom timeout
-* langs: python, csharp
+* langs: python, java, csharp
 
 You can specify a custom timeout for assertions either globally or per assertion. The default timeout is 5 seconds.
 
@@ -72,6 +129,15 @@ You can specify a custom timeout for assertions either globally or per assertion
 from playwright.sync_api import expect
 
 expect.set_options(timeout=10_000)
+```
+
+### Global timeout
+* langs: java
+
+```java
+import com.microsoft.playwright.assertions.PlaywrightAssertions;
+
+PlaywrightAssertions.setDefaultAssertionTimeout(10_000);
 ```
 
 ### Global timeout
@@ -177,6 +243,15 @@ from playwright.sync_api import expect
 
 def test_foobar(page: Page) -> None:
     expect(page.get_by_text("Name")).to_be_visible(timeout=10_000)
+```
+
+```java
+import com.microsoft.playwright.assertions.LocatorAssertions;
+
+import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat;
+
+assertThat(page.getByText("Name")).isVisible(
+    new LocatorAssertions.IsVisibleOptions().setTimeout(10_000));
 ```
 
 ```csharp title="UnitTest1.cs"

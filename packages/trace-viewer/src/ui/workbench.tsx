@@ -21,20 +21,23 @@ import { CallTab } from './callTab';
 import { LogTab } from './logTab';
 import { ErrorsTab, useErrorsTabModel } from './errorsTab';
 import { ConsoleTab, useConsoleTabModel } from './consoleTab';
-import type { TraceModel, SourceLocation, ActionTraceEventInContext, SourceModel } from '@isomorphic/trace/traceModel';
+import type { TraceModel, SourceLocation, SourceModel } from '@isomorphic/trace/traceModel';
+import type { ActionEntry } from '@isomorphic/trace/entries';
 import { NetworkTab, useNetworkTabModel } from './networkTab';
 import { SnapshotTabsView } from './snapshotTab';
 import { SourceTab } from './sourceTab';
 import { TabbedPane } from '@web/components/tabbedPane';
 import type { TabbedPaneTabModel } from '@web/components/tabbedPane';
 import { Timeline } from './timeline';
+import { usePlayback, PlaybackScrubber } from './playbackControl';
 import { MetadataView } from './metadataView';
 import { AttachmentsTab } from './attachmentsTab';
 import { AnnotationsTab } from './annotationsTab';
 import type { Boundaries } from './geometry';
 import { InspectorTab } from './inspectorTab';
 import { ToolbarButton } from '@web/components/toolbarButton';
-import { useSetting, msToString, clsx, usePartitionedState, togglePartition } from '@web/uiUtils';
+import { useSetting, clsx, usePartitionedState, togglePartition } from '@web/uiUtils';
+import { msToString } from '@isomorphic/formatUtils';
 import './workbench.css';
 import { testStatusIcon, testStatusText } from './testUtils';
 import type { UITestStatus } from './testUtils';
@@ -55,7 +58,7 @@ export type WorkbenchProps = {
   isLive?: boolean;
   hideTimeline?: boolean;
   status?: UITestStatus;
-  annotations?: TestAnnotation[];
+  defaultAnnotations?: TestAnnotation[];
   inert?: boolean;
   onOpenExternally?: (location: SourceLocation) => void;
   revealSource?: boolean;
@@ -70,7 +73,9 @@ export const Workbench: React.FunctionComponent<WorkbenchProps> = props => {
 };
 
 const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition: string }> = props => {
-  const { partition, model, showSourcesFirst, rootDir, fallbackLocation, isLive, hideTimeline, status, annotations, inert, onOpenExternally, revealSource, testRunMetadata } = props;
+  const { partition, model, showSourcesFirst, rootDir, fallbackLocation, isLive, hideTimeline, status, inert, onOpenExternally, revealSource, testRunMetadata } = props;
+  // Default annotations come from the test model before the test runs, shown for the empty workbench / trace.
+  const annotations = model?.annotations ?? props.defaultAnnotations;
 
   // UI settings, shared for all models.
   const [selectedNavigatorTab, setSelectedNavigatorTab] = useSetting<string>('navigatorTab',  'actions');
@@ -84,9 +89,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   const [selectedTime, setSelectedTime] = usePartitionedState<Boundaries | undefined>('selectedTime');
   const [highlightedCallId, setHighlightedCallId] = usePartitionedState<string | undefined>('highlightedCallId');
   const [revealedErrorKey, setRevealedErrorKey] = usePartitionedState<string | undefined>('revealedErrorKey');
-  const [highlightedConsoleMessageOrdinal, setHighlightedConsoleMessageOrdinal] = usePartitionedState<number | undefined>('highlightedConsoleMessageOrdinal');
   const [revealedAttachmentCallId, setRevealedAttachmentCallId] = usePartitionedState<{ callId: string } | undefined>('revealedAttachmentCallId');
-  const [highlightedResourceKey, setHighlightedResourceKey] = usePartitionedState<string | undefined>('highlightedResourceKey');
   const [treeState, setTreeState] = usePartitionedState<TreeState>('treeState', { expandedItems: new Map() });
   const [actionFilterText, setActionFilterText] = React.useState('');
 
@@ -95,8 +98,9 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   // Transient state
   const [highlightedElement, setHighlightedElement] = React.useState<HighlightedElement>({ lastEdited: 'none' });
   const [isInspecting, setIsInspectingState] = React.useState(false);
+  const [highlightedTime, setHighlightedTime] = React.useState<Boundaries | undefined>(undefined);
 
-  const setSelectedAction = React.useCallback((action: ActionTraceEventInContext | undefined) => {
+  const setSelectedAction = React.useCallback((action: ActionEntry | undefined) => {
     setSelectedCallId(action?.callId);
     setRevealedErrorKey(undefined);
   }, [setSelectedCallId, setRevealedErrorKey]);
@@ -108,7 +112,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     return actions?.find(a => a.callId === highlightedCallId);
   }, [actions, highlightedCallId]);
 
-  const setHighlightedAction = React.useCallback((highlightedAction: ActionTraceEventInContext | undefined) => {
+  const setHighlightedAction = React.useCallback((highlightedAction: ActionEntry | undefined) => {
     setHighlightedCallId(highlightedAction?.callId);
   }, [setHighlightedCallId]);
 
@@ -147,10 +151,24 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     return highlightedAction || selectedAction;
   }, [selectedAction, highlightedAction]);
 
-  const onActionSelected = React.useCallback((action: ActionTraceEventInContext) => {
+  const onActionSelected = React.useCallback((action: ActionEntry) => {
     setSelectedAction(action);
     setHighlightedAction(undefined);
   }, [setSelectedAction, setHighlightedAction]);
+
+  const { boundaries } = React.useMemo(() => {
+    const boundaries = { minimum: model?.startTime || 0, maximum: model?.endTime || 30000 };
+    if (boundaries.minimum > boundaries.maximum) {
+      boundaries.minimum = 0;
+      boundaries.maximum = 30000;
+    }
+    // Leave some nice free space on the right hand side.
+    boundaries.maximum += (boundaries.maximum - boundaries.minimum) / 20;
+    return { boundaries };
+  }, [model]);
+
+  const playback = usePlayback(actions || [], selectedAction, onActionSelected, selectedTime, boundaries);
+  const { showSelectedAction } = playback;
 
   const selectPropertiesTab = React.useCallback((tab: string) => {
     setSelectedPropertiesTab(tab);
@@ -161,8 +179,11 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   const setIsInspecting = React.useCallback((value: boolean) => {
     if (!isInspecting && value)
       selectPropertiesTab('inspector');
+    // Inspecting works against the DOM snapshot, not the screencast frame.
+    if (value)
+      showSelectedAction();
     setIsInspectingState(value);
-  }, [setIsInspectingState, selectPropertiesTab, isInspecting]);
+  }, [setIsInspectingState, selectPropertiesTab, isInspecting, showSelectedAction]);
 
   const elementPicked = React.useCallback((element: HighlightedElement) => {
     setHighlightedElement(element);
@@ -217,7 +238,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     errorCount: errorsModel.errors.size,
     render: () => <ErrorsTab errorsModel={errorsModel} testRunMetadata={testRunMetadata} sdkLanguage={sdkLanguage} revealInSource={error => {
       if (error.action)
-        setSelectedAction(error.action);
+        playback.selectAction(error.action);
       else
         setRevealedErrorKey(error.message);
       selectPropertiesTab('source');
@@ -251,15 +272,15 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
       consoleModel={consoleModel}
       boundaries={boundaries}
       selectedTime={selectedTime}
+      onEntryHovered={setHighlightedTime}
       onAccepted={m => setSelectedTime({ minimum: m.timestamp, maximum: m.timestamp })}
-      onEntryHovered={setHighlightedConsoleMessageOrdinal}
     />
   };
   const networkTab: TabbedPaneTabModel = {
     id: 'network',
     title: 'Network',
     count: networkModel.resources.length,
-    render: () => <NetworkTab boundaries={boundaries} networkModel={networkModel} onResourceHovered={setHighlightedResourceKey} sdkLanguage={model?.sdkLanguage ?? 'javascript'} />
+    render: () => <NetworkTab boundaries={boundaries} networkModel={networkModel} onResourceHovered={setHighlightedTime} sdkLanguage={model?.sdkLanguage ?? 'javascript'} />
   };
   const attachmentsTab: TabbedPaneTabModel = {
     id: 'attachments',
@@ -295,16 +316,6 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     tabs.splice(1, 0, sourceTab);
   }
 
-  const { boundaries } = React.useMemo(() => {
-    const boundaries = { minimum: model?.startTime || 0, maximum: model?.endTime || 30000 };
-    if (boundaries.minimum > boundaries.maximum) {
-      boundaries.minimum = 0;
-      boundaries.maximum = 30000;
-    }
-    // Leave some nice free space on the right hand side.
-    boundaries.maximum += (boundaries.maximum - boundaries.minimum) / 20;
-    return { boundaries };
-  }, [model]);
 
   let time: number = 0;
   if (!isLive && model && model.endTime >= 0)
@@ -340,7 +351,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
         setSelectedTime={setSelectedTime}
         treeState={treeState}
         setTreeState={setTreeState}
-        onSelected={onActionSelected}
+        onSelected={playback.selectAction}
         onHighlighted={setHighlightedAction}
         revealActionAttachment={revealActionAttachment}
         revealConsole={() => selectPropertiesTab('console')}
@@ -360,16 +371,12 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   return <div className='vbox workbench' {...(inert ? { inert: true } : {})}>
     {!hideTimeline && <Timeline
       model={model}
-      consoleEntries={consoleModel.entries}
-      networkResources={networkModel.resources}
       boundaries={boundaries}
-      highlightedAction={highlightedAction}
-      highlightedResourceKey={highlightedResourceKey}
-      highlightedConsoleEntryOrdinal={highlightedConsoleMessageOrdinal}
-      onSelected={onActionSelected}
-      sdkLanguage={sdkLanguage}
+      onSelected={playback.selectAction}
       selectedTime={selectedTime}
       setSelectedTime={setSelectedTime}
+      highlightedTime={highlightedTime}
+      scrubber={<PlaybackScrubber playback={playback} />}
     />}
     <SplitView
       sidebarSize={250}
@@ -387,7 +394,9 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
           isInspecting={isInspecting}
           setIsInspecting={setIsInspecting}
           highlightedElement={highlightedElement}
-          setHighlightedElement={elementPicked} />}
+          setHighlightedElement={elementPicked}
+          screencastTime={highlightedAction ? undefined : playback.screencastTime}
+          playback={playback} />}
         sidebar={
           <TabbedPane
             tabs={[actionsTab, metadataTab]}

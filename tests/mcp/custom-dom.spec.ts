@@ -20,7 +20,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 test.describe('custom-dom snapshot backend', () => {
   test.skip(({ mcpBrowser }) => mcpBrowser !== 'chromium', 'This suite validates custom-dom MCP flow on Chromium.');
-  test.use({ mcpCaps: ['testing'] });
+  test.use({ mcpCaps: ['testing'], mcpSnapshotEngine: 'dom' });
 
   test('browser_snapshot emits MCP refs and ref->locator mapping is stable inside one snapshot', async ({ client, server }) => {
     server.setContent('/', `
@@ -43,11 +43,11 @@ test.describe('custom-dom snapshot backend', () => {
     const submitRef = findRef(snapshot, /button "Submit"[^\n]*\[ref=(e\d+)\]/);
     const locator1 = parseResponse(await client.callTool({
       name: 'browser_generate_locator',
-      arguments: { element: 'Submit', ref: submitRef },
+      arguments: { element: 'Submit', target: submitRef },
     })).result;
     const locator2 = parseResponse(await client.callTool({
       name: 'browser_generate_locator',
-      arguments: { element: 'Submit', ref: submitRef },
+      arguments: { element: 'Submit', target: submitRef },
     })).result;
 
     expect(locator1).toBeTruthy();
@@ -88,7 +88,7 @@ test.describe('custom-dom snapshot backend', () => {
       name: 'browser_type',
       arguments: {
         element: 'Name input',
-        ref: refs.textbox,
+        target: refs.textbox,
         text: 'Alice',
       },
     });
@@ -98,7 +98,7 @@ test.describe('custom-dom snapshot backend', () => {
       name: 'browser_hover',
       arguments: {
         element: 'Action button',
-        ref: refs.actionButton,
+        target: refs.actionButton,
       },
     });
 
@@ -107,7 +107,7 @@ test.describe('custom-dom snapshot backend', () => {
       name: 'browser_select_option',
       arguments: {
         element: 'Choice',
-        ref: refs.combobox,
+        target: refs.combobox,
         values: ['Two'],
       },
     });
@@ -117,7 +117,7 @@ test.describe('custom-dom snapshot backend', () => {
       name: 'browser_click',
       arguments: {
         element: 'Action button',
-        ref: refs.actionButton,
+        target: refs.actionButton,
       },
     });
     expect(snapshotText(clickResponse)).toContain('yes|Alice|Two|yes');
@@ -145,7 +145,7 @@ test.describe('custom-dom snapshot backend', () => {
 
     await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Shadow Action', ref: shadowRef },
+      arguments: { element: 'Shadow Action', target: shadowRef },
     });
 
     const evaluated = parseResponse(await client.callTool({
@@ -177,7 +177,7 @@ test.describe('custom-dom snapshot backend', () => {
 
     const locator = parseResponse(await client.callTool({
       name: 'browser_generate_locator',
-      arguments: { element: 'Shadow Open button', ref: shadowRef },
+      arguments: { element: 'Shadow Open button', target: shadowRef },
     })).result;
 
     expect(locator).toContain(`locator('#shadow-target')`);
@@ -207,7 +207,7 @@ test.describe('custom-dom snapshot backend', () => {
 
     const clickResponse = await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Second shadow Open button', ref: shadowRef },
+      arguments: { element: 'Second shadow Open button', target: shadowRef },
     });
     expect(parseResponse(clickResponse).isError).not.toBeTruthy();
 
@@ -233,7 +233,7 @@ test.describe('custom-dom snapshot backend', () => {
 
     await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Inside Frame button', ref: insideRef },
+      arguments: { element: 'Inside Frame button', target: insideRef },
     });
 
     const evaluated = parseResponse(await client.callTool({
@@ -246,9 +246,6 @@ test.describe('custom-dom snapshot backend', () => {
   test('stale iframe refs report alias/plan/frame diagnostics', async ({ client, server }) => {
     server.setContent('/', `
       <iframe srcdoc="<button id='inside'>Inside Frame</button>"></iframe>
-      <script>
-        setTimeout(() => document.querySelector('iframe')?.remove(), 500);
-      </script>
     `, 'text/html');
 
     await client.callTool({
@@ -258,13 +255,16 @@ test.describe('custom-dom snapshot backend', () => {
 
     const snapshot = snapshotText(await client.callTool({ name: 'browser_snapshot' }));
     const insideRef = findRef(snapshot, /button "Inside Frame"[^\n]*\[ref=(e\d+)\]/);
-    await new Promise(resolve => setTimeout(resolve, 700));
+    await client.callTool({
+      name: 'browser_evaluate',
+      arguments: { function: '() => document.querySelector("iframe").remove()' },
+    });
 
     const response = await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Inside Frame button', ref: insideRef },
+      arguments: { element: 'Inside Frame button', target: insideRef },
     });
-    const parsed = parseResponse(response);
+    const parsed = parseResponse(response, test.info().outputPath());
     expect(parsed.isError).toBeTruthy();
     expect(parsed.error).toContain('Custom DOM resolver diagnostics:');
     expect(parsed.error).toContain('- alias: found');
@@ -276,9 +276,6 @@ test.describe('custom-dom snapshot backend', () => {
   test('removed elements report candidate counts and no-match diagnostics', async ({ client, server }) => {
     server.setContent('/', `
       <button id="remove-me">Remove Me</button>
-      <script>
-        setTimeout(() => document.getElementById('remove-me')?.remove(), 500);
-      </script>
     `, 'text/html');
 
     await client.callTool({
@@ -288,13 +285,16 @@ test.describe('custom-dom snapshot backend', () => {
 
     const snapshot = snapshotText(await client.callTool({ name: 'browser_snapshot' }));
     const buttonRef = findRef(snapshot, /button "Remove Me"[^\n]*\[ref=(e\d+)\]/);
-    await new Promise(resolve => setTimeout(resolve, 700));
+    await client.callTool({
+      name: 'browser_evaluate',
+      arguments: { function: '() => document.getElementById("remove-me").remove()' },
+    });
 
     const response = await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Remove Me button', ref: buttonRef },
+      arguments: { element: 'Remove Me button', target: buttonRef },
     });
-    const parsed = parseResponse(response);
+    const parsed = parseResponse(response, test.info().outputPath());
     expect(parsed.isError).toBeTruthy();
     expect(parsed.error).toContain('Custom DOM resolver diagnostics:');
     expect(parsed.error).toContain('- alias: found');
@@ -327,7 +327,7 @@ test.describe('custom-dom snapshot backend', () => {
 
     const clickResponse = await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Second Open button', ref: openRef },
+      arguments: { element: 'Second Open button', target: openRef },
     });
     expect(parseResponse(clickResponse).isError).not.toBeTruthy();
 
@@ -356,7 +356,7 @@ test.describe('custom-dom snapshot backend', () => {
 
     await client.callTool({
       name: 'browser_click',
-      arguments: { element: 'Gear control', ref: gearRef },
+      arguments: { element: 'Gear control', target: gearRef },
     });
 
     const evaluated = parseResponse(await client.callTool({
@@ -368,7 +368,8 @@ test.describe('custom-dom snapshot backend', () => {
 });
 
 function snapshotText(response: Awaited<ReturnType<Client['callTool']>>): string {
-  const snapshot = parseResponse(response).snapshot;
+  const parsed = parseResponse(response, test.info().outputPath());
+  const snapshot = parsed?.snapshot ?? parsed?.inlineSnapshot;
   if (!snapshot)
     throw new Error(`Snapshot section not found in response:\n${parseResponse(response).text}`);
   return snapshot.replace(/^```yaml\n/, '').replace(/\n```$/, '');

@@ -18,14 +18,14 @@
 import { test as it, expect } from './pageTest';
 import util from 'util';
 
-it('should work @smoke', async ({ page, browserName, channel }) => {
+it('should work @smoke', async ({ page, browserName, isBidi }) => {
   let message = null;
   page.once('console', m => message = m);
   await Promise.all([
     page.evaluate(() => console.log('hello', 5, { foo: 'bar' })),
     page.waitForEvent('console')
   ]);
-  if (browserName !== 'firefox' || channel?.startsWith('moz-firefox'))
+  if (browserName !== 'firefox' || isBidi)
     expect(message.text()).toEqual('hello 5 {foo: bar}');
   else
     expect(message.text()).toEqual('hello 5 JSHandle@object');
@@ -91,8 +91,8 @@ it('should work for different console API calls', async ({ page }) => {
   ]);
 });
 
-it('should format the message correctly with time/timeLog/timeEnd', async ({ page, browserName }) => {
-  it.fixme(browserName === 'firefox', 'https://github.com/microsoft/playwright/issues/10580');
+it('should format the message correctly with time/timeLog/timeEnd', async ({ page, browserName, isBidi }) => {
+  it.fixme(browserName === 'firefox' && !isBidi, 'https://github.com/microsoft/playwright/issues/10580');
   const messages = [];
   page.on('console', msg => messages.push(msg));
   await page.evaluate(async () => {
@@ -107,22 +107,38 @@ it('should format the message correctly with time/timeLog/timeEnd', async ({ pag
     expect(messages[0].type()).toBe('timeEnd');
   else if (browserName === 'chromium')
     expect(messages[0].type()).toBe('log');
+  else if (browserName === 'firefox')
+    expect(messages[0].type()).toBe('timeLog');
   expect(messages[1].type()).toBe('timeEnd');
 
-  // WebKit has a space before the unit: https://bugs.webkit.org/show_bug.cgi?id=233556
-  expect(messages[0].text()).toMatch(/foo time: \d+.\d+ ?ms/);
-  expect(messages[1].text()).toMatch(/foo time: \d+.\d+ ?ms/);
+  // WebKit has no space before the unit: https://bugs.webkit.org/show_bug.cgi?id=233556
+  // Firefox/Bidi has no fractional part.
+  expect(messages[0].text()).toMatch(/foo time: \d+(.\d+)? ?ms/);
+  expect(messages[1].text()).toMatch(/foo time: \d+(.\d+)? ?ms/);
 });
 
-it('should not fail for window object', async ({ page, browserName, channel }) => {
+it('should not fail for window object', async ({ page, browserName, isBidi }) => {
   let message = null;
   page.once('console', msg => message = msg);
   await Promise.all([
     page.evaluate(() => console.error(window)),
     page.waitForEvent('console')
   ]);
-  if (browserName !== 'firefox' || channel?.startsWith('moz-firefox'))
+  if (browserName !== 'firefox' || isBidi)
     expect(message.text()).toEqual('Window');
+  else
+    expect(message.text()).toEqual('JSHandle@object');
+});
+
+it(`should not fail for object that can't be coerced to a primitive`, async ({ page, browserName, isBidi }) => {
+  let message = null;
+  page.once('console', msg => message = msg);
+  await Promise.all([
+    page.evaluate(() => console.log({ toString() { return {}; }, valueOf() { return {}; } })),
+    page.waitForEvent('console')
+  ]);
+  if (browserName !== 'firefox' || isBidi)
+    expect(message.text()).toMatch(/\{toString: (Function)?, valueOf: (Function)?\}/);
   else
     expect(message.text()).toEqual('JSHandle@object');
 });
@@ -145,11 +161,11 @@ it('should have location for console API calls', async ({ page, server }) => {
     page.goto(server.PREFIX + '/consolelog.html'),
   ]);
   expect(message.type()).toBe('log');
-  const location = message.location();
   // Engines have different column notion.
-  delete location.columnNumber;
-  expect(location).toEqual({
+  const { url, line, lineNumber } = message.location();
+  expect({ url, line, lineNumber }).toEqual({
     url: server.PREFIX + '/consolelog.html',
+    line: 7,
     lineNumber: 7,
   });
 });
@@ -178,14 +194,14 @@ it('should not throw when there are console messages in detached iframes', async
   expect(await popup.evaluate('1 + 1')).toBe(2);
 });
 
-it('should use object previews for arrays and objects', async ({ page, browserName, channel }) => {
+it('should use object previews for arrays and objects', async ({ page, browserName, isBidi }) => {
   let text: string;
   page.on('console', message => {
     text = message.text();
   });
   await page.evaluate(() => console.log([1, 2, 3], { a: 1 }, window));
 
-  if (browserName !== 'firefox' || channel?.startsWith('moz-firefox'))
+  if (browserName !== 'firefox' || isBidi)
     expect(text).toEqual('[1, 2, 3] {a: 1} Window');
   else
     expect(text).toEqual('Array JSHandle@object JSHandle@object');
@@ -226,12 +242,14 @@ it('do not update console count on unhandled rejections', async ({ page }) => {
 it('should have timestamp', async ({ page, isAndroid }) => {
   it.skip(isAndroid, 'there is a time difference between android emulator and host machine');
 
-  const before = Date.now() - 1;  // Account for the rounding of fractional timestamps.
+  // Generous slack to absorb host wall-clock resolution (e.g. ~15.6ms on Windows)
+  // vs sub-millisecond browser timestamps.
+  const before = Date.now() - 100;
   const [message] = await Promise.all([
     page.waitForEvent('console'),
     page.evaluate(() => console.log('timestamp test')),
   ]);
-  const after = Date.now() + 1;  // Account for the rounding of fractional timestamps.
+  const after = Date.now() + 100;
   expect(message.timestamp()).toBeGreaterThanOrEqual(before);
   expect(message.timestamp()).toBeLessThanOrEqual(after);
 });
@@ -252,9 +270,11 @@ it('should have increasing timestamps', async ({ page }) => {
 it('should have timestamp in consoleMessages', async ({ page, isAndroid }) => {
   it.skip(isAndroid, 'there is a time difference between android emulator and host machine');
 
-  const before = Date.now() - 1;  // Account for the rounding of fractional timestamps.
+  // Generous slack to absorb host wall-clock resolution (e.g. ~15.6ms on Windows)
+  // vs sub-millisecond browser timestamps.
+  const before = Date.now() - 100;
   await page.evaluate(() => console.log('stored message'));
-  const after = Date.now() + 1;  // Account for the rounding of fractional timestamps.
+  const after = Date.now() + 100;
   const messages = await page.consoleMessages();
   expect(messages.length).toBeGreaterThanOrEqual(1);
   const last = messages[messages.length - 1];
@@ -299,4 +319,36 @@ it('clearConsoleMessages should work', async ({ page }) => {
   messages = await page.consoleMessages();
   expect(messages.length).toBe(1);
   expect(messages[0].text()).toBe('message3');
+});
+
+it('consoleMessages since-navigation filter should work', async ({ page, server }) => {
+  await page.evaluate(() => console.log('before navigation'));
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(() => console.log('after navigation'));
+
+  const all = await page.consoleMessages({ filter: 'all' });
+  expect(all.map(m => m.text())).toContain('before navigation');
+  expect(all.map(m => m.text())).toContain('after navigation');
+
+  // since-navigation is the default
+  const sinceNav = await page.consoleMessages();
+  expect(sinceNav.map(m => m.text())).not.toContain('before navigation');
+  expect(sinceNav.map(m => m.text())).toContain('after navigation');
+});
+
+it('pageErrors since-navigation filter should work', async ({ page, server }) => {
+  server.setContent('/page1', `<script>throw new Error('page1 error');</script>`, 'text/html');
+  server.setContent('/page2', `<script>throw new Error('page2 error');</script>`, 'text/html');
+
+  await page.goto(server.PREFIX + '/page1');
+  await page.goto(server.PREFIX + '/page2');
+
+  const all = await page.pageErrors({ filter: 'all' });
+  expect(all.map(e => e.message)).toContain('page1 error');
+  expect(all.map(e => e.message)).toContain('page2 error');
+
+  // since-navigation is the default
+  const sinceNav = await page.pageErrors();
+  expect(sinceNav.map(e => e.message)).not.toContain('page1 error');
+  expect(sinceNav.map(e => e.message)).toContain('page2 error');
 });

@@ -46,7 +46,7 @@ export const FiltersView: React.FC<{
     <Expandable
       expanded={expanded}
       setExpanded={setExpanded}
-      title={<input ref={inputRef} type='search' placeholder='Filter (e.g. text, @tag)' spellCheck={false} value={filterText}
+      title={<input ref={inputRef} type='search' placeholder='Filter (e.g. text, @tag)' aria-label='Filter (e.g. text, @tag)' spellCheck={false} value={filterText}
         onChange={e => {
           setFilterText(e.target.value);
         }}
@@ -55,11 +55,11 @@ export const FiltersView: React.FC<{
             runTests();
         }} />}>
     </Expandable>
-    <div className='filter-summary' title={'Status: ' + statusLine + '\nProjects: ' + projectsLine + (onlyChanged ? '\nOnly changed' : '')} onClick={() => setExpanded(!expanded)}>
+    <button className='filter-summary' aria-expanded={expanded} title={'Status: ' + statusLine + '\nProjects: ' + projectsLine + (onlyChanged ? '\nOnly changed' : '')} onClick={() => setExpanded(!expanded)}>
       <span className='filter-label'>Status:</span> {statusLine}
       <span className='filter-label'>Projects:</span> {projectsLine}
       {onlyChanged && <><span className='filter-label'>Only changed</span></>}
-    </div>
+    </button>
     {expanded && <>
       <div className='hbox' style={{ marginLeft: 14, maxHeight: 200, overflowY: 'auto' }}>
         <div className='filter-list' role='list' data-testid='status-filters'>

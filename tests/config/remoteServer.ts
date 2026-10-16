@@ -27,18 +27,17 @@ export class RunServer implements PlaywrightServer {
   private _process!: TestChildProcess;
   _wsEndpoint!: string;
 
-  async start(childProcess: CommonFixtures['childProcess'], options?: { mode?: 'extension' | 'default', env?: NodeJS.ProcessEnv, artifactsDir?: string }) {
+  async start(childProcess: CommonFixtures['childProcess'], options?: { mode?: 'extension' | 'default', env?: NodeJS.ProcessEnv, artifactsDir?: string, unsafe?: boolean }) {
     const command = ['node', path.join(__dirname, '..', '..', 'packages', 'playwright-core', 'cli.js'), 'run-server'];
     if (options?.mode === 'extension')
       command.push('--mode=extension');
     if (options?.artifactsDir)
       command.push(`--artifacts-dir=${options.artifactsDir}`);
+    if (options?.unsafe)
+      command.push('--unsafe');
     this._process = childProcess({
       command,
-      env: {
-        ...process.env,
-        ...options?.env,
-      },
+      env: { NODE_OPTIONS: process.env.NODE_OPTIONS, ...options?.env },
     });
 
     let wsEndpointCallback: (value: string) => void;
@@ -72,6 +71,10 @@ export type RemoteServerOptions = {
   startStopAndRunHttp?: boolean;
   sharedBrowser?: boolean;
   artifactsDir?: string;
+  // Only supported by the 'run-server' kind.
+  unsafe?: boolean;
+  // Only supported by the 'run-server' kind.
+  env?: NodeJS.ProcessEnv;
 };
 
 export class RemoteServer implements PlaywrightServer {
@@ -110,6 +113,7 @@ export class RemoteServer implements PlaywrightServer {
     };
     this._process = childProcess({
       command: ['node', path.join(__dirname, 'remote-server-impl.js'), JSON.stringify(options)],
+      env: { NODE_OPTIONS: process.env.NODE_OPTIONS },
     });
 
     let index = 0;
@@ -167,7 +171,12 @@ export class RemoteServer implements PlaywrightServer {
       await this._browser.close();
       this._browser = undefined;
     }
-    await this._process.kill('SIGINT');
-    await this.childExitCode();
+    void this._process.kill('SIGINT');
+    const killTimer = setTimeout(() => void this._process.kill('SIGINT'), 30000);
+    try {
+      await this.childExitCode();
+    } finally {
+      clearTimeout(killTimer);
+    }
   }
 }

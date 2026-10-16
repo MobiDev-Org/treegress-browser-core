@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+import { inheritAndCleanEnv } from '../config/utils';
 import { playwrightTest as it, expect } from '../config/browserTest';
 
 it('should have an errors object', async ({ playwright }) => {
@@ -43,16 +44,11 @@ it('should kill browser process on timeout after close', async ({ browserType, m
 
 it('should throw a friendly error if its headed and there is no xserver on linux running', async ({ mode, browserType, platform, channel }) => {
   it.skip(platform !== 'linux');
-  it.skip(mode.startsWith('service'));
   it.skip(channel === 'chromium-headless-shell', 'shell is never headed');
-  it.skip(channel === 'chromium-tip-of-tree-headless-shell', 'shell is never headed');
 
   const error: Error = await browserType.launch({
     headless: false,
-    env: {
-      ...process.env,
-      DISPLAY: undefined,
-    },
+    env: inheritAndCleanEnv({ DISPLAY: undefined }),
   }).catch(e => e);
   expect(error).toBeInstanceOf(Error);
   expect(error.message).toMatch(/Looks like you launched a headed browser without having a XServer running./);

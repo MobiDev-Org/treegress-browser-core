@@ -14,19 +14,24 @@
  * limitations under the License.
  */
 
-import { parseSerializedValue, serializeValue } from '../protocol/serializers';
-import { isError } from '../utils';
+import { isError } from '@isomorphic/rtti';
+import { parseSerializedValue, serializeValue, systemErrorCode, systemErrorMessage } from '@protocol/serializers';
+import { rewriteErrorMessage } from '@utils/stackTrace';
 
-import type { SerializedError } from '@protocol/channels';
+import { isProtocolError } from './protocolError';
+
+import type { SerializedError } from './channels';
 
 class CustomError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = this.constructor.name;
   }
 }
 
 export class TimeoutError extends CustomError {}
+
+export class EvaluationStalledError extends CustomError {}
 
 export class TargetClosedError extends CustomError {
   constructor(cause: string | undefined, logs?: string) {
@@ -34,13 +39,34 @@ export class TargetClosedError extends CustomError {
   }
 }
 
+// mirrors https://github.com/nodejs/node/blob/4e7c07dfe2b253393702545c0ffe2712b21fd3dd/lib/internal/errors.js#L976-L988
+export class AbortError extends CustomError {
+  constructor(message = 'The operation was aborted', options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AbortError';
+  }
+}
+
 export function isTargetClosedError(error: Error) {
   return error instanceof TargetClosedError || error.name === 'TargetClosedError';
 }
 
+export function rewriteErrorForClosedTarget(error: Error, closeReason: string | undefined): Error {
+  if (isTargetClosedError(error)) {
+    if (closeReason)
+      rewriteErrorMessage(error, closeReason);
+  } else if (isProtocolError(error)) {
+    if (error.type === 'closed')
+      return new TargetClosedError(closeReason, error.browserLogMessage());
+    if (error.type === 'crashed')
+      rewriteErrorMessage(error, 'Target crashed ' + error.browserLogMessage());
+  }
+  return error;
+}
+
 export function serializeError(e: any): SerializedError {
   if (isError(e))
-    return { error: { message: e.message, stack: e.stack, name: e.name } };
+    return { error: { message: systemErrorMessage(e), stack: e.stack, name: e.name, code: systemErrorCode(e) } };
   return { value: serializeValue(e, value => ({ fallThrough: value })) };
 }
 
@@ -53,5 +79,7 @@ export function parseError(error: SerializedError): Error {
   const e = new Error(error.error.message);
   e.stack = error.error.stack || '';
   e.name = error.error.name;
+  if (error.error.code !== undefined)
+    (e as any).code = error.error.code;
   return e;
 }

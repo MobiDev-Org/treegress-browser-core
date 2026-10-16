@@ -17,13 +17,13 @@
 
 import { EventEmitter } from 'events';
 
-import { debugLogger } from '../utils/debugLogger';
+import { debugLogger } from '@utils/debugLogger';
 import { helper } from '../helper';
 import { ProtocolError } from '../protocolError';
 
 import type { ConnectionTransport, ProtocolRequest, ProtocolResponse } from '../transport';
 import type { Protocol } from './protocol';
-import type { RecentLogsCollector } from '../utils/debugLogger';
+import type { RecentLogsCollector } from '@utils/debugLogger';
 import type { ProtocolLogger } from '../types';
 
 
@@ -120,14 +120,24 @@ export class FFSession extends EventEmitter<Protocol.EventMap> {
 
   markAsCrashed() {
     this._crashed = true;
+    this._rejectPendingCallbacks();
   }
 
   async send<T extends keyof Protocol.CommandParameters>(
     method: T,
     params?: Protocol.CommandParameters[T]
   ): Promise<Protocol.CommandReturnValues[T]> {
-    if (this._crashed || this._disposed || this._connection._closed || this._connection._browserDisconnectedLogs)
-      throw new ProtocolError(this._crashed ? 'crashed' : 'closed', undefined, this._connection._browserDisconnectedLogs);
+    if (this._crashed)
+      throw new ProtocolError('crashed', undefined, this._connection._browserDisconnectedLogs);
+    return this.sendEvenAfterCrash(method, params);
+  }
+
+  async sendEvenAfterCrash<T extends keyof Protocol.CommandParameters>(
+    method: T,
+    params?: Protocol.CommandParameters[T]
+  ): Promise<Protocol.CommandReturnValues[T]> {
+    if (this._disposed || this._connection._closed || this._connection._browserDisconnectedLogs)
+      throw new ProtocolError('closed', undefined, this._connection._browserDisconnectedLogs);
     const id = this._connection.nextMessageId();
     this._rawSend({ method, params, id });
     return new Promise((resolve, reject) => {
@@ -160,6 +170,10 @@ export class FFSession extends EventEmitter<Protocol.EventMap> {
   dispose() {
     this._disposed = true;
     this._connection._sessions.delete(this._sessionId);
+    this._rejectPendingCallbacks();
+  }
+
+  private _rejectPendingCallbacks() {
     for (const callback of this._callbacks.values()) {
       callback.error.type = this._crashed ? 'crashed' : 'closed';
       callback.error.logs = this._connection._browserDisconnectedLogs;

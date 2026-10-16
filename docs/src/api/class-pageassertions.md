@@ -127,6 +127,110 @@ Whether to perform case-insensitive match. [`option: ignoreCase`] option takes p
 ### option: PageAssertions.NotToHaveURL.timeout = %%-csharp-java-python-assertions-timeout-%%
 * since: v1.18
 
+## async method: PageAssertions.toMatchAriaSnapshot
+* since: v1.60
+* langs:
+  - alias-java: matchesAriaSnapshot
+
+Asserts that the page body matches the given [accessibility snapshot](../aria-snapshots.md).
+
+**Usage**
+
+```js
+await page.goto('https://demo.playwright.dev/todomvc/');
+await expect(page).toMatchAriaSnapshot(`
+  - heading "todos"
+  - textbox "What needs to be done?"
+`);
+```
+
+```python async
+await page.goto("https://demo.playwright.dev/todomvc/")
+await expect(page).to_match_aria_snapshot('''
+  - heading "todos"
+  - textbox "What needs to be done?"
+''')
+```
+
+```python sync
+page.goto("https://demo.playwright.dev/todomvc/")
+expect(page).to_match_aria_snapshot('''
+  - heading "todos"
+  - textbox "What needs to be done?"
+''')
+```
+
+```csharp
+await page.GotoAsync("https://demo.playwright.dev/todomvc/");
+await Expect(page).ToMatchAriaSnapshotAsync(@"
+  - heading ""todos""
+  - textbox ""What needs to be done?""
+");
+```
+
+```java
+page.navigate("https://demo.playwright.dev/todomvc/");
+assertThat(page).matchesAriaSnapshot("""
+  - heading "todos"
+  - textbox "What needs to be done?"
+""");
+```
+
+### param: PageAssertions.toMatchAriaSnapshot.expected
+* since: v1.60
+- `expected` <[string]>
+
+### option: PageAssertions.toMatchAriaSnapshot.timeout = %%-js-assertions-timeout-%%
+* since: v1.60
+
+### option: PageAssertions.toMatchAriaSnapshot.signal = %%-js-assertions-signal-%%
+* since: v1.62
+
+### option: PageAssertions.toMatchAriaSnapshot.timeout = %%-csharp-java-python-assertions-timeout-%%
+* since: v1.60
+
+## async method: PageAssertions.NotToMatchAriaSnapshot
+* since: v1.60
+* langs: python
+
+The opposite of [`method: PageAssertions.toMatchAriaSnapshot`].
+
+### param: PageAssertions.NotToMatchAriaSnapshot.expected
+* since: v1.60
+- `expected` <[string]>
+
+### option: PageAssertions.NotToMatchAriaSnapshot.timeout = %%-csharp-java-python-assertions-timeout-%%
+* since: v1.60
+
+## async method: PageAssertions.toMatchAriaSnapshot#2
+* since: v1.60
+* langs: js
+
+Asserts that the page body matches the given [accessibility snapshot](../aria-snapshots.md).
+
+Snapshot is stored in a separate `.aria.yml` file in a location configured by `expect.toMatchAriaSnapshot.pathTemplate` and/or `snapshotPathTemplate` properties in the configuration file.
+
+**Usage**
+
+```js
+await expect(page).toMatchAriaSnapshot();
+await expect(page).toMatchAriaSnapshot({ name: 'home.aria.yml' });
+```
+
+### option: PageAssertions.toMatchAriaSnapshot#2.name
+* since: v1.60
+* langs: js
+- `name` <[string]>
+
+Name of the snapshot to store in the snapshot folder corresponding to this test.
+Generates sequential names if not specified.
+
+### option: PageAssertions.toMatchAriaSnapshot#2.timeout = %%-js-assertions-timeout-%%
+* since: v1.60
+
+### option: PageAssertions.toMatchAriaSnapshot#2.signal = %%-js-assertions-signal-%%
+* since: v1.62
+
 ## async method: PageAssertions.toHaveScreenshot#1
 * since: v1.23
 * langs: js
@@ -138,6 +242,9 @@ yield the same result, and then compare the last screenshot with the expectation
 
 ```js
 await expect(page).toHaveScreenshot('image.png');
+
+// Store the snapshot in the WebP format.
+await expect(page).toHaveScreenshot('image.webp');
 ```
 
 Note that screenshot assertions only work with Playwright test runner.
@@ -146,10 +253,13 @@ Note that screenshot assertions only work with Playwright test runner.
 * since: v1.23
 - `name` <[string]|[Array]<[string]>>
 
-Snapshot name.
+Snapshot name. Must have a `.png` or `.webp` extension, the screenshot is captured in the corresponding format. Both formats are lossless.
 
 ### option: PageAssertions.toHaveScreenshot#1.timeout = %%-js-assertions-timeout-%%
 * since: v1.23
+
+### option: PageAssertions.toHaveScreenshot#1.signal = %%-js-assertions-signal-%%
+* since: v1.62
 
 ### option: PageAssertions.toHaveScreenshot#1.animations = %%-screenshot-option-animations-default-disabled-%%
 * since: v1.23
@@ -194,6 +304,8 @@ Snapshot name.
 This function will wait until two consecutive page screenshots
 yield the same result, and then compare the last screenshot with the expectation.
 
+The snapshot is stored in the PNG format. To store it in the WebP format instead, pass a snapshot name with the `.webp` extension.
+
 **Usage**
 
 ```js
@@ -204,6 +316,9 @@ Note that screenshot assertions only work with Playwright test runner.
 
 ### option: PageAssertions.toHaveScreenshot#2.timeout = %%-js-assertions-timeout-%%
 * since: v1.23
+
+### option: PageAssertions.toHaveScreenshot#2.signal = %%-js-assertions-signal-%%
+* since: v1.62
 
 ### option: PageAssertions.toHaveScreenshot#2.animations = %%-screenshot-option-animations-default-disabled-%%
 * since: v1.23
@@ -287,6 +402,9 @@ Expected title or RegExp.
 ### option: PageAssertions.toHaveTitle.timeout = %%-js-assertions-timeout-%%
 * since: v1.18
 
+### option: PageAssertions.toHaveTitle.signal = %%-js-assertions-signal-%%
+* since: v1.62
+
 ### option: PageAssertions.toHaveTitle.timeout = %%-csharp-java-python-assertions-timeout-%%
 * since: v1.18
 
@@ -364,6 +482,9 @@ Whether to perform case-insensitive match. [`option: ignoreCase`] option takes p
 
 ### option: PageAssertions.toHaveURL.timeout = %%-js-assertions-timeout-%%
 * since: v1.18
+
+### option: PageAssertions.toHaveURL.signal = %%-js-assertions-signal-%%
+* since: v1.62
 
 ### option: PageAssertions.toHaveURL.timeout = %%-csharp-java-python-assertions-timeout-%%
 * since: v1.18

@@ -14,24 +14,24 @@
  * limitations under the License.
  */
 
+import yaml from 'yaml';
+import { parseAriaSnapshotUnsafe } from '@isomorphic/ariaSnapshot';
+import { unsafeLocatorOrSelectorAsSelector } from '@isomorphic/locatorParser';
+import { gracefullyProcessExitDoNotHang } from '@utils/processLauncher';
+import { asLocator } from '@isomorphic/locatorGenerators';
+import { generateCode } from '@isomorphic/codegen/language';
+import { JavaScriptLanguageGenerator } from '@isomorphic/codegen/javascript';
 import { SdkObject, createInstrumentation } from './instrumentation';
-import { gracefullyProcessExitDoNotHang } from './utils/processLauncher';
 import { Recorder, RecorderEvent } from './recorder';
-import { asLocator  } from '../utils';
-import { parseAriaSnapshotUnsafe } from '../utils/isomorphic/ariaSnapshot';
-import { yaml } from '../utilsBundle';
-import { unsafeLocatorOrSelectorAsSelector } from '../utils/isomorphic/locatorParser';
-import { generateCode } from './codegen/language';
 import { collapseActions } from './recorder/recorderUtils';
-import { JavaScriptLanguageGenerator } from './codegen/javascript';
 
-import type { Language } from '../utils';
+import type { Language } from '@isomorphic/locatorGenerators';
 import type { BrowserContext } from './browserContext';
 import type { InstrumentationListener } from './instrumentation';
 import type { Playwright } from './playwright';
 import type { ElementInfo, Mode } from '@recorder/recorderTypes';
-import type { Progress } from '@protocol/progress';
-import type * as actions from '@recorder/actions';
+import type { Progress } from './progress';
+import type * as actions from '@isomorphic/codegen/actions';
 
 export class DebugController extends SdkObject {
   static Events = {
@@ -52,19 +52,23 @@ export class DebugController extends SdkObject {
     this._playwright = playwright;
   }
 
-  initialize(codegenId: string, sdkLanguage: Language) {
+  initialize(progress: Progress, codegenId: string, sdkLanguage: Language) {
     this._sdkLanguage = sdkLanguage;
   }
 
   dispose() {
-    this.setReportStateChanged(false);
+    this._setReportStateChanged(false);
   }
 
-  setReportStateChanged(enabled: boolean) {
+  setReportStateChanged(progress: Progress, enabled: boolean) {
+    this._setReportStateChanged(enabled);
+  }
+
+  private _setReportStateChanged(enabled: boolean) {
     if (enabled && !this._trackHierarchyListener) {
       this._trackHierarchyListener = {
         onPageOpen: () => this._emitSnapshot(false),
-        onPageClose: () => this._emitSnapshot(false),
+        onPageDidClose: () => this._emitSnapshot(false),
       };
       this._playwright.instrumentation.addListener(this._trackHierarchyListener, null);
       this._emitSnapshot(true);
@@ -75,7 +79,7 @@ export class DebugController extends SdkObject {
   }
 
   async setRecorderMode(progress: Progress, params: { mode: Mode, testIdAttributeName?: string, generateAutoExpect?: boolean }) {
-    await progress.race(this._closeBrowsersWithoutPages());
+    await this._closeBrowsersWithoutPages(progress);
     this._generateAutoExpect = !!params.generateAutoExpect;
 
     if (params.mode === 'none') {
@@ -84,7 +88,7 @@ export class DebugController extends SdkObject {
         promises.push(recorder.hideHighlightedSelector());
         promises.push(recorder.setMode('none'));
       }
-      await Promise.all(promises);
+      await progress.race(Promise.all(promises));
       return;
     }
 
@@ -121,7 +125,7 @@ export class DebugController extends SdkObject {
       else if (params.selector)
         promises.push(recorder.setHighlightedSelector(params.selector));
     }
-    await Promise.all(promises);
+    await progress.race(Promise.all(promises));
   }
 
   async hideHighlight(progress: Progress) {
@@ -130,8 +134,8 @@ export class DebugController extends SdkObject {
     for (const recorder of await progress.race(this._allRecorders()))
       promises.push(recorder.hideHighlightedSelector());
     // Hide all locator.highlight highlights.
-    promises.push(...this._playwright.allPages().map(p => p.hideHighlight().catch(() => {})));
-    await Promise.all(promises);
+    promises.push(...this._playwright.allPages().map(p => p.highlightController.hideHighlights().catch(() => {})));
+    await progress.race(Promise.all(promises));
   }
 
   async resume(progress: Progress) {
@@ -139,7 +143,7 @@ export class DebugController extends SdkObject {
       recorder.resume();
   }
 
-  kill() {
+  kill(progress: Progress) {
     gracefullyProcessExitDoNotHang(0);
   }
 
@@ -161,14 +165,14 @@ export class DebugController extends SdkObject {
     return nonNullRecorders;
   }
 
-  private async _closeBrowsersWithoutPages() {
+  private async _closeBrowsersWithoutPages(progress: Progress) {
     for (const browser of this._playwright.allBrowsers()) {
       for (const context of browser.contexts()) {
         if (!context.pages().length)
-          await context.close({ reason: 'Browser collected' });
+          await context.close(progress, { reason: 'Browser collected' });
       }
       if (!browser.contexts())
-        await browser.close({ reason: 'Browser collected' });
+        await browser.close(progress, { reason: 'Browser collected' });
     }
   }
 }
@@ -184,12 +188,11 @@ function wireListeners(recorder: Recorder, debugController: DebugController) {
   const languageGenerator = new JavaScriptLanguageGenerator(/* isPlaywrightTest */true);
 
   const actionsChanged = () => {
-    const aa = collapseActions(actions);
-    const { header, footer, text, actionTexts } = generateCode(aa, languageGenerator, {
+    const { header, footer, text, actionTexts } = generateCode(collapseActions(actions), languageGenerator, {
       browserName: 'chromium',
       launchOptions: {},
       contextOptions: {},
-      generateAutoExpect: debugController._generateAutoExpect,
+      generateExpectSignal: debugController._generateAutoExpect,
     });
     debugController.emit(DebugController.Events.SourceChanged, { text, header, footer, actions: actionTexts });
   };
@@ -208,10 +211,19 @@ function wireListeners(recorder: Recorder, debugController: DebugController) {
     actions.push(action);
     actionsChanged();
   });
+  recorder.on(RecorderEvent.ModeChanged, (mode: Mode) => {
+    // Recording session has ended (mode switched to 'none' when the client
+    // stops recording, or 'standby' when the recorder toolbar pauses it):
+    // drop the accumulated actions, so that the next session does not leak
+    // them into the emitted source (the client would re-insert the stale
+    // last action into the editor).
+    if (mode === 'none' || mode === 'standby')
+      actions.length = 0;
+  });
   recorder.on(RecorderEvent.SignalAdded, (signal: actions.SignalInContext) => {
-    const lastAction = actions.findLast(a => a.frame.pageGuid === signal.frame.pageGuid);
+    const lastAction = actions.findLast(a => a.pageGuid === signal.pageGuid);
     if (lastAction)
-      lastAction.action.signals.push(signal.signal);
+      lastAction.signals.push(signal.signal);
     actionsChanged();
   });
 }

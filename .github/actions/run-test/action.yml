@@ -1,6 +1,9 @@
 name: 'Run browser tests'
 description: 'Run browser tests'
 inputs:
+  setup-command:
+    description: 'Extra setup command to run before tests'
+    required: false
   command:
     description: 'Command to run tests'
     required: true
@@ -23,23 +26,13 @@ inputs:
     description: 'Shell to use'
     required: false
     default: 'bash'
-  flakiness-client-id:
-    description: 'Azure Flakiness Dashboard Client ID'
-    required: false
-  flakiness-tenant-id:
-    description: 'Azure Flakiness Dashboard Tenant ID'
-    required: false
-  flakiness-subscription-id:
-    description: 'Azure Flakiness Dashboard Subscription ID'
-    required: false
 
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: ${{ inputs.node-version }}
-    - uses: ./.github/actions/enable-microphone-access
     - run: |
         echo "::group::npm ci"
         npm ci
@@ -56,6 +49,10 @@ runs:
         echo "::endgroup::"
       shell: bash
     - run: echo "PLAYWRIGHT_SETUP_COMPLETE=true" >> $GITHUB_ENV
+      shell: bash
+    - name: Run setup command
+      if: inputs.setup-command != ''
+      run: ${{ inputs.setup-command }}
       shell: bash
     - name: Run tests
       if: inputs.shell == 'bash'
@@ -74,22 +71,14 @@ runs:
       shell: ${{ inputs.shell }}
       env:
         PW_TAG: "@${{ inputs.bot-name }}"
-    - name: Azure Login
-      uses: azure/login@v2
-      if: ${{ !cancelled() && env.PLAYWRIGHT_SETUP_COMPLETE == 'true' && github.event_name == 'push' && github.repository == 'microsoft/playwright' }}
-      with:
-        client-id: ${{ inputs.flakiness-client-id }}
-        tenant-id: ${{ inputs.flakiness-tenant-id }}
-        subscription-id: ${{ inputs.flakiness-subscription-id }}
-    - run: |
-        echo "::group::./utils/upload_flakiness_dashboard.sh"
-        ./utils/upload_flakiness_dashboard.sh ./test-results/report.json
-        echo "::endgroup::"
-      if: ${{ !cancelled() && env.PLAYWRIGHT_SETUP_COMPLETE == 'true' }}
-      shell: bash
     - name: Upload blob report
       if: ${{ !cancelled() && env.PLAYWRIGHT_SETUP_COMPLETE == 'true' && (github.event_name == 'pull_request' || failure()) }}
       uses: ./.github/actions/upload-blob-report
       with:
         report_dir: blob-report
+        job_name: ${{ inputs.bot-name }}-${{ inputs.shard-index }}
+    - name: Upload parquet report
+      if: ${{ !cancelled() && env.PLAYWRIGHT_SETUP_COMPLETE == 'true' }}
+      uses: ./.github/actions/upload-parquet-report
+      with:
         job_name: ${{ inputs.bot-name }}-${{ inputs.shard-index }}

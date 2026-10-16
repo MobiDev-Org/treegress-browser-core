@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -19,8 +19,8 @@ import { CDPSession } from '../chromium/crConnection';
 
 import type { BrowserContextDispatcher } from './browserContextDispatcher';
 import type { BrowserDispatcher } from './browserDispatcher';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 export class CDPSessionDispatcher extends Dispatcher<CDPSession, channels.CDPSessionChannel, BrowserDispatcher | BrowserContextDispatcher> implements channels.CDPSessionChannel {
   _type_CDPSession = true;
@@ -35,11 +35,10 @@ export class CDPSessionDispatcher extends Dispatcher<CDPSession, channels.CDPSes
   }
 
   async send(params: channels.CDPSessionSendParams, progress: Progress): Promise<channels.CDPSessionSendResult> {
-    return { result: await progress.race(this._object.send(params.method as any, params.params)) };
+    return { result: await this._object.send(progress, params.method as any, params.params) };
   }
 
   async detach(_: any, progress: Progress): Promise<void> {
-    progress.metadata.potentiallyClosesScope = true;
-    await this._object.detach();
+    await this._object.detach(progress);
   }
 }

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import type { Page } from 'packages/playwright-test';
+import type { Page } from '../../packages/playwright-test';
 import { test as it, expect as baseExpect } from './pageTest';
 
 const expect = baseExpect.extend({
@@ -191,4 +191,11 @@ it('should emulate contrast ', async ({ page }) => {
   await expect(page).toMatchMedia('(prefers-contrast: more)');
   await page.emulateMedia({ contrast: null });
   await expect(page).toMatchMedia('(prefers-contrast: no-preference)');
+});
+
+it('should report hover and fine pointer for desktop', async ({ page, isAndroid }) => {
+  it.skip(isAndroid);
+
+  await expect(page).toMatchMedia('(hover: hover)');
+  await expect(page).toMatchMedia('(pointer: fine)');
 });

@@ -15,11 +15,9 @@
  * limitations under the License.
  */
 
-import { makeWaitForNextTask } from '../utils';
-import { httpHappyEyeballsAgent, httpsHappyEyeballsAgent } from './utils/happyEyeballs';
-import { ws } from '../utilsBundle';
-
-import type { WebSocket } from '../utilsBundle';
+import ws from 'ws';
+import { flattenAggregateError, happyEyeballsOptions } from '@utils/network';
+import type { WebSocket } from 'ws';
 import type { Progress } from './progress';
 import type { HeadersArray } from './types';
 import type { ClientRequest, IncomingMessage } from 'http';
@@ -90,8 +88,9 @@ export class WebSocketTransport implements ConnectionTransport {
         fulfill({});
       });
       transport._ws.on('error', event => {
-        progress?.log(`<ws connect error> ${logUrl} ${event.message}`);
-        reject(new Error('WebSocket error: ' + event.message));
+        const message = flattenAggregateError(event).message;
+        progress?.log(`<ws connect error> ${logUrl} ${message}`);
+        reject(new Error('WebSocket error: ' + message));
         transport._ws.close();
       });
       transport._ws.on('unexpected-response', (request: ClientRequest, response: IncomingMessage) => {
@@ -138,7 +137,7 @@ export class WebSocketTransport implements ConnectionTransport {
       maxPayload: 256 * 1024 * 1024, // 256Mb,
       headers: options.headers,
       followRedirects: options.followRedirects,
-      agent: (/^(https|wss):\/\//.test(url)) ? httpsHappyEyeballsAgent : httpHappyEyeballsAgent,
+      ...happyEyeballsOptions,
       perMessageDeflate,
     });
     this._ws.on('upgrade', response => {
@@ -153,7 +152,7 @@ export class WebSocketTransport implements ConnectionTransport {
     // In Web, all IO callbacks (e.g. WebSocket callbacks)
     // are dispatched into separate tasks, so there's no need
     // to do anything extra.
-    const messageWrap: (cb: () => void) => void = makeWaitForNextTask();
+    const messageWrap: (cb: () => void) => void = setImmediate;
 
     this._ws.addEventListener('message', event => {
       messageWrap(() => {

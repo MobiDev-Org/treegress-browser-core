@@ -1,7 +1,7 @@
 /**
  * Copyright (c) Microsoft Corporation.
  *
- * Licensed under the Apache License, Version 2.0 (the 'License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -20,12 +20,13 @@ import { CDPSessionDispatcher } from './cdpSessionDispatcher';
 import { Dispatcher } from './dispatcher';
 import { BrowserContext } from '../browserContext';
 import { ArtifactDispatcher } from './artifactDispatcher';
+import { nullProgress } from '../progress';
 
 import type { BrowserTypeDispatcher } from './browserTypeDispatcher';
 import type { PageDispatcher } from './pageDispatcher';
 import type { CRBrowser } from '../chromium/crBrowser';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 type BrowserDispatcherOptions = {
   // Do not allow to close this browser.
@@ -60,7 +61,7 @@ export class BrowserDispatcher extends Dispatcher<Browser, channels.BrowserChann
 
   async newContext(params: channels.BrowserNewContextParams, progress: Progress): Promise<channels.BrowserNewContextResult> {
     if (params.recordVideo && this._object.attribution.playwright.options.isServer)
-      params.recordVideo.dir = this._object.options.artifactsDir;
+      params.recordVideo.dir = undefined;
 
     if (!this._options.isolateContexts) {
       const context = await this._object.newContext(progress, params);
@@ -87,7 +88,7 @@ export class BrowserDispatcher extends Dispatcher<Browser, channels.BrowserChann
     const context = this._object.contextForReuse();
     const contextDispatcher = context ? this.connection.existingDispatcher<BrowserContextDispatcher>(context) : undefined;
     if (contextDispatcher) {
-      await contextDispatcher.stopPendingOperations(new Error(params.reason));
+      await progress.race(contextDispatcher.stopPendingOperations(new Error(params.reason)));
       contextDispatcher._dispose();
     }
   }
@@ -95,15 +96,13 @@ export class BrowserDispatcher extends Dispatcher<Browser, channels.BrowserChann
   async close(params: channels.BrowserCloseParams, progress: Progress): Promise<void> {
     if (this._options.ignoreStopAndKill)
       return;
-    progress.metadata.potentiallyClosesScope = true;
-    await this._object.close(params);
+    await this._object.close(progress, params);
   }
 
   async killForTests(params: channels.BrowserKillForTestsParams, progress: Progress): Promise<void> {
     if (this._options.ignoreStopAndKill)
       return;
-    progress.metadata.potentiallyClosesScope = true;
-    await this._object.killForTests();
+    await this._object.killForTests(progress);
   }
 
   async defaultUserAgentForTest(): Promise<channels.BrowserDefaultUserAgentForTestResult> {
@@ -115,7 +114,7 @@ export class BrowserDispatcher extends Dispatcher<Browser, channels.BrowserChann
     if (this._object.options.browserType !== 'chromium')
       throw new Error(`CDP session is only available in Chromium`);
     const crBrowser = this._object as CRBrowser;
-    return { session: new CDPSessionDispatcher(this, await crBrowser.newBrowserCDPSession()) };
+    return { session: new CDPSessionDispatcher(this, await progress.race(crBrowser.newBrowserCDPSession())) };
   }
 
   async startTracing(params: channels.BrowserStartTracingParams, progress: Progress): Promise<void> {
@@ -123,7 +122,7 @@ export class BrowserDispatcher extends Dispatcher<Browser, channels.BrowserChann
     if (this._object.options.browserType !== 'chromium')
       throw new Error(`Tracing is only available in Chromium`);
     const crBrowser = this._object as CRBrowser;
-    await crBrowser.startTracing(params.page ? (params.page as PageDispatcher)._object : undefined, params);
+    await progress.race(crBrowser.startTracing(params.page ? (params.page as PageDispatcher)._object : undefined, params));
   }
 
   async stopTracing(params: channels.BrowserStopTracingParams, progress: Progress): Promise<channels.BrowserStopTracingResult> {
@@ -131,18 +130,18 @@ export class BrowserDispatcher extends Dispatcher<Browser, channels.BrowserChann
     if (this._object.options.browserType !== 'chromium')
       throw new Error(`Tracing is only available in Chromium`);
     const crBrowser = this._object as CRBrowser;
-    return { artifact: ArtifactDispatcher.from(this, await crBrowser.stopTracing()) };
+    return { artifact: ArtifactDispatcher.from(this, await progress.race(crBrowser.stopTracing())) };
   }
 
   async startServer(params: channels.BrowserStartServerParams, progress: Progress): Promise<channels.BrowserStartServerResult> {
-    return await this._object.startServer(params.title, params);
+    return await this._object.startServer(progress, params.title, params);
   }
 
   async stopServer(params: channels.BrowserStopServerParams, progress: Progress): Promise<void> {
-    await this._object.stopServer();
+    await this._object.stopServer(progress);
   }
 
   async cleanupContexts() {
-    await Promise.all(Array.from(this._isolatedContexts).map(context => context.close({ reason: 'Global context cleanup (connection terminated)' })));
+    await Promise.all(Array.from(this._isolatedContexts).map(context => context.close(nullProgress, { reason: 'Global context cleanup (connection terminated)' })));
   }
 }

@@ -51,7 +51,7 @@ it.describe('download event', () => {
     });
   });
 
-  it('should report download when navigation turns into download @smoke', async ({ browser, server, browserName, browserMajorVersion }) => {
+  it('should report download when navigation turns into download @smoke', async ({ browser, server, browserName, browserMajorVersion, isBidi }) => {
     it.skip(browserName === 'chromium' && browserMajorVersion < 140, 'old chromium throws net::ERR_ABORTED, depends on https://chromium-review.googlesource.com/c/chromium/src/+/6696011');
     const page = await browser.newPage();
     const [download, responseOrError] = await Promise.all([
@@ -67,12 +67,12 @@ it.describe('download event', () => {
     expect(responseOrError instanceof Error).toBeTruthy();
     expect(responseOrError.message).toContain('Download is starting');
 
-    if (browserName !== 'firefox')
+    if (browserName !== 'firefox' || isBidi)
       expect(page.url()).toBe('about:blank');
     await page.close();
   });
 
-  it('should work with Cross-Origin-Opener-Policy', async ({ browser, server, browserName, browserMajorVersion }) => {
+  it('should work with Cross-Origin-Opener-Policy', async ({ browser, server, browserName, browserMajorVersion, isBidi }) => {
     it.skip(browserName === 'chromium' && browserMajorVersion < 140, 'old chromium throws net::ERR_ABORTED, depends on https://chromium-review.googlesource.com/c/chromium/src/+/6696011');
     const page = await browser.newPage();
     const [download, responseOrError] = await Promise.all([
@@ -86,7 +86,7 @@ it.describe('download event', () => {
     expect(fs.readFileSync(path).toString()).toBe('Hello world');
     expect(responseOrError instanceof Error).toBeTruthy();
     expect(responseOrError.message).toContain('Download is starting');
-    if (browserName !== 'firefox')
+    if (browserName !== 'firefox' || isBidi)
       expect(page.url()).toBe('about:blank');
     await page.close();
   });
@@ -396,8 +396,8 @@ it.describe('download event', () => {
     expect(fs.existsSync(path.join(path1, '..'))).toBeFalsy();
   });
 
-  it('should save downloads to artifactsDir', async ({ server, browserType, browserName, isMac, macVersion }, testInfo) => {
-    it.skip(browserName === 'webkit' && isMac && macVersion <= 14, 'WebKit on macOS-14 is frozen');
+  it('should save downloads to artifactsDir', async ({ server, browserType, isFrozenWebkit }, testInfo) => {
+    it.skip(isFrozenWebkit, 'needs recent webkit');
     const artifactsDir = testInfo.outputPath('artifacts');
     const browser = await browserType.launch({ artifactsDir });
     const page = await browser.newPage();
@@ -672,10 +672,6 @@ it('should save to user-specified path', async ({ browser, server, mode }, testI
     page.waitForEvent('download'),
     page.click('a')
   ]);
-  if (mode.startsWith('service')) {
-    const error = await download.path().catch(e => e);
-    expect(error.message).toContain('Path is not available when connecting remotely. Use saveAs() to save a local copy.');
-  }
   const userPath = testInfo.outputPath('download.txt');
   await download.saveAs(userPath);
   expect(fs.existsSync(userPath)).toBeTruthy();

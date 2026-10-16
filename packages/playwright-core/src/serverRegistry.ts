@@ -14,94 +14,150 @@
  * limitations under the License.
  */
 
+import { EventEmitter } from 'events';
 import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import os from 'os';
+import chokidar from 'chokidar';
 
-import type { Browser } from './server/browser';
-import type { LaunchOptions } from './server/types';
-import type { BrowserName } from './server/registry/index';
+import { packageJSON, packageRoot } from './package';
 
-const packageVersion = require('../package.json').version;
+import type { FSWatcher } from 'chokidar';
+// Only client depenencies with backward compatibility guarantees should be imported here.
+import type { LaunchOptions } from '../types/types';
+
+const packageVersion = packageJSON.version;
 
 export type BrowserInfo = {
-  title: string;
-  wsEndpoint?: string;
-  pipeName?: string;
-  workspaceDir?: string;
+  guid: string;
+  browserName: 'chromium' | 'firefox' | 'webkit';
+  userDataDir?: string;
+  launchOptions: LaunchOptions;
 };
 
-export type BrowserDescriptor = BrowserInfo & {
+export type EndpointInfo = {
+  title: string;
+  endpoint?: string;
+  workspaceDir?: string;
+  metadata?: Record<string, any>;
+};
+
+export type BrowserDescriptor = EndpointInfo & {
   playwrightVersion: string;
   playwrightLib: string;
-  browser: {
-    browserName: BrowserName;
-    launchOptions: LaunchOptions;
-  };
+  browser: BrowserInfo;
 };
 
 export type BrowserStatus = BrowserDescriptor & { canConnect: boolean };
 
-type BrowserEntry = BrowserStatus & { file: string };
+export interface ServerRegistryEvents {
+  added: (descriptor: BrowserDescriptor) => void;
+  removed: (guid: string) => void;
+  changed: (descriptor: BrowserDescriptor) => void;
+}
 
-class ServerRegistry {
-  async list(options?: { gc?: boolean, includeDisconnected?: boolean }): Promise<Map<string, BrowserStatus[]>> {
-    const files = await fs.promises.readdir(this._browsersDir()).catch(() => []);
-    const result = new Map<string, Promise<BrowserEntry>[]>();
-    for (const file of files) {
-      try {
-        const filePath = path.join(this._browsersDir(), file);
-        const content = await fs.promises.readFile(filePath, 'utf-8');
-        const descriptor: BrowserDescriptor = JSON.parse(content);
+class ServerRegistry extends EventEmitter {
+  private _descriptors = new Map<string, BrowserDescriptor>();
+  private _watcher: FSWatcher | undefined;
+  private _watcherRefs = 0;
+  private _ready: Promise<void> | undefined;
+
+  override on<K extends keyof ServerRegistryEvents>(event: K, listener: ServerRegistryEvents[K]): this {
+    return super.on(event, listener as (...args: any[]) => void);
+  }
+
+  override off<K extends keyof ServerRegistryEvents>(event: K, listener: ServerRegistryEvents[K]): this {
+    return super.off(event, listener as (...args: any[]) => void);
+  }
+
+  watch(): () => void {
+    this._watcherRefs++;
+    if (!this._watcher)
+      this._startWatcher();
+    let disposed = false;
+    return () => {
+      if (disposed)
+        return;
+      disposed = true;
+      this._watcherRefs--;
+      if (this._watcherRefs === 0)
+        this._stopWatcher();
+    };
+  }
+
+  ready(): Promise<void> {
+    return this._ready ?? Promise.resolve();
+  }
+
+  async list(): Promise<Map<string, BrowserDescriptor[]>> {
+    const ownWatcher = !this._watcher;
+    let dispose: (() => void) | undefined;
+    if (ownWatcher)
+      dispose = this.watch();
+    try {
+      await this._ready;
+      const statuses = await Promise.all(
+          [...this._descriptors.values()].map(async descriptor => {
+            const canConnect = await canConnectTo(descriptor);
+            return { descriptor, canConnect };
+          }),
+      );
+      const result = new Map<string, BrowserDescriptor[]>();
+      for (const { descriptor, canConnect } of statuses) {
+        if (!canConnect) {
+          await fs.promises.unlink(path.join(this._browsersDir(), descriptor.browser.guid)).catch(() => {});
+          continue;
+        }
         const key = descriptor.workspaceDir ?? '';
         let list = result.get(key);
         if (!list) {
           list = [];
           result.set(key, list);
         }
-        list.push(canConnect(descriptor).then(connectable => ({ ...descriptor, canConnect: connectable, file: filePath })));
-      } catch {
+        list.push(descriptor);
       }
+      return result;
+    } finally {
+      dispose?.();
     }
-
-    const resolvedResult = new Map<string, BrowserStatus[]>();
-    for (const [key, promises] of result) {
-      const entries = await Promise.all(promises);
-      if (options?.gc) {
-        for (const entry of entries) {
-          if (!entry.canConnect)
-            await fs.promises.unlink(entry.file).catch(() => {});
-        }
-      }
-      const list = options?.includeDisconnected ? entries : entries.filter(entry => entry.canConnect);
-      if (list.length)
-        resolvedResult.set(key, list);
-    }
-    return resolvedResult;
   }
 
-  async create(browser: Browser, info: BrowserInfo): Promise<void> {
+  async create(browser: BrowserInfo, endpoint: EndpointInfo) {
     const file = path.join(this._browsersDir(), browser.guid);
     await fs.promises.mkdir(this._browsersDir(), { recursive: true });
     const descriptor: BrowserDescriptor = {
       playwrightVersion: packageVersion,
-      playwrightLib: require.resolve('..'),
-      title: info.title,
-      browser: {
-        browserName: browser.options.browserType,
-        launchOptions: browser.options.originalLaunchOptions,
-      },
-      wsEndpoint: info.wsEndpoint,
-      pipeName: info.pipeName,
-      workspaceDir: info.workspaceDir,
+      playwrightLib: packageRoot,
+      title: endpoint.title,
+      browser,
+      endpoint: endpoint.endpoint,
+      workspaceDir: endpoint.workspaceDir,
     };
-    await fs.promises.writeFile(file, JSON.stringify(descriptor), 'utf-8');
+    await fs.promises.writeFile(file, JSON.stringify(descriptor, null, 2), 'utf-8');
   }
 
-  async delete(browser: Browser): Promise<void> {
-    const file = path.join(this._browsersDir(), browser.guid);
+  async delete(guid: string): Promise<void> {
+    const file = path.join(this._browsersDir(), guid);
     await fs.promises.unlink(file).catch(() => {});
+  }
+
+  async deleteUserData(guid: string): Promise<void> {
+    const filePath = path.join(this._browsersDir(), guid);
+    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const descriptor: BrowserDescriptor = JSON.parse(content);
+    if (descriptor.browser.userDataDir)
+      await fs.promises.rm(descriptor.browser.userDataDir, { recursive: true, force: true });
+    await fs.promises.unlink(filePath);
+  }
+
+  readDescriptor(guid: string): BrowserDescriptor {
+    const cached = this._descriptors.get(guid);
+    if (cached)
+      return cached;
+    const filePath = path.join(this._browsersDir(), guid);
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(content);
   }
 
   async find(name: string): Promise<BrowserDescriptor | null> {
@@ -116,24 +172,78 @@ class ServerRegistry {
   }
 
   private _browsersDir() {
-    return process.env.PLAYWRIGHT_SERVER_REGISTRY || registryDirectory;
+    return process.env.PWTEST_SERVER_REGISTRY || registryDirectory();
+  }
+
+  private _startWatcher() {
+    const dir = this._browsersDir();
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {
+    }
+    const watcher = chokidar.watch(dir, {
+      ignoreInitial: false,
+      depth: 0,
+      awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 20 },
+    });
+    this._watcher = watcher;
+    this._ready = new Promise<void>((resolve, reject) => {
+      watcher.once('ready', () => resolve());
+      watcher.once('error', reject);
+    });
+    watcher.on('add', file => this._onAddOrChange(file, 'added'));
+    watcher.on('change', file => this._onAddOrChange(file, 'changed'));
+    watcher.on('unlink', file => {
+      const guid = path.basename(file);
+      if (this._descriptors.delete(guid))
+        this.emit('removed', guid);
+    });
+  }
+
+  private _onAddOrChange(file: string, event: 'added' | 'changed') {
+    const guid = path.basename(file);
+    let descriptor: BrowserDescriptor;
+    try {
+      descriptor = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    } catch {
+      return;
+    }
+    this._descriptors.set(guid, descriptor);
+    this.emit(event, descriptor);
+  }
+
+  private _stopWatcher() {
+    const watcher = this._watcher;
+    this._watcher = undefined;
+    this._ready = undefined;
+    this._descriptors.clear();
+    void watcher?.close();
   }
 }
 
-async function canConnect(descriptor: BrowserDescriptor): Promise<boolean> {
-  if (descriptor.pipeName) {
+async function canConnectTo(descriptor: BrowserDescriptor): Promise<boolean> {
+  if (!descriptor.endpoint)
+    return false;
+  if (descriptor.endpoint.startsWith('ws://') || descriptor.endpoint.startsWith('wss://')) {
     return await new Promise(resolve => {
-      const socket = net.createConnection(descriptor.pipeName!, () => {
+      const url = new URL(descriptor.endpoint!);
+      const socket = net.createConnection(Number(url.port), url.hostname, () => {
         socket.destroy();
         resolve(true);
       });
       socket.on('error', () => resolve(false));
     });
   }
-  return false;
+  return await new Promise(resolve => {
+    const socket = net.createConnection(descriptor.endpoint ?? (descriptor as any).pipeName, () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('error', () => resolve(false));
+  });
 }
 
-const defaultCacheDirectory = (() => {
+function computeDefaultCacheDirectory(): string {
   if (process.platform === 'linux')
     return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   if (process.platform === 'darwin')
@@ -141,8 +251,16 @@ const defaultCacheDirectory = (() => {
   if (process.platform === 'win32')
     return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   throw new Error('Unsupported platform: ' + process.platform);
-})();
+}
 
-const registryDirectory = path.join(defaultCacheDirectory, 'ms-playwright', 'b');
+let _defaultCacheDirectory: string | undefined;
+
+function defaultCacheDirectory(): string {
+  return _defaultCacheDirectory ??= computeDefaultCacheDirectory();
+}
+
+function registryDirectory(): string {
+  return path.join(defaultCacheDirectory(), 'ms-playwright', 'b');
+}
 
 export const serverRegistry = new ServerRegistry();

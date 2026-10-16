@@ -14,125 +14,16 @@
  * limitations under the License.
  */
 
-import { serializeExpectedTextValues } from '../../utils';
-import { toKeyboardModifiers } from '../codegen/language';
-import { buildFullSelector, mainFrameForAction } from './recorderUtils';
-import { Progress, ProgressController } from '../progress';
+import { toKeyboardModifiers } from '@isomorphic/codegen/language';
+import { Progress } from '../progress';
 
-import type { Page } from '../page';
 import type * as types from '../types';
-import type * as actions from '@recorder/actions';
+import type * as actions from '@isomorphic/codegen/actions';
 import type { Frame } from '../frames';
 
-export async function performAction(pageAliases: Map<Page, string>, actionInContext: actions.ActionInContext) {
-  const mainFrame = mainFrameForAction(pageAliases, actionInContext);
-  const controller = new ProgressController();
-  const kActionTimeout = 5000;
-  return await controller.run(progress => performActionImpl(progress, mainFrame, actionInContext), kActionTimeout);
-}
-
-async function performActionImpl(progress: Progress, mainFrame: Frame, actionInContext: actions.ActionInContext) {
-  const { action } = actionInContext;
-
-  if (action.name === 'navigate') {
-    await mainFrame.goto(progress, action.url);
-    return;
-  }
-
-  if (action.name === 'openPage')
-    throw Error('Not reached');
-
-  if (action.name === 'closePage') {
-    await mainFrame._page.close();
-    return;
-  }
-
-  const selector = buildFullSelector(actionInContext.frame.framePath, action.selector);
-
-  if (action.name === 'click') {
-    const options = toClickOptions(action);
-    await mainFrame.click(progress, selector, { ...options, strict: true });
-    return;
-  }
-
-  if (action.name === 'hover') {
-    await mainFrame.hover(progress, selector, { position: action.position, strict: true });
-    return;
-  }
-
-  if (action.name === 'press') {
-    const modifiers = toKeyboardModifiers(action.modifiers);
-    const shortcut = [...modifiers, action.key].join('+');
-    await mainFrame.press(progress, selector, shortcut, { strict: true });
-    return;
-  }
-
-  if (action.name === 'fill') {
-    await mainFrame.fill(progress, selector, action.text, { strict: true });
-    return;
-  }
-
-  if (action.name === 'setInputFiles') {
-    await mainFrame.setInputFiles(progress, selector, { selector, payloads: [], strict: true });
-    return;
-  }
-
-  if (action.name === 'check') {
-    await mainFrame.check(progress, selector, { strict: true });
-    return;
-  }
-
-  if (action.name === 'uncheck') {
-    await mainFrame.uncheck(progress, selector, { strict: true });
-    return;
-  }
-
-  if (action.name === 'select') {
-    const values = action.options.map(value => ({ value }));
-    await mainFrame.selectOption(progress, selector, [], values, { strict: true });
-    return;
-  }
-
-  if (action.name === 'assertChecked') {
-    await mainFrame.expect(progress, selector, {
-      selector,
-      expression: 'to.be.checked',
-      expectedValue: { checked: action.checked },
-      isNot: !action.checked,
-    });
-    return;
-  }
-
-  if (action.name === 'assertText') {
-    await mainFrame.expect(progress, selector, {
-      selector,
-      expression: 'to.have.text',
-      expectedText: serializeExpectedTextValues([action.text], { matchSubstring: true, normalizeWhiteSpace: true }),
-      isNot: false,
-    });
-    return;
-  }
-
-  if (action.name === 'assertValue') {
-    await mainFrame.expect(progress, selector, {
-      selector,
-      expression: 'to.have.value',
-      expectedValue: action.value,
-      isNot: false,
-    });
-    return;
-  }
-
-  if (action.name === 'assertVisible') {
-    await mainFrame.expect(progress, selector, {
-      selector,
-      expression: 'to.be.visible',
-      isNot: false,
-    });
-    return;
-  }
-
-  throw new Error('Internal error: unexpected action ' + (action as any).name);
+export async function performAction(progress: Progress, mainFrame: Frame, action: actions.PerformableAction) {
+  const options = toClickOptions(action);
+  await mainFrame.click(progress, { selector: action.selector, strict: true }, options);
 }
 
 export function toClickOptions(action: actions.ClickAction): types.MouseClickOptions {

@@ -41,7 +41,7 @@ it('should emit created and destroyed events', async function({ page }) {
   const workerCreatedPromise = page.waitForEvent('worker');
   const workerObj = await page.evaluateHandle(() => new Worker(URL.createObjectURL(new Blob(['1'], { type: 'application/javascript' }))));
   const worker = await workerCreatedPromise;
-  const workerThisObj = await worker.evaluateHandle(() => this);
+  const workerThisObj = await worker.evaluateHandle('this');
   const workerDestroyedPromise = new Promise(x => worker.once('close', x));
   await page.evaluate(workerObj => workerObj.terminate(), workerObj);
   expect(await workerDestroyedPromise).toBe(worker);
@@ -60,8 +60,9 @@ it('should report console logs', async function({ page }) {
   expect(page.url()).not.toContain('blob');
 });
 
-it('should have timestamp on worker console messages', async function({ page, isAndroid }) {
+it('should have timestamp on worker console messages', async function({ page, isAndroid, channel }) {
   it.skip(isAndroid, 'there is a time difference between android emulator and host machine');
+  it.skip(channel === 'webkit-wsl', 'there is a time difference between WSL VM and host machine');
 
   const before = Date.now() - 1;  // Account for the rounding of fractional timestamps.
   const [message] = await Promise.all([
@@ -188,8 +189,8 @@ it('should clear upon cross-process navigation', async function({ server, page }
 });
 
 it('should attribute network activity for worker inside iframe to the iframe', async function({ page, server, browserName, browserMajorVersion }) {
-  it.fixme(browserName === 'chromium');
   it.skip(browserName === 'firefox' && browserMajorVersion < 114, 'https://github.com/microsoft/playwright/issues/21760');
+  it.skip(browserName === 'chromium' && browserMajorVersion < 149, 'needs TargetInfo.parentFrameId for workers');
 
   await page.goto(server.PREFIX + '/empty.html');
   const [worker, frame] = await Promise.all([
@@ -351,6 +352,7 @@ it('should support extra http headers', {
 
 it('should support offline', async ({ page, server, browserName }) => {
   it.fixme(browserName === 'webkit', 'flaky on all platforms');
+  it.fixme(browserName === 'firefox', 'does not plumb setOffline into WorkerNavigator::OnLine');
 
   const [worker] = await Promise.all([
     page.waitForEvent('worker'),
@@ -358,10 +360,63 @@ it('should support offline', async ({ page, server, browserName }) => {
     page.goto(server.PREFIX + '/worker/worker.html'),
   ]);
   await page.context().setOffline(true);
-  // TODO: Firefox does not plumb setOffline into WorkerNavigator::OnLine.
-  const expectedOnline = browserName === 'firefox' ? true : false;
-  await expect.poll(() =>  worker.evaluate(() => navigator.onLine)).toBe(expectedOnline);
+  await expect.poll(() =>  worker.evaluate(() => navigator.onLine)).toBe(false);
   expect(await worker.evaluate(() => fetch('/one-style.css').catch(e => 'error'))).toBe('error');
   await page.context().setOffline(false);
   await expect.poll(() =>  worker.evaluate(() => navigator.onLine)).toBe(true);
+});
+
+it('should resolve worker script allHeaders in main frame', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/39948' },
+}, async function({ page, server, browserName }) {
+  const [request] = await Promise.all([
+    page.waitForEvent('requestfinished', request => request.url() === server.PREFIX + '/worker/worker.js'),
+    page.goto(server.PREFIX + '/worker/worker.html'),
+  ]);
+  const response = await request.response();
+  const requestHeaders = await request.allHeaders();
+  expect(requestHeaders['host']).toBeTruthy();
+  const responseHeaders = await response.allHeaders();
+  expect(responseHeaders['content-type']).toBeTruthy();
+});
+
+it('should resolve worker script allHeaders in iframe', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/39948' },
+}, async function({ page, server, browserName, browserMajorVersion }) {
+  it.skip(browserName === 'chromium' && browserMajorVersion < 151, 'needs proper Network.requestWillBeSentExtraInfo');
+
+  const [request] = await Promise.all([
+    page.waitForEvent('requestfinished', request => request.url() === server.PREFIX + '/worker/worker.js'),
+    attachFrame(page, 'frame1', server.PREFIX + '/worker/worker.html'),
+  ]);
+  const response = await request.response();
+  const requestHeaders = await request.allHeaders();
+  expect(requestHeaders['host']).toBeTruthy();
+  const responseHeaders = await response.allHeaders();
+  expect(responseHeaders['content-type']).toBeTruthy();
+});
+
+it('should resolve worker script allHeaders in nested worker inside iframe', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/39948' },
+}, async function({ page, server, browserName }) {
+  it.fixme(browserName === 'webkit', 'cannot evaluate in nested worker');
+  it.fixme(browserName === 'firefox', 'nested worker script request is not reported at all');
+
+  const url = server.PREFIX + '/worker/worker.js';
+  const [worker] = await Promise.all([
+    page.waitForEvent('worker'),
+    page.waitForEvent('requestfinished', request => request.url() === url),
+    attachFrame(page, 'frame1', server.PREFIX + '/worker/worker.html'),
+  ]);
+
+  const [request] = await Promise.all([
+    page.waitForEvent('requestfinished', request => request.url() === url),
+    worker.evaluate(url => {
+      (self as any).w = new Worker(url);
+    }, url),
+  ]);
+
+  const response = await request.response();
+  const headers = await response.allHeaders();
+  expect(headers['content-type']).toBeTruthy();
 });

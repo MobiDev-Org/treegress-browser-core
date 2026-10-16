@@ -19,18 +19,18 @@ import util from 'util';
 import { serializeCompilationCache } from '../transform/compilationCache';
 
 import type { ConfigLocation, FullConfigInternal } from './config';
-import type { ReporterDescription, TestInfoError, TestStatus } from '../../types/test';
+import type { ReporterDescription, TestInfoError, TestStatus, TestAnnotation } from '../../types/test';
 import type { SerializedCompilationCache  } from '../transform/compilationCache';
 
 export type ConfigCLIOverrides = {
-  debug?: boolean;
+  argv?: string[];
+  debug?: 'inspector' | 'cli';
   failOnFlakyTests?: boolean;
   forbidOnly?: boolean;
   fullyParallel?: boolean;
   globalTimeout?: number;
   maxFailures?: number;
   outputDir?: string;
-  preserveOutputDir?: boolean;
   pause?: boolean;
   quiet?: boolean;
   repeatEach?: number;
@@ -38,13 +38,12 @@ export type ConfigCLIOverrides = {
   reporter?: ReporterDescription[];
   additionalReporters?: ReporterDescription[];
   shard?: { current: number, total: number };
-  shardWeights?: number[];
+  shuffle?: string;
   timeout?: number;
   tsconfig?: string;
   ignoreSnapshots?: boolean;
-  updateSnapshots?: 'all' | 'changed' | 'missing' | 'none';
+  updateSnapshots?: 'all' | 'changed' | 'missing' | 'none' | 'default';
   updateSourceMethod?: 'overwrite' | 'patch' | '3way';
-  runAgents?: 'all' | 'missing' | 'none';
   workers?: number | string;
   projects?: { name: string, use?: any }[],
   use?: any;
@@ -59,7 +58,6 @@ export type SerializedConfig = {
 
 export type ProcessInitParams = {
   timeOrigin: number;
-  processName: string;
 };
 
 export type WorkerInitParams = {
@@ -87,24 +85,20 @@ export type AttachmentPayload = {
   stepId?: string;
 };
 
-export type TestInfoErrorImpl = TestInfoError;
+export type TestInfoErrorPayload = {
+  message?: string;
+  stack?: string;
+  value?: string;
+  cause?: TestInfoErrorPayload;
+};
 
 export type TestPausedPayload = {
   testId: string;
-  errors: TestInfoErrorImpl[];
+  errors: TestInfoErrorPayload[];
   status: TestStatus;
 };
 
 export type ResumePayload = {};
-
-export type CloneStoragePayload = {
-  storageFile: string;
-};
-
-export type UpstreamStoragePayload = {
-  storageFile: string;
-  storageOutFile: string;
-};
 
 export type CustomMessageRequestPayload = {
   testId: string;
@@ -113,17 +107,17 @@ export type CustomMessageRequestPayload = {
 
 export type CustomMessageResponsePayload = {
   response: any;
-  error?: TestInfoErrorImpl;
+  error?: TestInfoErrorPayload;
 };
 
 export type TestEndPayload = {
   testId: string;
   duration: number;
   status: TestStatus;
-  errors: TestInfoErrorImpl[];
+  errors: TestInfoErrorPayload[];
   hasNonRetriableError: boolean;
   expectedStatus: TestStatus;
-  annotations: { type: string, description?: string }[];
+  annotations: TestAnnotation[];
   timeout: number;
 };
 
@@ -132,7 +126,9 @@ export type StepBeginPayload = {
   stepId: string;
   parentStepId: string | undefined;
   title: string;
+  subtitle?: string;
   category: string;
+  params?: Record<string, any>;
   wallTime: number;  // milliseconds since unix epoch
   location?: { file: string, line: number, column: number };
 };
@@ -141,14 +137,15 @@ export type StepEndPayload = {
   testId: string;
   stepId: string;
   wallTime: number;  // milliseconds since unix epoch
-  error?: TestInfoErrorImpl;
+  error?: TestInfoErrorPayload;
   suggestedRebaseline?: string;
-  annotations: { type: string, description?: string }[];
+  annotations: TestAnnotation[];
 };
 
 export type TestEntry = {
   testId: string;
   retry: number;
+  planAnnotations: TestAnnotation[];
 };
 
 export type RunPayload = {
@@ -157,7 +154,7 @@ export type RunPayload = {
 };
 
 export type DonePayload = {
-  fatalErrors: TestInfoErrorImpl[];
+  fatalErrors: TestInfoErrorPayload[];
   skipTestsDueToSetupFailure: string[];  // test ids
   fatalUnknownTestIds?: string[];
   stoppedDueToUnhandledErrorInTestFail?: boolean;
@@ -169,7 +166,7 @@ export type TestOutputPayload = {
 };
 
 export type TeardownErrorsPayload = {
-  fatalErrors: TestInfoErrorImpl[];
+  fatalErrors: TestInfoErrorPayload[];
 };
 
 export type EnvProducedPayload = [string, string | null][];
@@ -194,4 +191,17 @@ export function stdioChunkToParams(chunk: Uint8Array | string): TestOutputPayloa
   if (typeof chunk !== 'string')
     return { text: util.inspect(chunk) };
   return { text: chunk };
+}
+
+export function toTestInfoErrorPayload(error: TestInfoError): TestInfoErrorPayload {
+  const result: TestInfoErrorPayload = {};
+  if (error.message !== undefined)
+    result.message = error.message;
+  if (error.stack !== undefined)
+    result.stack = error.stack;
+  if (error.value !== undefined)
+    result.value = error.value;
+  if (error.cause !== undefined)
+    result.cause = toTestInfoErrorPayload(error.cause);
+  return result;
 }

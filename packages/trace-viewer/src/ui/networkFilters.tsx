@@ -16,7 +16,7 @@
 
 import './networkFilters.css';
 
-const resourceTypes = ['Fetch', 'HTML', 'JS', 'CSS', 'Font', 'Image'] as const;
+const resourceTypes = ['Fetch', 'HTML', 'JS', 'CSS', 'Font', 'Image', 'WS'] as const;
 export type ResourceType = typeof resourceTypes[number];
 
 export type FilterState = {
@@ -35,22 +35,25 @@ export const NetworkFilters = ({ filterState, onFilterStateChange }: {
       <input
         type='search'
         placeholder='Filter network'
+        aria-label='Filter network'
         spellCheck={false}
         value={filterState.searchValue}
         onChange={e => onFilterStateChange({ ...filterState, searchValue: e.target.value })}
       />
 
       <div className='network-filters-resource-types' role='tablist' aria-multiselectable='true'>
-        <div
+        <button
           title='All'
           onClick={() => onFilterStateChange({ ...filterState, resourceTypes: new Set() })}
           className={`network-filters-resource-type ${filterState.resourceTypes.size === 0 ? 'selected' : ''}`}
+          role='tab'
+          aria-selected={filterState.resourceTypes.size === 0}
         >
           All
-        </div>
+        </button>
 
         {resourceTypes.map(resourceType => (
-          <div
+          <button
             key={resourceType}
             title={resourceType}
             onClick={event => {
@@ -67,7 +70,7 @@ export const NetworkFilters = ({ filterState, onFilterStateChange }: {
             aria-selected={filterState.resourceTypes.has(resourceType)}
           >
             {resourceType}
-          </div>
+          </button>
         ))}
       </div>
     </div>

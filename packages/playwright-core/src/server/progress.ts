@@ -14,50 +14,67 @@
  * limitations under the License.
  */
 
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { assert } from '@isomorphic/assert';
+import { monotonicTime } from '@isomorphic/time';
+import { debugLogger } from '@utils/debugLogger';
 import { TimeoutError } from './errors';
-import { assert, monotonicTime, debugLogger } from '../utils';
-import { ManualPromise } from '../utils/isomorphic/manualPromise';
 
-import type { Progress } from '@protocol/progress';
 import type { CallMetadata, SdkObject } from './instrumentation';
 
-export type { Progress } from '@protocol/progress';
+export interface Progress {
+  timeout: number;
+  deadline: number;
+  disableTimeout(): void;
+  log(message: string): void;
+  race<T>(promise: Promise<T> | Promise<T>[]): Promise<T>;
+  wait(timeout: number): Promise<void>; // timeout = 0 here means "wait 0 ms", not forever.
+  signal: AbortSignal;
+  metadata: CallMetadata;
+  setAllowConcurrentOrNestedRaces(allow: boolean): void;
+}
 
 export class ProgressController {
   private _forceAbortPromise = new ManualPromise<any>();
   private _donePromise = new ManualPromise<void>();
   private _state: 'before' | 'running' | { error: Error } | 'finished' = 'before';
   private _onCallLog?: (message: string) => void;
+  private _pendingAbortError?: Error;
 
   readonly metadata: CallMetadata;
   private _controller: AbortController;
 
-  constructor(metadata?: CallMetadata, onCallLog?: (message: string) => void) {
+  constructor(metadata?: CallMetadata, onCallLog?: (message: string) => void, pendingAbortError?: Error) {
     this.metadata = metadata || { id: '', startTime: 0, endTime: 0, type: 'Internal', method: '', params: {}, log: [], internal: true };
     this._onCallLog = onCallLog;
+    this._pendingAbortError = pendingAbortError;
     this._forceAbortPromise.catch(e => null);  // Prevent unhandled promise rejection.
     this._controller = new AbortController();
   }
 
-  static createForSdkObject(sdkObject: SdkObject, callMetadata: CallMetadata) {
+  static createForSdkObject(sdkObject: SdkObject, callMetadata: CallMetadata, pendingAbortError?: Error) {
     const logName = sdkObject.logName || 'api';
     return new ProgressController(callMetadata, message => {
+      // Note: "attribution.playwright" is undefined in DebugController. Unfortunate!
+      if (logName === 'api' && sdkObject.attribution.playwright?.options.isInternalPlaywright)
+        return;
       debugLogger.log(logName, message);
       sdkObject.instrumentation.onCallLog(sdkObject, callMetadata, logName, message);
-    });
-  }
-
-  static runInternalTask(task: (progress: Progress) => Promise<void>, timeout?: number) {
-    const progress = new ProgressController();
-    return progress.run(task, timeout);
+    }, pendingAbortError);
   }
 
   async abort(error: Error) {
+    const logMessage = `operation was aborted: ${error.message}`;
     if (this._state === 'running') {
+      this.metadata.log.push(logMessage);
       (error as any)[kAbortErrorSymbol] = true;
       this._state = { error };
       this._forceAbortPromise.reject(error);
       this._controller.abort(error);
+    } else if (this._state === 'before') {
+      this.metadata.log.push(logMessage);
+      (error as any)[kAbortErrorSymbol] = true;
+      this._pendingAbortError = error;
     }
     await this._donePromise;
   }
@@ -66,7 +83,11 @@ export class ProgressController {
     const deadline = timeout ? monotonicTime() + timeout : 0;
     assert(this._state === 'before');
     this._state = 'running';
+
     let timer: NodeJS.Timeout | undefined;
+
+    let outerProgress: string | undefined;
+    let allowConcurrent = false;
 
     const progress: Progress = {
       timeout: timeout ?? 0,
@@ -81,11 +102,26 @@ export class ProgressController {
         this._onCallLog?.(message);
       },
       metadata: this.metadata,
+      setAllowConcurrentOrNestedRaces: (allow: boolean) => {
+        allowConcurrent = allow;
+      },
       race: <T>(promise: Promise<T> | Promise<T>[]) => {
+        if (process.env.PW_DETECT_NESTED_PROGRESS) {
+          const innerProgress = new Error().stack;
+          if (outerProgress && !allowConcurrent && outerProgress !== innerProgress) {
+            // eslint-disable-next-line no-console
+            console.error('Cannot call race() inside another race()');
+            // eslint-disable-next-line no-console
+            console.error('<<<<<OUTER>>>>>:', outerProgress);
+            // eslint-disable-next-line no-console
+            console.error('<<<<<INNER>>>>>:', innerProgress);
+          }
+          outerProgress = innerProgress;
+        }
         const promises = Array.isArray(promise) ? promise : [promise];
         if (!promises.length)
           return Promise.resolve();
-        return Promise.race([...promises, this._forceAbortPromise]);
+        return Promise.race([...promises, this._forceAbortPromise]).finally(() => outerProgress = undefined);
       },
       wait: async (timeout: number) => {
         // Timeout = 0 here means nowait. Counter to what it typically is (wait forever).
@@ -111,6 +147,8 @@ export class ProgressController {
     }
 
     try {
+      if (this._pendingAbortError)
+        throw this._pendingAbortError;
       const result = await task(progress);
       this._state = 'finished';
       return result;
@@ -145,3 +183,27 @@ export async function raceUncancellableOperationWithCleanup<T>(progress: Progres
     throw error;
   }
 }
+
+export const nullProgress: Progress = {
+  timeout: 0,
+  deadline: 0,
+  disableTimeout() { },
+  log() { },
+  race<T>(promise: Promise<T> | Promise<T>[]) {
+    const promises = Array.isArray(promise) ? promise : [promise];
+    return Promise.race(promises);
+  },
+  wait: async (timeout: number) => await new Promise<void>(f => setTimeout(f, timeout)),
+  signal: new AbortController().signal,
+  metadata: {
+    id: '',
+    startTime: 0,
+    endTime: 0,
+    type: '',
+    method: '',
+    params: {},
+    log: [],
+    internal: true,
+  },
+  setAllowConcurrentOrNestedRaces() { },
+};

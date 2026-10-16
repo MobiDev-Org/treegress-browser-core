@@ -18,7 +18,9 @@ import type http from 'http';
 import path from 'path';
 import { test, expect, parseTestRunnerOutput } from './playwright-test-fixtures';
 import type { RunResult } from './playwright-test-fixtures';
-import { createHttpServer } from '../../packages/playwright-core/lib/server/utils/network';
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
+
+const { createHttpServer } = utils;
 
 const SIMPLE_SERVER_PATH = path.join(__dirname, 'assets', 'simple-server.js');
 
@@ -622,7 +624,7 @@ test.describe('baseURL with plugins', () => {
         });
       `,
       'playwright.config.ts': `
-        import { webServer } from 'playwright/lib/plugins';
+        import { webServer } from 'playwright/lib/runner';
         module.exports = {
           _plugins: [
             webServer({
@@ -647,7 +649,7 @@ test.describe('baseURL with plugins', () => {
         });
       `,
       'playwright.config.ts': `
-        import { webServer } from 'playwright/lib/plugins';
+        import { webServer } from 'playwright/lib/runner';
         module.exports = {
           webServer: {
             command: 'node ${JSON.stringify(SIMPLE_SERVER_PATH)} ${port}',
@@ -950,6 +952,33 @@ for (const stdio of ['stdout', 'stderr']) {
               command: 'node server.js',
               stdout: 'pipe',
               wait: { ${stdio}: /started/ },
+            }
+          ],
+        };
+      `,
+    }, undefined);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('server started');
+  });
+
+  test(`should wait for ${stdio} with ANSI escape codes`, async ({ runInlineTest }) => {
+    const result = await runInlineTest({
+      'test.spec.ts': `
+        import { test, expect } from '@playwright/test';
+        test('pass', async ({}) => {});
+      `,
+      'server.js': `
+        // Emit text wrapped in ANSI color escape codes.
+        setTimeout(() => { console.${stdio === 'stdout' ? 'log' : 'error'}('\\u001b[32mserver started\\u001b[39m'); }, 1000);
+        setTimeout(() => {}, 100000);
+      `,
+      'playwright.config.ts': `
+        module.exports = {
+          webServer: [
+            {
+              command: 'node server.js',
+              stdout: 'pipe',
+              wait: { ${stdio}: /^server started$/m },
             }
           ],
         };

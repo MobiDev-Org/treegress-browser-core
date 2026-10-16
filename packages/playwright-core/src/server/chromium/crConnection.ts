@@ -15,17 +15,19 @@
  * limitations under the License.
  */
 
-import {  assert, eventsHelper } from '../../utils';
-import { debugLogger } from '../utils/debugLogger';
+import { debugLogger } from '@utils/debugLogger';
+import { assert } from '@isomorphic/assert';
+import { eventsHelper } from '@utils/eventsHelper';
 import { helper } from '../helper';
 import { ProtocolError } from '../protocolError';
 import { SdkObject } from '../instrumentation';
 
-import type { RegisteredListener } from '../../utils';
+import type { RegisteredListener } from '@utils/eventsHelper';
 import type { ConnectionTransport, ProtocolRequest, ProtocolResponse } from '../transport';
 import type { Protocol } from './protocol';
-import type { RecentLogsCollector } from '../utils/debugLogger';
+import type { RecentLogsCollector } from '@utils/debugLogger';
 import type { ProtocolLogger } from '../types';
+import type { Progress } from '../progress';
 
 
 export const ConnectionEvents = {
@@ -124,12 +126,20 @@ export class CRSession extends SdkObject<Protocol.EventMap & ConnectionEventMap>
 
   _markAsCrashed() {
     this._crashed = true;
+    this._rejectPendingCallbacks(`Page crashed.`);
   }
 
   createChildSession(sessionId: string, eventListener?: SessionEventListener): CRSession {
     const session = new CRSession(this._connection, this, sessionId, eventListener);
     this._connection._sessions.set(sessionId, session);
     return session;
+  }
+
+  disposeChildSession(sessionId: string) {
+    const session = this._connection._sessions.get(sessionId);
+    if (session && session._parentSession !== this)
+      debugLogger.log('error', `Session ${sessionId} should be a child of ${this._sessionId}, but it has ${session._parentSession?._sessionId} as a parent`);
+    session?.dispose();
   }
 
   async send<T extends keyof Protocol.CommandParameters>(
@@ -160,6 +170,8 @@ export class CRSession extends SdkObject<Protocol.EventMap & ConnectionEventMap>
       }
     } else if (object.id && object.error?.code === -32001) {
       // Message to a closed session, just ignore it.
+    } else if (object.id && this._crashed) {
+      // _markAsCrashed() has already rejected all pending calls, nothing to do here.
     } else {
       assert(!object.id, object?.error?.message || undefined);
       Promise.resolve().then(() => {
@@ -185,8 +197,12 @@ export class CRSession extends SdkObject<Protocol.EventMap & ConnectionEventMap>
   dispose() {
     this._closed = true;
     this._connection._sessions.delete(this._sessionId);
+    this._rejectPendingCallbacks(`Internal server error, session closed.`);
+  }
+
+  private _rejectPendingCallbacks(message: string) {
     for (const callback of this._callbacks.values()) {
-      callback.error.setMessage(`Internal server error, session closed.`);
+      callback.error.setMessage(message);
       callback.error.type = this._crashed ? 'crashed' : 'closed';
       callback.error.logs = this._connection._browserDisconnectedLogs;
       callback.reject(callback.error);
@@ -213,16 +229,20 @@ export class CDPSession extends SdkObject {
     })];
   }
 
-  async send(method: string, params?: any) {
+  async send(progress: Progress, method: string, params?: any) {
+    return await progress.race(this._send(method, params));
+  }
+
+  async detach(progress: Progress) {
+    return await progress.race(this._session.detach());
+  }
+
+  private async _send(method: string, params?: any) {
     return await this._session.send(method as any, params);
   }
 
-  async detach() {
-    return await this._session.detach();
-  }
-
   async attachToTarget(targetId: string) {
-    const { sessionId } = await this.send('Target.attachToTarget', { targetId, flatten: true });
+    const { sessionId } = await this._send('Target.attachToTarget', { targetId, flatten: true });
     return new CDPSession(this._session, sessionId);
   }
 

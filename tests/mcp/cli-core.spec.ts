@@ -34,6 +34,12 @@ test('close', async ({ cli, server }) => {
   expect(output).toContain(`Browser 'default' closed`);
 });
 
+test('preserves URL with & query params', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright-cli/issues/403' } }, async ({ cli, server }) => {
+  const url = `${server.HELLO_WORLD}?a=1&b=2`;
+  const { output } = await cli('open', url);
+  expect(output).toContain(`Page URL: ${url}`);
+});
+
 test('click button', async ({ cli, server }) => {
   server.setContent('/', `<button>Submit</button>`, 'text/html');
 
@@ -68,6 +74,17 @@ test('dblclick', async ({ cli, server }) => {
   expect(snapshot).toContain('dblclick 0');
 });
 
+test('click with --modifiers', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright-cli/issues/406' } }, async ({ cli, server }) => {
+  server.setContent('/', `<button>Submit</button>`, 'text/html');
+  await cli('open', server.PREFIX);
+
+  const single = await cli('click', 'e2', '--modifiers', 'Control');
+  expect(single.output).toContain(`await page.getByRole('button', { name: 'Submit' }).click({\n  modifiers: ['ControlOrMeta']\n});`);
+
+  const repeated = await cli('click', 'e2', '--modifiers', 'Control', '--modifiers', 'Shift');
+  expect(repeated.output).toContain(`await page.getByRole('button', { name: 'Submit' }).click({\n  modifiers: ['ControlOrMeta', 'Shift']\n});`);
+});
+
 test('type', async ({ cli, server }) => {
   server.setContent('/', `<input type=text>`, 'text/html');
   const { snapshot } = await cli('open', server.PREFIX);
@@ -99,16 +116,16 @@ test('hover', async ({ cli, server }) => {
   server.setContent('/', eventsPage, 'text/html');
   await cli('open', server.PREFIX);
   await cli('hover', 'e2');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).toContain('mouse move 50 50');
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).toContain('mouse move 50 50');
 });
 
 test('select', async ({ cli, server }) => {
   server.setContent('/', `<select><option value="1">One</option><option value="2">Two</option></select>`, 'text/html');
   await cli('open', server.PREFIX);
   await cli('select', 'e2', 'Two');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).toContain('- option "Two" [selected]');
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).toContain('- option "Two" [selected]');
 });
 
 test('check', async ({ cli, server, mcpBrowser }) => {
@@ -116,8 +133,8 @@ test('check', async ({ cli, server, mcpBrowser }) => {
   server.setContent('/', `<input type="checkbox">`, 'text/html');
   await cli('open', server.PREFIX);
   await cli('check', 'e2');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).toContain(`- checkbox [checked] ${active}[ref=e2]`);
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).toContain(`- checkbox [checked] ${active}[ref=e2]`);
 });
 
 test('uncheck', async ({ cli, server, mcpBrowser }) => {
@@ -125,8 +142,35 @@ test('uncheck', async ({ cli, server, mcpBrowser }) => {
   server.setContent('/', `<input type="checkbox" checked>`, 'text/html');
   await cli('open', server.PREFIX);
   await cli('uncheck', 'e2');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).toContain(`- checkbox ${active}[ref=e2]`);
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).toContain(`- checkbox ${active}[ref=e2]`);
+});
+
+test('upload multiple files', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42047' } }, async ({ cli, server }, testInfo) => {
+  server.setContent('/', `
+    <input type="file" multiple>
+    <div id="result"></div>
+    <script>
+      document.querySelector('input').addEventListener('change', event => {
+        document.getElementById('result').textContent = 'Received: ' + [...event.target.files].map(f => f.name).join(', ');
+      });
+    </script>
+  `, 'text/html');
+
+  const front = testInfo.outputPath('front.txt');
+  const back = testInfo.outputPath('back.txt');
+  await fs.promises.writeFile(front, 'front');
+  await fs.promises.writeFile(back, 'back');
+
+  await cli('open', server.PREFIX);
+  await cli('click', 'e2');
+  const { output, snapshot } = await cli('upload', front, back);
+  expect(output).toContain('await fileChooser.setFiles(');
+  expect(snapshot).toContain('Received: front.txt, back.txt');
+
+  await cli('click', 'e2');
+  const single = await cli('upload', back);
+  expect(single.snapshot).toContain('Received: back.txt');
 });
 
 test('eval', async ({ cli, server }) => {
@@ -148,34 +192,37 @@ test('eval <ref>', async ({ cli, server }) => {
   expect(output).toContain('"BUTTON"');
 });
 
-test('dialog-accept', async ({ cli, server }) => {
+// Firefox can deliver Page.dialogOpened after the default 5s action timeout
+// (seen after the FF 153 roll, especially on Windows), so the click loses the
+// modal race and the response never includes the dialog. Keep the race open longer.
+test('dialog-accept', async ({ cli, server, mcpBrowser }) => {
   server.setContent('/', `<button onclick="alert('MyAlert')">Button</button>`, 'text/html');
-  await cli('open', server.PREFIX);
+  await cli('open', server.PREFIX, { env: { PLAYWRIGHT_MCP_TIMEOUT_ACTION: mcpBrowser === 'firefox' ? '30000' : '' } });
   const { output } = await cli('click', 'e2');
   expect(output).toContain('MyAlert');
   expect(output).toContain('["alert" dialog with message "MyAlert"]: can be handled by dialog-accept or dialog-dismiss');
   await cli('dialog-accept');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).not.toContain('MyAlert');
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).not.toContain('MyAlert');
 });
 
-test('dialog-dismiss', async ({ cli, server }) => {
+test('dialog-dismiss', async ({ cli, server, mcpBrowser }) => {
   server.setContent('/', `<button onclick="alert('MyAlert')">Button</button>`, 'text/html');
-  await cli('open', server.PREFIX);
+  await cli('open', server.PREFIX, { env: { PLAYWRIGHT_MCP_TIMEOUT_ACTION: mcpBrowser === 'firefox' ? '30000' : '' } });
   const { output } = await cli('click', 'e2');
   expect(output).toContain('MyAlert');
   await cli('dialog-dismiss');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).not.toContain('MyAlert');
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).not.toContain('MyAlert');
 });
 
-test('dialog-accept <prompt>', async ({ cli, server }) => {
+test('dialog-accept <prompt>', async ({ cli, server, mcpBrowser }) => {
   server.setContent('/', `<button onclick="document.body.textContent = prompt('MyAlert')">Button</button>`, 'text/html');
-  await cli('open', server.PREFIX);
+  await cli('open', server.PREFIX, { env: { PLAYWRIGHT_MCP_TIMEOUT_ACTION: mcpBrowser === 'firefox' ? '30000' : '' } });
   await cli('click', 'e2');
   await cli('dialog-accept', 'my reply');
-  const { snapshot } = await cli('snapshot');
-  expect(snapshot).toContain('my reply');
+  const { inlineSnapshot } = await cli('snapshot');
+  expect(inlineSnapshot).toContain('my reply');
 });
 
 test('resize', async ({ cli, server }) => {
@@ -196,4 +243,177 @@ test('snapshot', async ({ cli, server }, testInfo) => {
     const { output } = await cli('goto', server.HELLO_WORLD, { cwd: nested });
     expect(output).toContain('..' + path.sep + '.playwright-cli' + path.sep + 'page-');
   }
+});
+
+test('click in iframe', async ({ cli, server }) => {
+  server.setContent('/', `<h1>Hello</h1><iframe src="data:text/html,<button>World</button><main><iframe src='data:text/html,<p>Nested</p>'></iframe></main>"></iframe><iframe src="data:text/html,<h1>Should be invisible</h1>" style="display: none;"></iframe>`, 'text/html');
+
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain(`- button "World" [ref=f1e2]`);
+
+  const { output, snapshot: clickSnapshot } = await cli('click', 'f1e2');
+  expect(clickSnapshot).toBeTruthy();
+  expect(output).toContain(`### Ran Playwright code
+\`\`\`js
+await page.locator('iframe').first().contentFrame().getByRole('button', { name: 'World' }).click();
+\`\`\``);
+});
+
+test('click button with CSS selector', async ({ cli, server }) => {
+  server.setContent('/', `<button>Submit</button>`, 'text/html');
+
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain(`- button "Submit" [ref=e2]`);
+
+  const { output, snapshot: clickSnapshot } = await cli('click', 'button');
+  expect(clickSnapshot).toBeTruthy();
+  expect(output).toContain(`### Ran Playwright code
+\`\`\`js
+await page.locator('button').click();
+\`\`\``);
+});
+
+test('click button with role locator', async ({ cli, server }) => {
+  server.setContent('/', `<button>Submit</button>`, 'text/html');
+
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain(`- button "Submit" [ref=e2]`);
+
+  const { output, snapshot: clickSnapshot } = await cli('click', 'getByRole("button", { name: "Submit" })');
+  expect(clickSnapshot).toBeTruthy();
+  expect(output).toContain(`### Ran Playwright code
+\`\`\`js
+await page.getByRole('button', { name: 'Submit' }).click();
+\`\`\``);
+});
+
+test('click button with test id locator', async ({ cli, server }) => {
+  server.setContent('/', `<div data-testid=main><button>Submit</button></div>`, 'text/html');
+
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain(`- button "Submit" [ref=e3]`);
+
+  const { output, snapshot: clickSnapshot } = await cli('click', 'getByTestId("main").getByRole("button")');
+  expect(clickSnapshot).toBeTruthy();
+  expect(output).toContain(`### Ran Playwright code
+\`\`\`js
+await page.getByTestId('main').getByRole('button').click();
+\`\`\``);
+});
+
+test('click button with wrong css selector', async ({ cli, server }) => {
+  server.setContent('/', `<button>Submit</button>`, 'text/html');
+
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain(`- button "Submit" [ref=e2]`);
+
+  const { output } = await cli('click', '#target');
+  expect(output).toContain(`"#target" does not match any elements.`);
+});
+
+test('partial snapshot', async ({ cli, server }) => {
+  server.setContent('/', `<button id=one>Submit</button><button id=two>Cancel</button>`, 'text/html');
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain('- button "Submit" [ref=e2]');
+  expect(snapshot).toContain('- button "Cancel" [ref=e3]');
+
+  const { inlineSnapshot: partialSnapshot } = await cli('snapshot', '#two');
+  expect(partialSnapshot).toBe(`- button "Cancel" [ref=e3]`);
+
+  const { output: strictError } = await cli('snapshot', 'button');
+  expect(strictError).toContain(`strict mode violation`);
+
+  const { output: noMatchError } = await cli('snapshot', '#target');
+  expect(noMatchError).toContain(`"#target" does not match any element`);
+});
+
+test('partial snapshot by ref', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright-cli/issues/347' } }, async ({ cli, server }) => {
+  server.setContent('/', `<button id=one>Submit</button><button id=two>Cancel</button>`, 'text/html');
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain('- button "Submit" [ref=e2]');
+  expect(snapshot).toContain('- button "Cancel" [ref=e3]');
+
+  const { inlineSnapshot: partialSnapshot } = await cli('snapshot', 'e3');
+  expect(partialSnapshot).toBe(`- button "Cancel" [ref=e3]`);
+
+  const { output: missingRefError } = await cli('snapshot', 'e999');
+  expect(missingRefError).toContain(`Ref e999 not found in the current page snapshot.`);
+});
+
+test('snapshot depth', async ({ cli, server }) => {
+  server.setContent('/', `<ul><li><button id=one>Submit</button></li><li><button id=two>Cancel</button></li></ul>`, 'text/html');
+  await cli('open', server.PREFIX);
+
+  const { inlineSnapshot: limitedSnapshot } = await cli('snapshot', '--depth=1');
+  expect(limitedSnapshot).toBe(`- list [ref=e2]:
+  - listitem [ref=e3]
+  - listitem [ref=e5]`);
+
+  const { inlineSnapshot: fullSnapshot } = await cli('snapshot', '--depth=100');
+  expect(fullSnapshot).toBe(`- list [ref=e2]:
+  - listitem [ref=e3]:
+    - button "Submit" [ref=e4]
+  - listitem [ref=e5]:
+    - button "Cancel" [ref=e6]`);
+});
+
+test('snapshot --boxes', async ({ cli, server }) => {
+  server.setContent('/', `
+    <style>body { margin: 0; }</style>
+    <button style="position:absolute;left:100px;top:50px;width:80px;height:40px;margin:0;padding:0;border:0;">click</button>
+  `, 'text/html');
+  await cli('open', server.PREFIX);
+
+  const { inlineSnapshot } = await cli('snapshot', '--boxes');
+  expect(inlineSnapshot).toContain(`- button "click" [ref=e1] [box=100,50,80,40]`);
+
+  const { inlineSnapshot: plain } = await cli('snapshot');
+  expect(plain).not.toMatch(/\[box=/);
+});
+
+test('eval --raw', async ({ cli, server }) => {
+  await cli('open', server.HELLO_WORLD);
+  const { output } = await cli('eval', '--raw', '() => document.title');
+  expect(output).toBe('"Title"');
+});
+
+test('eval --raw with error', async ({ cli, server }) => {
+  await cli('open', server.HELLO_WORLD);
+  const { output } = await cli('eval', '--raw', '() => { throw new Error("my error") }');
+  expect(output).toContain('my error');
+  expect(output).not.toContain('##');
+});
+
+test('snapshot --raw', async ({ cli, server }) => {
+  server.setContent('/', `<button>Submit</button>`, 'text/html');
+  await cli('open', server.PREFIX);
+  const { output } = await cli('snapshot', '--raw');
+  expect(output).toBe('- button "Submit" [ref=e2]');
+});
+
+test('--raw on command without output', async ({ cli, server }) => {
+  server.setContent('/', `<button>Submit</button>`, 'text/html');
+  await cli('open', server.PREFIX);
+  const { output } = await cli('click', '--raw', 'e2');
+  expect(output).not.toContain('### ');
+  expect(output).not.toContain('Page URL');
+});
+
+test('tool error exits with non-zero code', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42028' } }, async ({ cli, server }) => {
+  await cli('open', server.HELLO_WORLD);
+
+  const { output, exitCode } = await cli('click', 'e999');
+  expect(output).toContain('Ref e999 not found in the current page snapshot.');
+  expect(exitCode).toBe(1);
+
+  const { output: jsonOutput, exitCode: jsonExitCode } = await cli('--json', 'click', 'e999');
+  expect(JSON.parse(jsonOutput).isError).toBe(true);
+  expect(jsonExitCode).toBe(1);
+});
+
+test('codegen escapes single quotes in user input', async ({ cli, server }) => {
+  server.setContent('/', `<input type=text>`, 'text/html');
+  await cli('open', server.PREFIX);
+  const { output } = await cli('type', "it's working");
+  expect(output).toContain(`await page.keyboard.type('it\\'s working');`);
 });

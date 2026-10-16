@@ -17,7 +17,6 @@
 import fs from 'fs';
 import path from 'path';
 import { chromium } from 'playwright';
-import { Loop } from '@lowire/loop';
 
 import { test as baseTest, expect as baseExpect } from '@playwright/test';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -25,23 +24,27 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { TestServer } from '../config/testserver';
 import { serverFixtures } from '../config/serverFixtures';
-import { parseResponse } from '../../packages/playwright-core/lib/tools/response';
+import { tools } from '../../packages/playwright-core/lib/coreBundle';
 import { commonFixtures } from '../config/commonFixtures';
+import { RunServer } from '../config/remoteServer';
+import { inheritAndCleanEnv } from '../config/utils';
 
 import type { CommonFixtures, CommonWorkerFixtures } from '../config/commonFixtures';
-import type { Config } from '../../packages/playwright-core/src/mcp/config.d';
+import type { Config } from '../../packages/playwright-core/src/tools/mcp/config.d';
 import type { BrowserContext } from 'playwright';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Stream } from 'stream';
 import type { ServerFixtures, ServerWorkerOptions } from '../config/serverFixtures';
 
-export { parseResponse };
+export const { parseResponse } = tools;
 
 export type TestOptions = {
   mcpArgs: string[] | undefined;
   mcpBrowser: string | undefined;
   mcpBrowserNormalized: string | undefined;
   mcpCaps: string[] | undefined;
+  // Treegress: upstream suites assert aria snapshots, custom-dom suites opt into 'dom'.
+  mcpSnapshotEngine: 'aria' | 'dom';
   mcpServerType: 'mcp' | 'test-mcp';
 };
 
@@ -67,11 +70,11 @@ type TestFixtures = {
   client: Client;
   startClient: StartClient;
   wsEndpoint: string;
+  runServerEndpoint: string;
   cdpServer: CDPServer;
   server: TestServer;
   httpsServer: TestServer;
   mcpHeadless: boolean;
-  loop: Loop;
 };
 
 type WorkerFixtures = {
@@ -85,13 +88,14 @@ export const serverTest = baseTest
 export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures>({
   mcpArgs: [undefined, { option: true }],
   mcpCaps: [undefined, { option: true }],
+  mcpSnapshotEngine: ['aria', { option: true }],
 
   client: async ({ startClient }, use) => {
     const { client } = await startClient();
     await use(client);
   },
 
-  startClient: async ({ mcpHeadless, mcpBrowser, mcpArgs, mcpServerType, mcpCaps }, use, testInfo) => {
+  startClient: async ({ mcpHeadless, mcpBrowser, mcpArgs, mcpServerType, mcpCaps, mcpSnapshotEngine }, use, testInfo) => {
     const configDir = path.dirname(test.info().config.configFile!);
     const clients: Client[] = [];
 
@@ -136,11 +140,11 @@ export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures
           };
         });
       }
-      const env = {
-        ...process.env,
+      const env = inheritAndCleanEnv({
         PW_TMPDIR_FOR_TEST: testInfo.outputPath('tmp'),
+        PLAYWRIGHT_MCP_SNAPSHOT_ENGINE: mcpSnapshotEngine,
         ...options?.env
-      };
+      });
       const { transport, stderr } = await createTransport(mcpServerType, { args, env, cwd: options?.cwd || test.info().outputPath() });
       let stderrBuffer = '';
       stderr?.on('data', data => {
@@ -163,6 +167,13 @@ export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures
     await browserServer.close();
   },
 
+  runServerEndpoint: async ({ childProcess }, use) => {
+    const runServer = new RunServer();
+    await runServer.start(childProcess);
+    await use(runServer.wsEndpoint());
+    await runServer.close();
+  },
+
   cdpServer: async ({ mcpBrowser }, use, testInfo) => {
     test.skip(!['chrome', 'msedge', 'chromium'].includes(mcpBrowser!), 'CDP is not supported for non-Chromium browsers');
 
@@ -171,7 +182,7 @@ export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures
     await use({
       endpoint: `http://localhost:${port}`,
       start: async () => {
-        if (browserContext)
+        if (browserContext && browserContext.browser()?.isConnected())
           throw new Error('CDP server already exists');
         browserContext = await chromium.launchPersistentContext(testInfo.outputPath('cdp-user-data-dir'), {
           channel: mcpBrowser,
@@ -183,7 +194,7 @@ export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures
         return browserContext;
       }
     });
-    await browserContext?.close();
+    await browserContext?.close().catch(() => {});
   },
 
   mcpHeadless: async ({ headless }, use) => {
@@ -237,7 +248,7 @@ type Response = Awaited<ReturnType<Client['callTool']>>;
 
 export const expect = baseExpect.extend({
   toHaveResponse(response: Response, object: any) {
-    const parsed = parseResponse(response);
+    const parsed = tools.parseResponse(response, test.info().outputPath());
     const text = parsed.text;
     const isNot = this.isNot;
 
@@ -292,8 +303,8 @@ export const expect = baseExpect.extend({
   },
 });
 
-export const mcpServerPath = [path.join(__dirname, '../../packages/playwright-core/cli.js'), 'run-mcp-server'];
-export const testMcpServerPath = [path.join(__dirname, '../../packages/playwright-test/cli.js'), 'run-test-mcp-server'];
+export const mcpServerPath = [require.resolve('../../packages/playwright-core/lib/entry/mcp.js')];
+export const testMcpServerPath = [require.resolve('../../packages/playwright-test/cli.js'), 'run-test-mcp-server'];
 
 type Files = { [key: string]: string | Buffer };
 
@@ -350,4 +361,9 @@ export function formatLog(stderr: string) {
   for (const line of lines)
     object[line] = (object[line] || 0) + 1;
   return object;
+}
+
+export async function consoleEntries(response: any) {
+  const file = response.events?.match(/New console entries: (.+\.log)(#L\d+)?/)?.[1];
+  return await fs.promises.readFile(test.info().outputPath(file), 'utf-8');
 }

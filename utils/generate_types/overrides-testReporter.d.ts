@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import type { TestStatus, Metadata, PlaywrightTestOptions, PlaywrightWorkerOptions, ReporterDescription, FullConfig, FullProject, Location } from './test';
-export type { FullConfig, FullProject, TestStatus, Location } from './test';
+import type { TestStatus, Metadata, PlaywrightTestOptions, PlaywrightWorkerOptions, ReporterDescription, FullConfig, FullProject, Location, WorkerInfo, TestAnnotation } from './test';
+export type { FullConfig, FullProject, TestStatus, Location, WorkerInfo } from './test';
 
 /**
  * Result of the full test run.
@@ -94,7 +94,7 @@ export interface JSONReportSpec {
 
 export interface JSONReportTest {
   timeout: number;
-  annotations: { type: string, description?: string }[],
+  annotations: TestAnnotation[],
   expectedStatus: TestStatus;
   projectName: string;
   projectId: string;
@@ -126,12 +126,13 @@ export interface JSONReportTestResult {
     body?: string;
     contentType: string;
   }[];
-  annotations: { type: string, description?: string }[];
+  annotations: TestAnnotation[];
   errorLocation?: Location;
 }
 
 export interface JSONReportTestStep {
   title: string;
+  subtitle?: string;
   duration: number;
   error: TestError | undefined;
   steps?: JSONReportTestStep[];

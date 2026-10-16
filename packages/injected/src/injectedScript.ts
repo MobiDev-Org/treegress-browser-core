@@ -15,18 +15,19 @@
  */
 
 import { parseAriaSnapshot } from '@isomorphic/ariaSnapshot';
-import type { AICustomDomFrameData } from '@isomorphic/aiSnapshotTypes';
+import { renderAriaSnapshotAsYaml } from '@isomorphic/ariaSnapshotRenderer';
 import { asLocator } from '@isomorphic/locatorGenerators';
+import { splitTestIdAttributeNames } from '@isomorphic/locatorUtils';
 import { parseAttributeSelector, parseSelector, stringifySelector, visitAllSelectorParts } from '@isomorphic/selectorParser';
 import { cacheNormalizedWhitespaces, normalizeWhiteSpace, trimStringWithEllipsis } from '@isomorphic/stringUtils';
 
-import { generateAriaTree, getAllElementsMatchingExpectAriaTemplate, matchesExpectAriaTemplate, renderAriaTree, findNewElement } from './ariaSnapshot';
+import { generateAriaTree, getAllElementsMatchingExpectAriaTemplate, matchesExpectAriaTemplate, renderAriaTreeAsJSON, findNewElement } from './ariaSnapshot';
 import { captureCustomDomSnapshot } from './customDomSnapshot';
 import { beginDOMCaches, enclosingShadowRootOrDocument, endDOMCaches, isElementVisible, isInsideScope, parentElementOrShadowHost, setGlobalOptions } from './domUtils';
 import { Highlight } from './highlight';
 import { kLayoutSelectorNames, layoutSelectorScore } from './layoutSelectorUtils';
 import { createRoleEngine } from './roleSelectorEngine';
-import { beginAriaCaches, endAriaCaches, getAriaDisabled, getAriaRole, getCheckedAllowMixed, getCheckedWithoutMixed, getElementAccessibleDescription, getElementAccessibleErrorMessage, getElementAccessibleName, getReadonly } from './roleUtils';
+import { beginAriaCaches, endAriaCaches, getAriaDisabled, getAriaRole, getCheckedAllowMixed, getCheckedWithoutMixed, getElementAccessibleDescription, getElementAccessibleErrorMessage, getElementAccessibleNameText, getReadonly } from './roleUtils';
 import { SelectorEvaluatorImpl, sortInDOMOrder } from './selectorEvaluator';
 import { generateSelector } from './selectorGenerator';
 import { elementMatchesText, elementText, getElementLabels } from './selectorUtils';
@@ -34,28 +35,36 @@ import { XPathEngine } from './xpathSelectorEngine';
 import { ConsoleAPI } from './consoleApi';
 import { UtilityScript } from './utilityScript';
 
-import type { AriaTemplateNode } from '@isomorphic/ariaSnapshot';
+import type { AICustomDomFrameData } from '@isomorphic/aiSnapshotTypes';
+import type { AriaSnapshotJSON, AriaTemplateNode } from '@isomorphic/ariaSnapshot';
 import type { CSSComplexSelectorList } from '@isomorphic/cssParser';
 import type { Language } from '@isomorphic/locatorGenerators';
-import type { NestedSelectorBody, ParsedSelector, ParsedSelectorPart } from '@isomorphic/selectorParser';
-import type * as channels from '@protocol/channels';
+import type { AttributeSelectorPart, NestedSelectorBody, ParsedSelector, ParsedSelectorPart } from '@isomorphic/selectorParser';
 import type { AriaSnapshot, AriaTreeOptions } from './ariaSnapshot';
 import type { LayoutSelectorName } from './layoutSelectorUtils';
 import type { SelectorEngine, SelectorRoot } from './selectorEngine';
 import type { GenerateSelectorOptions } from './selectorGenerator';
 import type { ElementText, TextMatcher } from './selectorUtils';
 import type { Builtins } from './utilityScript';
+import type { ExpectedTextValue, Point, Rect } from '@protocol/structs';
 
 
-export type FrameExpectParams = Omit<channels.FrameExpectParams, 'expectedValue' | 'timeout'> & {
-  expectedValue?: any;
-  timeoutForLogs?: number;
-  noAutoWaiting?: boolean;
+export type FrameExpectParams = {
+  selector?: string,
+  expression: string,
+  expressionArg?: any,
+  pseudo?: 'before' | 'after',
+  expectedText?: ExpectedTextValue[],
+  expectedNumber?: number,
+  expectedValue?: any,
+  useInnerText?: boolean,
+  isNot: boolean,
 };
 
 export type ElementState = 'visible' | 'hidden' | 'enabled' | 'disabled' | 'editable' | 'checked' | 'unchecked' | 'indeterminate' | 'stable';
 export type ElementStateWithoutStable = Exclude<ElementState, 'stable'>;
 export type ElementStateQueryResult = { matches: boolean, received?: string | 'error:notconnected', isRadio?: boolean };
+export type ExpectReceived = { value?: any, ariaSnapshot?: string };
 
 export type HitTargetInterceptionResult = {
   stop: () => 'done' | { hitTargetDescription: string };
@@ -72,10 +81,12 @@ interface WebKitLegacyDeviceMotionEvent extends DeviceMotionEvent {
 export type InjectedScriptOptions = {
   isUnderTest: boolean;
   sdkLanguage: Language;
+  frameSeq: number;
   // For strict error and codegen
   testIdAttributeName: string;
   stableRafCount: number;
   browserName: string;
+  shouldPrependErrorPrefix?: boolean;
   isUtilityWorld?: boolean;
   customEngines: { name: string, source: string }[];
 };
@@ -85,18 +96,18 @@ export class InjectedScript {
   readonly _evaluator: SelectorEvaluatorImpl;
   private _stableRafCount: number;
   private _browserName: string;
+  private _shouldPrependErrorPrefix: boolean;
   private _isUtilityWorld: boolean;
   readonly onGlobalListenersRemoved: Set<() => void>;
   private _hitTargetInterceptor: undefined | ((event: MouseEvent | PointerEvent | TouchEvent) => void);
   private _highlight: Highlight | undefined;
   readonly isUnderTest: boolean;
   private _sdkLanguage: Language;
+  private _frameSeq: number;
   private _testIdAttributeNameForStrictErrorAndConsoleCodegen: string = 'data-testid';
-  private _markedElements?: { callId: string, elements: Set<Element> };
   readonly window: Window & typeof globalThis;
   readonly document: Document;
   readonly consoleApi: ConsoleAPI;
-  private _lastAriaSnapshotForTrack = new Map<string, AriaSnapshot>();
   private _lastAriaSnapshotForQuery: AriaSnapshot | undefined;
 
   // Recorder must use any external dependencies through InjectedScript.
@@ -107,8 +118,8 @@ export class InjectedScript {
     cacheNormalizedWhitespaces,
     elementText,
     getAriaRole,
+    getElementAccessibleNameText,
     getElementAccessibleDescription,
-    getElementAccessibleName,
     isElementVisible,
     isInsideScope,
     normalizeWhiteSpace,
@@ -135,6 +146,7 @@ export class InjectedScript {
     // inside a trace viewer snapshot, where "window" differs from "globalThis".
     this.utils.builtins = new UtilityScript(window, options.isUnderTest).builtins;
     this._sdkLanguage = options.sdkLanguage;
+    this._frameSeq = options.frameSeq;
     this._testIdAttributeNameForStrictErrorAndConsoleCodegen = options.testIdAttributeName;
     this._evaluator = new SelectorEvaluatorImpl();
     this.consoleApi = new ConsoleAPI(this);
@@ -229,16 +241,18 @@ export class InjectedScript {
     this._engines.set('internal:has-text', this._createInternalHasTextEngine());
     this._engines.set('internal:has-not-text', this._createInternalHasNotTextEngine());
     this._engines.set('internal:attr', this._createNamedAttributeEngine());
-    this._engines.set('internal:testid', this._createNamedAttributeEngine());
+    this._engines.set('internal:testid', this._createTestIdEngine());
     this._engines.set('internal:role', createRoleEngine(true));
     this._engines.set('internal:describe', this._createDescribeEngine());
     this._engines.set('aria-ref', this._createAriaRefEngine());
+    this._engines.set('aria-template', this._createAriaTemplateEngine());
 
     for (const { name, source } of options.customEngines)
       this._engines.set(name, this.eval(source));
 
     this._stableRafCount = options.stableRafCount;
     this._browserName = options.browserName;
+    this._shouldPrependErrorPrefix = !!options.shouldPrependErrorPrefix;
     this._isUtilityWorld = !!options.isUtilityWorld;
     setGlobalOptions({ browserNameForWorkarounds: options.browserName });
 
@@ -305,23 +319,18 @@ export class InjectedScript {
   }
 
   ariaSnapshot(node: Node, options: AriaTreeOptions): string {
-    return this.incrementalAriaSnapshot(node, options).full;
+    const { json } = this.ariaSnapshotJSON(node, options);
+    return renderAriaSnapshotAsYaml(json, { convertStringsToRegex: options.mode === 'codegen' });
   }
 
-  incrementalAriaSnapshot(node: Node, options: AriaTreeOptions & { track?: string }): { full: string, incremental?: string, iframeRefs: string[] } {
+  ariaSnapshotJSON(node: Node, options: AriaTreeOptions & { depth?: number }): { json: AriaSnapshotJSON, iframeRefs: string[], iframeDepths: Record<string, number> } {
     if (node.nodeType !== Node.ELEMENT_NODE)
       throw this.createStacklessError('Can only capture aria snapshot of Element nodes.');
+    options = { ...options, refPrefix: this._frameSeq && options.mode === 'ai' ? 'f' + this._frameSeq : '' };
     const ariaSnapshot = generateAriaTree(node as Element, options);
-    const full = renderAriaTree(ariaSnapshot, options);
-    let incremental: string | undefined;
-    if (options.track) {
-      const previousSnapshot = this._lastAriaSnapshotForTrack.get(options.track);
-      if (previousSnapshot)
-        incremental = renderAriaTree(ariaSnapshot, options, previousSnapshot);
-      this._lastAriaSnapshotForTrack.set(options.track, ariaSnapshot);
-    }
+    const rendered = renderAriaTreeAsJSON(ariaSnapshot, options);
     this._lastAriaSnapshotForQuery = ariaSnapshot;
-    return { full, incremental, iframeRefs: ariaSnapshot.iframeRefs };
+    return { json: rendered.json, iframeRefs: ariaSnapshot.iframeRefs, iframeDepths: rendered.iframeDepths };
   }
 
   customDomSnapshot(node: Node): AICustomDomFrameData {
@@ -332,8 +341,40 @@ export class InjectedScript {
 
   ariaSnapshotForRecorder(): { ariaSnapshot: string, refs: Map<Element, string> } {
     const tree = generateAriaTree(this.document.body, { mode: 'ai' });
-    const ariaSnapshot = renderAriaTree(tree, { mode: 'ai' });
-    return { ariaSnapshot, refs: tree.refs };
+    const { json } = renderAriaTreeAsJSON(tree, { mode: 'ai' });
+    return { ariaSnapshot: renderAriaSnapshotAsYaml(json), refs: tree.refs };
+  }
+
+  ariaSnapshotForExpectFailure(element: Element, options: AriaTreeOptions): string {
+    // Bypass _lastAriaSnapshotForQuery — that cache is reserved for explicit
+    // ariaSnapshot() calls used by the aria-ref selector engine.
+    const { json } = renderAriaTreeAsJSON(generateAriaTree(element, options), options);
+    return renderAriaSnapshotAsYaml(json);
+  }
+
+  documentContent(includeShadow: boolean): string {
+    let content = '';
+    if (this.document.doctype)
+      content = new XMLSerializer().serializeToString(this.document.doctype);
+    const root = this.document.documentElement;
+    if (!root)
+      return content;
+    if (!includeShadow)
+      return content + root.outerHTML;
+    const shadowRoots: ShadowRoot[] = [];
+    const collectShadowRoots = (node: Document | ShadowRoot) => {
+      for (const element of node.querySelectorAll('*')) {
+        if (element.shadowRoot) {
+          shadowRoots.push(element.shadowRoot);
+          collectShadowRoots(element.shadowRoot);
+        }
+      }
+    };
+    collectShadowRoots(this.document);
+    // getHTML() serializes children only, wrap them with the root element tags.
+    const emptyRoot = (root.cloneNode(false) as Element).outerHTML;
+    const endTagIndex = emptyRoot.lastIndexOf('</');
+    return content + emptyRoot.slice(0, endTagIndex) + root.getHTML({ shadowRoots }) + emptyRoot.slice(endTagIndex);
   }
 
   getAllElementsMatchingExpectAriaTemplate(document: Document, template: AriaTemplateNode): Element[] {
@@ -496,17 +537,27 @@ export class InjectedScript {
       const parsed = parseAttributeSelector(selector, true);
       if (parsed.name || parsed.attributes.length !== 1)
         throw new Error('Malformed attribute selector: ' + selector);
-      const { name, value, caseSensitive } = parsed.attributes[0];
-      const lowerCaseValue = caseSensitive ? null : value.toLowerCase();
-      let matcher: (s: string) => boolean;
-      if (value instanceof RegExp)
-        matcher = s => !!s.match(value);
-      else if (caseSensitive)
-        matcher = s => s === value;
-      else
-        matcher = s => s.toLowerCase().includes(lowerCaseValue!);
+      const { name } = parsed.attributes[0];
+      const matcher = createAttributeMatcher(parsed.attributes[0]);
       const elements = this._evaluator._queryCSS({ scope: root as Document | Element, pierceShadow: true }, `[${name}]`);
       return elements.filter(e => matcher(e.getAttribute(name)!));
+    };
+    return { queryAll };
+  }
+
+  private _createTestIdEngine(): SelectorEngine {
+    const queryAll = (root: SelectorRoot, selector: string): Element[] => {
+      const parsed = parseAttributeSelector(selector, true);
+      if (parsed.name || parsed.attributes.length !== 1)
+        throw new Error('Malformed test id selector: ' + selector);
+      const names = splitTestIdAttributeNames(parsed.attributes[0].name);
+      const matcher = createAttributeMatcher(parsed.attributes[0]);
+      const cssQuery = names.map(n => `[${n}]`).join(',');
+      const elements = this._evaluator._queryCSS({ scope: root as Document | Element, pierceShadow: true }, cssQuery);
+      return elements.filter(e => names.some(n => {
+        const actual = e.getAttribute(n);
+        return actual !== null && matcher(actual);
+      }));
     };
     return { queryAll };
   }
@@ -524,6 +575,8 @@ export class InjectedScript {
     return {
       queryAll(root: SelectorRoot, body: any) {
         if (body === 'enter-frame')
+          return [];
+        if (body === 'any-frame')
           return [];
         if (body === 'return-empty')
           return [];
@@ -645,7 +698,7 @@ export class InjectedScript {
     return element;
   }
 
-  async checkElementStates(node: Node, states: ElementState[]): Promise<'error:notconnected' | { missingState: ElementState } | undefined> {
+  async checkElementStates(node: Node, states: ElementState[], frameVisible: boolean): Promise<'error:notconnected' | { missingState: ElementState } | undefined> {
     if (states.includes('stable')) {
       const stableResult = await this._checkElementIsStable(node);
       if (stableResult === false)
@@ -655,7 +708,7 @@ export class InjectedScript {
     }
     for (const state of states) {
       if (state !== 'stable') {
-        const result = this.elementState(node, state);
+        const result = this.elementState(node, state, frameVisible);
         if (result.received === 'error:notconnected')
           return 'error:notconnected';
         if (!result.matches)
@@ -716,13 +769,26 @@ export class InjectedScript {
 
   _createAriaRefEngine() {
     const queryAll = (root: SelectorRoot, selector: string): Element[] => {
-      const result = this._lastAriaSnapshotForQuery?.elements?.get(selector);
-      return result && result.isConnected ? [result] : [];
+      const result = this._lastAriaSnapshotForQuery?.info?.get(selector);
+      return result && result.element.isConnected ? [result.element] : [];
     };
     return { queryAll };
   }
 
-  elementState(node: Node, state: ElementStateWithoutStable): ElementStateQueryResult {
+  _createAriaTemplateEngine() {
+    const queryAll = (root: SelectorRoot, body: string): Element[] => {
+      const template = JSON.parse(body) as AriaTemplateNode;
+      const rootElement = root.nodeType === 9 /* Node.DOCUMENT_NODE */ ? (root as Document).documentElement : root as Element;
+      if (!rootElement)
+        return [];
+      return getAllElementsMatchingExpectAriaTemplate(rootElement, template);
+    };
+    return { queryAll };
+  }
+
+  elementState(node: Node, state: ElementStateWithoutStable, frameVisible: boolean): ElementStateQueryResult;
+  elementState(node: Node, state: Exclude<ElementStateWithoutStable, 'visible' | 'hidden'>): ElementStateQueryResult;
+  elementState(node: Node, state: ElementStateWithoutStable, frameVisible?: boolean): ElementStateQueryResult {
     const element = this.retarget(node, ['visible', 'hidden'].includes(state) ? 'none' : 'follow-label');
     if (!element || !element.isConnected) {
       if (state === 'hidden')
@@ -731,7 +797,7 @@ export class InjectedScript {
     }
 
     if (state === 'visible' || state === 'hidden') {
-      const visible = isElementVisible(element);
+      const visible = !!frameVisible && isElementVisible(element);
       return {
         matches: state === 'visible' ? visible : !visible,
         received: visible ? 'visible' : 'hidden'
@@ -794,16 +860,18 @@ export class InjectedScript {
     let remainingOptionsToSelect = optionsToSelect.slice();
     for (let index = 0; index < options.length; index++) {
       const option = options[index];
+      const normalizedOptionLabel = normalizeWhiteSpace(option.label);
       const filter = (optionToSelect: Node | { valueOrLabel?: string, value?: string, label?: string, index?: number }) => {
         if (optionToSelect instanceof Node)
           return option === optionToSelect;
+        const matchesLabel = (label: string) => label === option.label || normalizeWhiteSpace(label) === normalizedOptionLabel;
         let matches = true;
         if (optionToSelect.valueOrLabel !== undefined)
-          matches = matches && (optionToSelect.valueOrLabel === option.value || optionToSelect.valueOrLabel === option.label);
+          matches = matches && (optionToSelect.valueOrLabel === option.value || matchesLabel(optionToSelect.valueOrLabel));
         if (optionToSelect.value !== undefined)
           matches = matches && optionToSelect.value === option.value;
         if (optionToSelect.label !== undefined)
-          matches = matches && optionToSelect.label === option.label;
+          matches = matches && matchesLabel(optionToSelect.label);
         if (optionToSelect.index !== undefined)
           matches = matches && optionToSelect.index === index;
         return matches;
@@ -994,15 +1062,19 @@ export class InjectedScript {
           elements.unshift(singleElement);
         }
       }
-      if (elements[0] && elements[0].shadowRoot === root && elements[1] === singleElement) {
-        // Workaround webkit but where first two elements are swapped:
-        // <host>
-        //   #shadow root
-        //     <target>
-        // elementsFromPoint produces [<host>, <target>], while it should be [<target>, <host>]
-        // In this case, just ignore <host>.
+      // Workaround webkit bug: elementsFromPoint() puts the outermost shadow host first (seen with <input>).
+      //
+      //   DOM                  root.elementsFromPoint() in WebKit
+      //   <outer-host>
+      //     #shadow-root       [<outer-host>, <inner-host>, ...]
+      //       <inner-host>      ^^^^^^^^^^^^ bogus
+      //         #shadow-root   [<outer-host>, <input>, <inner-host>, ...]
+      //           <input>       ^^^^^^^^^^^^ bogus
+      //
+      // elementFromPoint() is correct. Drop elements[0] when elements[1] matches it and elements[0]
+      // is the host of this or any enclosing root. Using `roots` makes it work for closed shadow roots.
+      if (elements[0] && elements[1] === singleElement && roots.slice(index).some(r => (r as ShadowRoot).host === elements[0]))
         elements.shift();
-      }
       const innerElement = elements[0] as Element | undefined;
       if (!innerElement)
         break;
@@ -1099,14 +1171,15 @@ export class InjectedScript {
     }[action];
     let result: 'done' | { hitTargetDescription: string } | undefined;
 
-    const listener = (event: PointerEvent | MouseEvent | TouchEvent) => {
+    let listener: ((event: PointerEvent | MouseEvent | TouchEvent) => void) | undefined = (event: PointerEvent | MouseEvent | TouchEvent) => {
       // Ignore events that we do not expect to intercept.
       if (!events.has(event.type))
         return;
 
       // Playwright only issues trusted events, so allow any custom events originating from
-      // the page or content scripts.
-      if (!event.isTrusted)
+      // the page or content scripts. The WebView backend cannot produce trusted events, so
+      // it marks synthetic events with __pwTrustedSynthetic to opt back into interception.
+      if (!event.isTrusted && !(event as any).__pwTrustedSynthetic)
         return;
 
       // Determine the event point. Note that Firefox does not always have window.TouchEvent.
@@ -1127,6 +1200,7 @@ export class InjectedScript {
     const stop = () => {
       if (this._hitTargetInterceptor === listener)
         this._hitTargetInterceptor = undefined;
+      listener = undefined;
       // If we did not get any events, consider things working. Possible causes:
       // - JavaScript is disabled (webkit-only).
       // - Some <iframe> overlays the element from another frame.
@@ -1281,13 +1355,12 @@ export class InjectedScript {
   }
 
   createStacklessError(message: string): Error {
+    const error = this._shouldPrependErrorPrefix ? new Error('Error: ' + message) : new Error(message);
     if (this._browserName === 'firefox') {
-      const error = new Error('Error: ' + message);
       // Firefox cannot delete the stack, so assign to an empty string.
       error.stack = '';
       return error;
     }
-    const error = new Error(message);
     // Chromium/WebKit should delete the stack instead.
     delete error.stack;
     return error;
@@ -1297,23 +1370,78 @@ export class InjectedScript {
     return new Highlight(this);
   }
 
-  maskSelectors(selectors: ParsedSelector[], color: string) {
-    if (this._highlight)
-      this.hideHighlight();
-    this._highlight = new Highlight(this);
-    this._highlight.install();
-    const elements = [];
-    for (const selector of selectors)
-      elements.push(this.querySelectorAll(selector, this.document.documentElement));
-    this._highlight.maskElements(elements.flat(), color);
+  addMaskedElements(elements: Element[], color: string) {
+    const highlight = this._ensureHighlight();
+    highlight.addMaskedElements(elements, color);
   }
 
-  highlight(selector: ParsedSelector) {
-    if (!this._highlight) {
+  private _ensureHighlight() {
+    if (!this._highlight)
       this._highlight = new Highlight(this);
-      this._highlight.install();
+
+    this._highlight.install();
+    return this._highlight;
+  }
+
+  setHighlights(highlights: { selector: ParsedSelector, cssStyle?: string }[]) {
+    if (!highlights.length && !this._highlight)
+      return;
+    const highlight = this._ensureHighlight();
+    highlight.setElementHighlights(highlights);
+  }
+
+  setScreencastAnnotation(annotation: { point?: Point, box?: Rect, actionTitle?: string, duration?: number, position?: string, cursor?: 'none' | 'pointer', style?: { point?: string, highlight?: string, title?: string }, lastCursorPoint?: Point } | null) {
+    const highlight = this._ensureHighlight();
+    highlight.hideScreencastDecorations();
+    // The cursor outlives the annotation, it stays at the last action point.
+    if (!annotation) {
+      highlight.hideActionTitle();
+      return;
     }
-    this._highlight.runHighlightOnRaf(selector);
+    const fadeDuration = annotation.duration ?? 500;
+
+    if (annotation.box && annotation.style?.highlight)
+      highlight.showScreencastHighlight(annotation.box, annotation.style.highlight, fadeDuration);
+    if (annotation.point) {
+      if (annotation.cursor !== 'none') {
+        // After navigation, animate from where the cursor was in the previous document.
+        if (annotation.lastCursorPoint)
+          highlight.restoreActionCursor(annotation.lastCursorPoint.x, annotation.lastCursorPoint.y);
+        highlight.moveActionCursor(annotation.point.x, annotation.point.y, fadeDuration);
+      }
+      if (annotation.style?.point)
+        highlight.showScreencastPoint(annotation.point.x, annotation.point.y, annotation.style.point, fadeDuration);
+    }
+    if (annotation.actionTitle)
+      highlight.showActionTitle(annotation.actionTitle, fadeDuration, annotation.position, annotation.style?.title);
+  }
+
+  restoreScreencastCursor(point: Point) {
+    this._ensureHighlight().restoreActionCursor(point.x, point.y);
+  }
+
+  hideScreencastCursor() {
+    this._highlight?.hideActionCursor();
+  }
+
+  addUserOverlay(id: string, html: string) {
+    const highlight = this._ensureHighlight();
+    highlight.addUserOverlay(id, html);
+  }
+
+  getUserOverlay(id: string): HTMLElement | undefined {
+    const highlight = this._ensureHighlight();
+    return highlight.getUserOverlay(id);
+  }
+
+  removeUserOverlay(id: string) {
+    const highlight = this._ensureHighlight();
+    highlight.removeUserOverlay(id);
+  }
+
+  setUserOverlaysVisible(visible: boolean) {
+    const highlight = this._ensureHighlight();
+    highlight.setUserOverlaysVisible(visible);
   }
 
   hideHighlight() {
@@ -1323,34 +1451,21 @@ export class InjectedScript {
     }
   }
 
-  markTargetElements(markedElements: Set<Element>, callId: string) {
-    if (this._markedElements?.callId !== callId)
-      this._markedElements = undefined;
-    const previous = this._markedElements?.elements || new Set();
-
-    const unmarkEvent = new CustomEvent('__playwright_unmark_target__', {
+  markTargetElements(markedElements: Set<Element>) {
+    const resetEvent = new CustomEvent('__playwright_reset_targets__', {
       bubbles: true,
       cancelable: true,
-      detail: callId,
       composed: true,
     });
-    for (const element of previous) {
-      if (!markedElements.has(element))
-        element.dispatchEvent(unmarkEvent);
-    }
+    this.document.dispatchEvent(resetEvent);
 
     const markEvent = new CustomEvent('__playwright_mark_target__', {
       bubbles: true,
       cancelable: true,
-      detail: callId,
       composed: true,
     });
-    for (const element of markedElements) {
-      if (!previous.has(element))
-        element.dispatchEvent(markEvent);
-    }
-
-    this._markedElements = { callId, elements: markedElements };
+    for (const element of markedElements)
+      element.dispatchEvent(markEvent);
   }
 
   private _setupGlobalListenersRemovalDetection() {
@@ -1388,50 +1503,50 @@ export class InjectedScript {
     this.onGlobalListenersRemoved.add(addHitTargetInterceptorListeners);
   }
 
-  async expect(element: Element | undefined, options: FrameExpectParams, elements: Element[]): Promise<{ matches: boolean, received?: any, missingReceived?: boolean }> {
+  async expect(element: Element, options: FrameExpectParams, elements: Element[], frameVisible: boolean): Promise<{ matches: boolean, received?: ExpectReceived }> {
     const isArray = options.expression === 'to.have.count' || options.expression.endsWith('.array');
-    if (isArray)
-      return this.expectArray(elements, options);
-    if (!element) {
-      // expect(locator).toBeHidden() passes when there is no element.
-      if (!options.isNot && options.expression === 'to.be.hidden')
-        return { matches: true };
-      // expect(locator).not.toBeVisible() passes when there is no element.
-      if (options.isNot && options.expression === 'to.be.visible')
-        return { matches: false };
-      // expect(locator).toBeAttached({ attached: false }) passes when there is no element.
-      if (!options.isNot && options.expression === 'to.be.detached')
-        return { matches: true };
-      // expect(locator).not.toBeAttached() passes when there is no element.
-      if (options.isNot && options.expression === 'to.be.attached')
-        return { matches: false };
-      // expect(locator).not.toBeInViewport() passes when there is no element.
-      if (options.isNot && options.expression === 'to.be.in.viewport')
-        return { matches: false };
-      if (options.expression === 'to.have.title' && options?.expectedText?.[0]) {
-        const matcher = new ExpectedTextMatcher(options.expectedText[0]);
-        const received = this.document.title;
-        return { received, matches: matcher.matches(received) };
-      }
-      if (options.expression === 'to.have.url' && options?.expectedText?.[0]) {
-        const matcher = new ExpectedTextMatcher(options.expectedText[0]);
-        const received = this.document.location.href;
-        return { received, matches: matcher.matches(received) };
-      }
-      // When none of the above applies, expect does not match.
-      return { matches: options.isNot, missingReceived: true };
-    }
-    return await this.expectSingleElement(element, options);
+    const core = isArray ? this.expectArray(elements, options) : await this.expectSingleElement(element, options, frameVisible);
+    const ariaSnapshot = core.matches !== options.isNot ? undefined : this._ariaSnapshotForExpect(element, options, frameVisible);
+    if (core.received === undefined && ariaSnapshot === undefined)
+      return { matches: core.matches };
+    return { matches: core.matches, received: { value: core.received, ariaSnapshot } };
   }
 
-  private async expectSingleElement(element: Element, options: FrameExpectParams): Promise<{ matches: boolean, received?: any }> {
+  private _ariaSnapshotForExpect(element: Element, options: FrameExpectParams, frameVisible: boolean): string | undefined {
     const expression = options.expression;
+    if (expression === 'to.have.count' || expression.endsWith('.array') || expression === 'to.match.aria')
+      return undefined;
+    if (frameVisible && isElementVisible(element) && expression !== 'to.have.title' && expression !== 'to.have.url') {
+      // Element-scoped snapshot. Containment matchers want the full subtree;
+      // property matchers only need the element's own line.
+      const isContainment = expression === 'to.have.text';
+      return this.ariaSnapshotForExpectFailure(element, { mode: 'default', depth: isContainment ? undefined : 1 });
+    }
+    if (!this.document.body)
+      return undefined;
+    return this.ariaSnapshotForExpectFailure(this.document.body, { mode: 'default' });
+  }
+
+  private async expectSingleElement(element: Element, options: FrameExpectParams, frameVisible: boolean): Promise<{ matches: boolean, received?: any }> {
+    const expression = options.expression;
+
+    {
+      // Page-level values. The element (:root) is only used to reach the document.
+      if (expression === 'to.have.title') {
+        const received = this.document.title;
+        return { received, matches: new ExpectedTextMatcher(options.expectedText![0]).matches(received) };
+      }
+      if (expression === 'to.have.url') {
+        const received = this.document.location.href;
+        return { received, matches: new ExpectedTextMatcher(options.expectedText![0]).matches(received) };
+      }
+    }
 
     {
       // Element state / boolean values.
       let result: ElementStateQueryResult | undefined;
       if (expression === 'to.have.attribute') {
-        const hasAttribute = element.hasAttribute(options.expressionArg || '');
+        const hasAttribute = element.hasAttribute(options.expressionArg);
         result = {
           matches: hasAttribute,
           received: hasAttribute ? 'attribute present' : 'attribute not present',
@@ -1469,9 +1584,9 @@ export class InjectedScript {
           received: focused ? 'focused' : 'inactive',
         };
       } else if (expression === 'to.be.hidden') {
-        result = this.elementState(element, 'hidden');
+        result = this.elementState(element, 'hidden', frameVisible);
       } else if (expression === 'to.be.visible') {
-        result = this.elementState(element, 'visible');
+        result = this.elementState(element, 'visible', frameVisible);
       } else if (expression === 'to.be.attached') {
         result = {
           matches: true,
@@ -1495,7 +1610,7 @@ export class InjectedScript {
       // JS property
       if (expression === 'to.have.property') {
         let target = element;
-        const properties = (options.expressionArg || '').split('.');
+        const properties = options.expressionArg.split('.');
         for (let i = 0; i < properties.length - 1; i++) {
           if (typeof target !== 'object' || !(properties[i] in target))
             return { received: undefined, matches: false };
@@ -1506,26 +1621,6 @@ export class InjectedScript {
         return { received, matches };
       }
     }
-
-    {
-      // Computed style object
-      if (expression === 'to.have.css.object') {
-        const expected = (options.expectedValue ?? {}) as Record<string, string>;
-        const received: Record<string, string> = {};
-        let matches = true;
-        const style = this.window.getComputedStyle(element);
-        for (const [prop, value] of Object.entries(expected)) {
-          let computed = style[prop as any];
-          if (typeof computed !== 'string')
-            computed = '';
-          if (computed !== value)
-            matches = false;
-          received[prop] = computed;
-        }
-        return { received, matches };
-      }
-    }
-
     {
       // Viewport intersection
       if (expression === 'to.be.in.viewport') {
@@ -1562,7 +1657,7 @@ export class InjectedScript {
       // Single text value.
       let received: string | undefined;
       if (expression === 'to.have.attribute.value') {
-        const value = element.getAttribute(options.expressionArg || '');
+        const value = element.getAttribute(options.expressionArg);
         if (value === null)
           return { received: null, matches: false };
         received = value;
@@ -1574,15 +1669,15 @@ export class InjectedScript {
           matches: new ExpectedTextMatcher(options.expectedText[0]).matchesClassList(this, element.classList, /* partial */ expression === 'to.contain.class'),
         };
       } else if (expression === 'to.have.css') {
-        received = this.window.getComputedStyle(element).getPropertyValue(options.expressionArg || '');
+        received = this.window.getComputedStyle(element, options.pseudo ? `::${options.pseudo}` : undefined).getPropertyValue(options.expressionArg);
       } else if (expression === 'to.have.id') {
         received = element.id;
       } else if (expression === 'to.have.text') {
         received = options.useInnerText ? (element as HTMLElement).innerText : elementText(new Map(), element).full;
       } else if (expression === 'to.have.accessible.name') {
-        received = getElementAccessibleName(element, false /* includeHidden */);
+        received = getElementAccessibleNameText(element, false /* includeHidden */);
       } else if (expression === 'to.have.accessible.description') {
-        received = getElementAccessibleDescription(element, false /* includeHidden */);
+        received = getElementAccessibleDescription(element, false /* includeHidden */).text;
       } else if (expression === 'to.have.accessible.error.message') {
         received = getElementAccessibleErrorMessage(element);
       } else if (expression === 'to.have.role') {
@@ -1645,7 +1740,7 @@ export class InjectedScript {
   }
 
   private _matchSequentially<T>(
-    expectedText: channels.ExpectedTextValue[],
+    expectedText: ExpectedTextValue[],
     received: T[],
     matchFn: (matcher: ExpectedTextMatcher, received: T) => boolean
   ): boolean {
@@ -1663,6 +1758,20 @@ export class InjectedScript {
 
 function oneLine(s: string): string {
   return s.replace(/\n/g, '↵').replace(/\t/g, '⇆');
+}
+
+function createAttributeMatcher(part: AttributeSelectorPart): (s: string) => boolean {
+  const { value, caseSensitive } = part;
+  if (value instanceof RegExp) {
+    return s => {
+      value.lastIndex = 0;
+      return !!s.match(value);
+    };
+  }
+  if (caseSensitive)
+    return s => s === value;
+  const lowerCaseValue = value.toLowerCase();
+  return s => s.toLowerCase().includes(lowerCaseValue);
 }
 
 function cssUnquote(s: string): string {
@@ -1684,7 +1793,11 @@ function createTextMatcher(selector: string, internal: boolean): { matcher: Text
   if (selector[0] === '/' && selector.lastIndexOf('/') > 0) {
     const lastSlash = selector.lastIndexOf('/');
     const re = new RegExp(selector.substring(1, lastSlash), selector.substring(lastSlash + 1));
-    return { matcher: (elementText: ElementText) => re.test(elementText.full), kind: 'regex' };
+    const matcher = (elementText: ElementText) => {
+      re.lastIndex = 0;
+      return re.test(elementText.full);
+    };
+    return { matcher, kind: 'regex' };
   }
   const unquote = internal ? JSON.parse.bind(JSON) : cssUnquote;
   let strict = false;
@@ -1724,7 +1837,7 @@ class ExpectedTextMatcher {
   private _normalizeWhiteSpace: boolean | undefined;
   private _ignoreCase: boolean | undefined;
 
-  constructor(expected: channels.ExpectedTextValue) {
+  constructor(expected: ExpectedTextValue) {
     this._normalizeWhiteSpace = expected.normalizeWhiteSpace;
     this._ignoreCase = expected.ignoreCase;
     this._string = expected.matchSubstring ? undefined : this.normalize(expected.string);
@@ -1746,8 +1859,10 @@ class ExpectedTextMatcher {
       return text === this._string;
     if (this._substring !== undefined)
       return text.includes(this._substring);
-    if (this._regex)
+    if (this._regex) {
+      this._regex.lastIndex = 0;
       return !!this._regex.test(text);
+    }
     return false;
   }
 

@@ -17,8 +17,8 @@
 
 import fs from 'fs';
 
-import { splitErrorMessage } from '../../utils/isomorphic/stackTrace';
-import { mkdirIfNeeded } from '../utils/fileUtils';
+import { splitErrorMessage } from '@utils/stackTrace';
+import { mkdirIfNeeded } from '@utils/fileUtils';
 
 import type { CRSession } from './crConnection';
 import type { Protocol } from './protocol';
@@ -47,13 +47,16 @@ export async function saveProtocolStream(client: CRSession, handle: string, path
   let eof = false;
   await mkdirIfNeeded(path);
   const fd = await fs.promises.open(path, 'w');
-  while (!eof) {
-    const response = await client.send('IO.read', { handle });
-    eof = response.eof;
-    const buf = Buffer.from(response.data, response.base64Encoded ? 'base64' : undefined);
-    await fd.write(buf);
+  try {
+    while (!eof) {
+      const response = await client.send('IO.read', { handle });
+      eof = response.eof;
+      const buf = Buffer.from(response.data, response.base64Encoded ? 'base64' : undefined);
+      await fd.write(buf);
+    }
+  } finally {
+    await fd.close().catch(() => {});
   }
-  await fd.close();
   await client.send('IO.close', { handle });
 }
 
@@ -70,7 +73,7 @@ export async function readProtocolStream(client: CRSession, handle: string): Pro
   return Buffer.concat(chunks);
 }
 
-export function toConsoleMessageLocation(stackTrace: Protocol.Runtime.StackTrace | undefined): types.ConsoleMessageLocation {
+export function stackTraceToLocation(stackTrace: Protocol.Runtime.StackTrace | undefined): types.ConsoleMessageLocation {
   return stackTrace && stackTrace.callFrames.length ? {
     url: stackTrace.callFrames[0].url,
     lineNumber: stackTrace.callFrames[0].lineNumber,

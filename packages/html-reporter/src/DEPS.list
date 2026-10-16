@@ -1,15 +1,15 @@
 [*]
-@playwright/experimental-ct-react
 @web/**
+@isomorphic/**
 
-[chip.spec.tsx]
+[chip.spec.ts]
 ***
 
-[headerView.spec.tsx]
+[headerView.spec.ts]
 ***
 
-[imageDiffView.spec.tsx]
+[testCaseView.spec.ts]
 ***
 
-[testCaseView.spec.tsx]
+[testFileView.spec.ts]
 ***

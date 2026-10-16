@@ -103,12 +103,12 @@ test('should show console messages for test', async ({ runUITest }, testInfo) =>
     'Colors: RED GREEN',
   ]);
 
-  await expect(page.locator('.console-tab .list-view-entry .codicon')).toHaveClass([
-    'codicon codicon-browser status-none',
-    'codicon codicon-file status-none',
-    'codicon codicon-browser status-error',
-    'codicon codicon-file status-error',
-    'codicon codicon-file status-none',
+  await expect(page.locator('.console-tab .console-source')).toHaveText([
+    'page',
+    'test',
+    'page',
+    'test',
+    'test',
   ]);
 
   await expect.soft(page.getByText('RED', { exact: true })).toHaveCSS('color', 'rgb(205, 49, 49)');
@@ -148,12 +148,12 @@ test('should collapse repeated console messages for test', async ({ runUITest })
   await page.getByRole('tab', { name: 'Console' }).click();
   await expect(page.getByRole('tabpanel', { name: 'Console' })).toMatchAriaSnapshot(`
     - tabpanel "Console":
-      - list:
-        - listitem: /page message/
-        - listitem: /10 page message/
-        - listitem: /10 node message/
-        - listitem: /10 page message/
-        - listitem: /10 page message/
+      - listbox:
+        - option /page message/
+        - option /10 page message/
+        - option /10 node message/
+        - option /10 page message/
+        - option /10 page message/
   `);
 });
 
@@ -189,21 +189,21 @@ test('should format console messages in page', async ({ runUITest }, testInfo) =
   ]);
 
   await expect(page.locator('.console-tab')).toMatchAriaSnapshot(`
-    - list:
-      - listitem: "/<anonymous>:1 Object {a: 1}/"
-      - listitem: "/<anonymous>:4 Date/"
-      - listitem: "/<anonymous>:5 Regex \/a\//"
-      - listitem: "/<anonymous>:6 Number 0 one 2/"
-      - listitem: "/<anonymous>:7 Download the React DevTools for a better development experience: https:\/\/fb\.me\/react-devtools/"
-      - listitem: "/<anonymous>:8 Array of values/"
-      - listitem: "/Failed to load resource: net::ERR_CONNECTION_REFUSED/"
+    - listbox:
+      - option /<anonymous>:1 Object/
+      - option /<anonymous>:4 Date/
+      - option /<anonymous>:5 Regex/
+      - option /<anonymous>:6 Number 0 one 2/
+      - option /<anonymous>:7 Download the React DevTools/
+      - option /<anonymous>:8 Array of values/
+      - option /Failed to load resource/
   `);
 
   const label = page.getByText('React DevTools');
   await expect(label).toHaveCSS('color', 'rgb(255, 0, 0)');
   await expect(label).toHaveCSS('font-weight', '700');
   // blue should not be used, should inherit color red.
-  await expect(label).toHaveCSS('outline', 'rgb(255, 0, 0) none 0px');
+  await expect(label).toHaveCSS('outline-color', 'rgb(255, 0, 0)');
 
   const link = page.getByText('https://fb.me/react-devtools');
   await expect(link).toHaveCSS('color', 'rgb(0, 0, 255)');
@@ -236,7 +236,7 @@ test('should stream console messages live', async ({ runUITest }) => {
     'I was logged',
     'I was clicked',
   ]);
-  await page.getByTitle('Stop').click();
+  await page.getByTestId('stop-button').click();
 });
 
 test('should print beforeAll console messages once', async ({ runUITest }, testInfo) => {
@@ -254,7 +254,7 @@ test('should print beforeAll console messages once', async ({ runUITest }, testI
   await page.getByTitle('Run all').click();
   await page.getByText('Console').click();
   await page.getByText('print').click();
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
   await expect(page.locator('.console-tab .console-line-message')).toHaveText([
     'before all log',
     'test log',

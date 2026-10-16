@@ -19,7 +19,7 @@ import * as React from 'react';
 import { TestFileView } from './testFileView';
 import './testFileView.css';
 import './chip.css';
-import { msToString } from './utils';
+import { msToString } from '@isomorphic/formatUtils';
 import { Chip } from './chip';
 import { CodeSnippet } from './testErrorView';
 import * as icons from './icons';
@@ -81,9 +81,14 @@ export const TestFilesHeader: React.FC<{
   const isMetadataInTopLine = !showProject && !filteredStats;
 
   const metadataToggleButton = !isMetadataEmpty(report.metadata) && (
-    <div className={clsx('metadata-toggle', !isMetadataInTopLine && 'metadata-toggle-second-line')} role='button' onClick={toggleMetadataVisible} title={metadataVisible ? 'Hide metadata' : 'Show metadata'}>
+    <button
+      type='button'
+      className={clsx('metadata-toggle', !isMetadataInTopLine && 'metadata-toggle-second-line')}
+      aria-expanded={metadataVisible}
+      onClick={toggleMetadataVisible}
+      title={metadataVisible ? 'Hide metadata' : 'Show metadata'}>
       {metadataVisible ? icons.downArrow() : icons.rightArrow()}Metadata
-    </div>
+    </button>
   );
 
   const leftSuperHeader = <div className='test-file-header-info'>

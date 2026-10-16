@@ -134,8 +134,8 @@ it('should support Set-Cookie header', async ({ contextFactory, defaultSameSiteC
   }]);
 });
 
-it('should ignore secure Set-Cookie header for insecure requests', async ({ contextFactory, server, browserName }) => {
-  it.fixme(browserName === 'webkit');
+it('should ignore secure Set-Cookie header for insecure requests', async ({ contextFactory, server, browserName, isMac }) => {
+  it.fixme(browserName === 'webkit' && !isMac);
 
   const context = await contextFactory();
   const page = await context.newPage();
@@ -386,4 +386,68 @@ it('should fall back async', async ({ page, context, server }) => {
   });
   await page.goto(server.EMPTY_PAGE);
   expect(intercepted).toEqual([3, 2, 1]);
+});
+
+it('should bypass disk cache when context interception is enabled', async ({ page, server }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/30000' });
+  await page.context().route('**/api*', route => route.continue());
+  await page.goto(server.PREFIX + '/frames/one-frame.html');
+  {
+    const requests = [];
+    server.setRoute('/api', (req, res) => {
+      requests.push(req);
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/plain');
+      res.setHeader('cache-control', 'public, max-age=31536000');
+      res.end('Hello');
+    });
+    for (let i = 0; i < 3; i++) {
+      await it.step(`main frame iteration ${i}`, async () => {
+        const respPromise = page.waitForResponse('**/api');
+        await page.evaluate(async () => {
+          const response = await fetch('/api');
+          return response.status;
+        });
+        const response = await respPromise;
+        expect(response.status()).toBe(200);
+        expect(requests.length).toBe(i + 1);
+      });
+    }
+  }
+});
+
+it('should fulfill popup main request using alias', async ({ page, server, isElectron, electronMajorVersion, isAndroid }) => {
+  it.skip(isElectron && electronMajorVersion < 30, 'error: Browser context management is not supported.');
+  it.skip(isAndroid, 'The internal Android localhost (10.0.0.2) != the localhost on the host');
+
+  await page.context().route('**/*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: 'hello' });
+  });
+  await page.setContent(`<a target=_blank href="${server.EMPTY_PAGE}">click me</a>`);
+  const [popup] = await Promise.all([
+    page.waitForEvent('popup'),
+    page.getByText('click me').click(),
+  ]);
+  await expect(popup.locator('body')).toHaveText('hello');
+});
+
+it('should respect URLPattern ignoreCase', async ({ context, page, server }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42918' });
+  it.skip(globalThis.URLPattern === undefined, 'URLPattern is not supported in this environment');
+
+  const intercepted: string[] = [];
+  // @ts-ignore URLPattern is not in @types/node yet
+  await context.route(new URLPattern(server.PREFIX + '/EMPTY.html', { ignoreCase: true }), route => {
+    intercepted.push('ignoreCase');
+    return route.fulfill({ body: 'mock' });
+  });
+  // @ts-ignore URLPattern is not in @types/node yet
+  await context.route(new URLPattern(server.PREFIX + '/EMPTY.html'), route => {
+    intercepted.push('caseSensitive');
+    return route.fulfill({ body: 'mock' });
+  });
+  const response = await page.goto(server.EMPTY_PAGE);
+  expect(await response!.text()).toBe('mock');
+  expect(intercepted).toEqual(['ignoreCase']);
 });

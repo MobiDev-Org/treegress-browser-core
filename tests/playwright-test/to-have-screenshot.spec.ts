@@ -18,7 +18,8 @@ import * as fs from 'fs';
 import { PNG } from 'playwright-core/lib/utilsBundle';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import { test, expect, createImage, paintBlackPixels } from './playwright-test-fixtures';
+import { test, expect, createImage, createWebpImage, paintBlackPixels } from './playwright-test-fixtures';
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
 import { comparePNGs } from '../config/comparator';
 
 test.describe.configure({ mode: 'parallel' });
@@ -57,6 +58,43 @@ test('should fail to screenshot a page with infinite animation', async ({ runInl
   expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-1-previous.png'))).toBe(true);
   expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-1-diff.png'))).toBe(true);
   expect(fs.existsSync(testInfo.outputPath('a.spec.js-snapshots', 'is-a-test-1.png'))).toBe(false);
+});
+
+test('should fail like a timeout when aborted', async ({ runInlineTest }) => {
+  const infiniteAnimationURL = pathToFileURL(path.join(__dirname, '../assets/rotate-z.html'));
+  const result = await runInlineTest({
+    ...playwrightConfig({}),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await page.goto('${infiniteAnimationURL}');
+        const controller = new AbortController();
+        const promise = expect(page).toHaveScreenshot({ animations: 'allow', timeout: 5000, signal: controller.signal });
+        await page.waitForTimeout(500);
+        controller.abort(new Error('stop it'));
+        await promise;
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain(`operation was aborted: stop it`);
+  expect(result.output).not.toContain(`Timeout 5000ms exceeded`);
+});
+
+test('should fail when already aborted', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({}),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        const controller = new AbortController();
+        controller.abort(new Error('already aborted'));
+        await expect(page).toHaveScreenshot({ signal: controller.signal });
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain(`Error: The assertion was aborted: already aborted`);
 });
 
 test('should disable animations by default', async ({ runInlineTest }, testInfo) => {
@@ -124,6 +162,54 @@ test('should not retry serial mode suites with missing expectation errors', asyn
   expect(result.exitCode).toBe(1);
 });
 
+test('should respect toHaveScreenshot timeout from config', async ({ runInlineTest }, testInfo) => {
+  const infiniteAnimationURL = pathToFileURL(path.join(__dirname, '../assets/rotate-z.html'));
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      expect: {
+        toHaveScreenshot: {
+          animations: 'allow',
+          timeout: 2000,
+        },
+      },
+    }),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await page.goto('${infiniteAnimationURL}');
+        await expect(page).toHaveScreenshot();
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain(`Timeout 2000ms exceeded`);
+  expect(result.output).toContain(`Expect "toHaveScreenshot" with timeout 2000ms`);
+});
+
+test('should let toHaveScreenshot call options override config timeout', async ({ runInlineTest }, testInfo) => {
+  const infiniteAnimationURL = pathToFileURL(path.join(__dirname, '../assets/rotate-z.html'));
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      expect: {
+        toHaveScreenshot: {
+          animations: 'allow',
+          timeout: 30000,
+        },
+      },
+    }),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await page.goto('${infiniteAnimationURL}');
+        await expect(page).toHaveScreenshot({ timeout: 2000 });
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain(`Timeout 2000ms exceeded`);
+  expect(result.output).toContain(`Expect "toHaveScreenshot" with timeout 2000ms`);
+});
+
 test.describe('expect config animations option', () => {
   test('disabled', async ({ runInlineTest }, testInfo) => {
     const cssTransitionURL = pathToFileURL(path.join(__dirname, '../assets/css-transition.html'));
@@ -185,7 +271,7 @@ test('should fail with proper error when unsupported argument is given', async (
     `
   }, { 'update-snapshots': true });
   expect(result.exitCode).toBe(1);
-  expect(result.output).toContain(`Expected options.clip.width not to be 0`);
+  expect(result.output).toContain(`Expected options.clip.width to be greater than 0`);
 });
 
 test('should have scale:css by default', async ({ runInlineTest }, testInfo) => {
@@ -392,7 +478,7 @@ test('should fail to screenshot an element with infinite animation', async ({ ru
   });
   expect(result.exitCode).toBe(1);
   expect(result.output).toContain(`Timeout 2000ms exceeded`);
-  expect(result.output).toContain(`Expect "toHaveScreenshot" with timeout 2000ms`);
+  expect(result.output).toContain(`Expect "toHaveScreenshot" locator('body') with timeout 2000ms`);
   expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-1-previous.png'))).toBe(true);
   expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-1-actual.png'))).toBe(true);
   expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-1-expected.png'))).toBe(false);
@@ -506,7 +592,7 @@ test('should fail when screenshot is different size', async ({ runInlineTest }) 
   expect(result.output).toContain('Expected an image 22px by 33px, received 1280px by 720px.');
 });
 
-test('should fail when given non-png snapshot name', async ({ runInlineTest }) => {
+test('should fail when given unsupported snapshot name', async ({ runInlineTest }) => {
   const result = await runInlineTest({
     ...playwrightConfig({
       snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
@@ -519,7 +605,140 @@ test('should fail when given non-png snapshot name', async ({ runInlineTest }) =
     `
   });
   expect(result.exitCode).toBe(1);
-  expect(result.output).toContain(`Screenshot name "snapshot.jpeg" must have '.png' extension`);
+  expect(result.output).toContain(`Screenshot name "snapshot.jpeg" must have a '.png' or '.webp' extension`);
+});
+
+test('should pass when webp screenshot matches expectation', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    '__screenshots__/a.spec.js/snapshot.webp': createWebpImage(IMG_WIDTH, IMG_HEIGHT, 255, 255, 255),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.webp');
+      });
+    `
+  });
+  expect(result.exitCode).toBe(0);
+});
+
+test('should write missing webp expectation', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.webp');
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('__screenshots__', 'a.spec.js', 'snapshot.webp');
+  expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
+  const image = utils.decodeWebp(fs.readFileSync(snapshotOutputPath));
+  expect(image.width).toBe(IMG_WIDTH);
+  expect(image.height).toBe(IMG_HEIGHT);
+});
+
+test('should fail when webp screenshot is different pixels', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    '__screenshots__/a.spec.js/snapshot.webp': createWebpImage(IMG_WIDTH, IMG_HEIGHT, 255, 0, 0),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.webp', { timeout: 2000 });
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain('Error: expect(page).toHaveScreenshot(expected)');
+  expect(result.output).toContain('are different');
+  expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'snapshot-actual.webp'))).toBe(true);
+  expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'snapshot-expected.webp'))).toBe(true);
+  expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'snapshot-diff.webp'))).toBe(true);
+});
+
+test('should update webp snapshot with the update-snapshots flag', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    '__screenshots__/a.spec.js/snapshot.webp': createWebpImage(IMG_WIDTH, IMG_HEIGHT, 255, 0, 0),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.webp');
+      });
+    `
+  }, { 'update-snapshots': true });
+  expect(result.exitCode).toBe(0);
+  const snapshotOutputPath = testInfo.outputPath('__screenshots__', 'a.spec.js', 'snapshot.webp');
+  expect(result.output).toContain(`${snapshotOutputPath} is re-generated, writing actual.`);
+  const image = utils.decodeWebp(fs.readFileSync(snapshotOutputPath));
+  expect(image.width).toBe(IMG_WIDTH);
+  expect(image.height).toBe(IMG_HEIGHT);
+  // The red expectation should have been replaced with the actual white page.
+  expect([...image.data.subarray(0, 4)]).toEqual([255, 255, 255, 255]);
+});
+
+test('should use configured webp type', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+      expect: {
+        toHaveScreenshot: {
+          type: 'webp',
+        },
+      },
+    }),
+    '__screenshots__/a.spec.js/is-a-test-1.webp': createWebpImage(IMG_WIDTH, IMG_HEIGHT, 255, 255, 255),
+    '__screenshots__/a.spec.js/snapshot.png': whiteImage,
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        expect(test.info().snapshotPath({ kind: 'screenshot' })).toMatch(/is-a-test-1\\.webp$/);
+        // Anonymous and explicit .png name both match existing snapshots.
+        await expect(page).toHaveScreenshot();
+        await expect(page).toHaveScreenshot('snapshot.png');
+        // Anonymous locator snapshot is written as webp.
+        await expect(page.locator('body')).toHaveScreenshot();
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  for (const name of ['is-a-test-1.webp', 'snapshot.png'])
+    expect(result.output).not.toContain(`A snapshot doesn't exist at ${testInfo.outputPath('__screenshots__', 'a.spec.js', name)}`);
+  const snapshotOutputPath = testInfo.outputPath('__screenshots__', 'a.spec.js', 'is-a-test-2.webp');
+  expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
+  expect(utils.decodeWebp(fs.readFileSync(snapshotOutputPath)).width).toBeGreaterThan(0);
+  expect(fs.existsSync(testInfo.outputPath('test-results', 'a-is-a-test', 'is-a-test-2-actual.webp'))).toBe(true);
+});
+
+test('should fail on unsupported configured type', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      expect: {
+        toHaveScreenshot: {
+          type: 'jpeg',
+        },
+      },
+    }),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot();
+      });
+    `
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain(`config.expect.toHaveScreenshot.type must be one of "png" or "webp"`);
 });
 
 test('should fail when given buffer', async ({ runInlineTest }) => {
@@ -854,6 +1073,66 @@ test('should silently write missing expectations locally with the update-snapsho
   expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
   const data = fs.readFileSync(snapshotOutputPath);
   expect(comparePNGs(data, whiteImage)).toBe(null);
+});
+
+test('should pass when writing missing expectations with the update-snapshots=missing flag', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.png');
+      });
+    `
+  }, { 'update-snapshots': 'missing' });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('__screenshots__/a.spec.js/snapshot.png');
+  expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
+  expect(comparePNGs(fs.readFileSync(snapshotOutputPath), whiteImage)).toBe(null);
+});
+
+test('should fail when writing missing expectations with the update-snapshots=default flag', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.png');
+      });
+    `
+  }, { 'update-snapshots': 'default' });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('__screenshots__/a.spec.js/snapshot.png');
+  expect(result.output).toContain(`A snapshot doesn't exist at ${snapshotOutputPath}, writing actual`);
+  expect(comparePNGs(fs.readFileSync(snapshotOutputPath), whiteImage)).toBe(null);
+});
+
+test('should still fail on a mismatching screenshot with the update-snapshots=missing flag', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    '__screenshots__/a.spec.js/snapshot.png': redImage,
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await expect(page).toHaveScreenshot('snapshot.png', { timeout: 2000 });
+      });
+    `
+  }, { 'update-snapshots': 'missing' });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.failed).toBe(1);
+  const snapshotOutputPath = testInfo.outputPath('__screenshots__/a.spec.js/snapshot.png');
+  expect(comparePNGs(fs.readFileSync(snapshotOutputPath), redImage)).toBe(null);
 });
 
 test('should not write missing expectations locally with the update-snapshots flag for negated matcher', async ({ runInlineTest }, testInfo) => {
@@ -1583,4 +1862,21 @@ test.describe('update-snapshots', () => {
     expect(comparePNGs(newBaseline, whiteImage)).toBe(null);
     expect(comparePNGs(newBaseline, EXPECTED_SNAPSHOT)).not.toBe(null);
   });
+});
+
+test('should hide overlays during toHaveScreenshot', async ({ runInlineTest }, testInfo) => {
+  const result = await runInlineTest({
+    ...playwrightConfig({
+      snapshotPathTemplate: '__screenshots__/{testFilePath}/{arg}{ext}',
+    }),
+    '__screenshots__/a.spec.js/snapshot.png': whiteImage,
+    'a.spec.js': `
+      const { test, expect } = require('@playwright/test');
+      test('is a test', async ({ page }) => {
+        await page.screencast.showOverlay('<div style="position:absolute;inset:0;background:red"></div>');
+        await expect(page).toHaveScreenshot('snapshot.png');
+      });
+    `
+  });
+  expect(result.exitCode).toBe(0);
 });

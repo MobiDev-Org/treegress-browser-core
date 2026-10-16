@@ -14,21 +14,24 @@
  * limitations under the License.
  */
 
+import { debugLogger } from '@utils/debugLogger';
+import { WSServer } from '@utils/wsServer';
+import { Semaphore } from '@isomorphic/semaphore';
 import { PlaywrightConnection } from './playwrightConnection';
 import { WebSocketServerTransport } from './serverTransport';
-import { debugLogger } from '../server/utils/debugLogger';
 import { Browser } from '../server/browser';
-import { Semaphore } from '../utils';
-import { WSServer } from '../server/utils/wsServer';
 
 import type { PlaywrightInitializeResult } from './playwrightConnection';
 
 export class PlaywrightWebSocketServer {
   private _wsServer: WSServer;
   private _browser: Browser;
+  private _path: string;
 
   constructor(browser: Browser, path: string) {
     this._browser = browser;
+    this._path = path;
+
     browser.on(Browser.Events.Disconnected, () => this.close());
 
     const semaphore = new Semaphore(Infinity);
@@ -38,6 +41,7 @@ export class PlaywrightWebSocketServer {
       },
       onUpgrade: () => undefined,
       onHeaders: () => {},
+      isAllowedPathname: pathname => pathname === this._path,
       onConnection: (request, url, ws, id) => {
         debugLogger.log('server', `[${id}] ws client connected`);
         return new PlaywrightConnection(
@@ -61,8 +65,8 @@ export class PlaywrightWebSocketServer {
     };
   }
 
-  async listen(port: number = 0, hostname?: string, path?: string): Promise<string> {
-    return await this._wsServer.listen(port, hostname, path || '/');
+  async listen(port: number = 0, hostname?: string): Promise<string> {
+    return await this._wsServer.listen(port, hostname, this._path);
   }
 
   async close() {

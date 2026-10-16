@@ -5,50 +5,40 @@ The `custom-dom` snapshot backend now drives `browser_snapshot` refs and ref-bas
 
 ## What Changed
 
-- `browser_snapshot` now requests Playwright core AI snapshots with backend `custom-dom`.
-- MCP snapshot rendering now formats normalized custom DOM envelope into MCP text with `e1`, `e2`, ... refs.
-- Ref resolution path is now:
+- The `dom` snapshot engine (default) captures snapshots through `Page._customDomSnapshot()` / the internal `Frame.customDomSnapshot` protocol method instead of the aria snapshot.
+- `--snapshot-engine aria` (or `PLAYWRIGHT_MCP_SNAPSHOT_ENGINE=aria`, `snapshot.engine` in config) switches back to upstream aria snapshots.
+- MCP snapshot rendering formats the normalized custom DOM envelope into MCP text with `e1`, `e2`, ... refs.
+- Ref resolution path (tool `target` parameter) is:
   `alias ref -> stable serializer id -> locator plan -> Playwright Locator`.
-- Ref resolution is custom-dom-first. In the current MVP build, strict custom-dom mode is enabled; if ref resolution fails, capture a fresh snapshot. aria backend remains available only as a debug override for snapshot capture.
-- In this fork, browser_snapshot is still named/described using legacy accessibility wording in some code paths, but the default runtime backend for MCP snapshot flow is custom-dom.
+- Ref resolution is strict: if a custom-dom ref cannot be resolved, the tool returns resolver diagnostics instead of falling back to aria refs. Capture a fresh snapshot and retry.
+- Snapshots scoped to an element, depth-limited, with boxes or in JSON form use the aria engine.
 
 ## Architecture Summary
 
 - Core returns a normalized envelope with frame tree + DOM + locator plans.
-- MCP formatter builds:
+- The tools backend (`tools/backend/customDom*.ts`, `tab.ts`) builds:
   - human-readable snapshot text
   - alias map (`eN -> stableId + framePath`)
   - locator plan storage (`framePath::stableId -> plan`)
 - Resolver compiles locator candidates from plan in priority order and picks the first unique candidate.
 - Frame-aware resolution uses `framePath` captured from snapshot traversal.
+- Upstream MCP specs run with `mcpSnapshotEngine: 'aria'` (fixture default); custom-dom specs opt into `'dom'`.
 - Note: the focused custom-dom validation suite is Chromium-only.
 
 ## Setup (Few Commands)
 
 ```bash
 git clone <your-fork-url>
-cd playwright
-npm i
+cd treegress-browser-core
+npm ci
 npm run build
-npm run install-mcp-browser
-```
-
-Run MCP server:
-
-```bash
-npm run start-mcp
+node packages/playwright-core/cli.js install chromium
 ```
 
 Run the focused custom-dom MCP validation suite:
 
 ```bash
 npm run test-mcp-custom-dom
-```
-
-Run the same suite on all MCP projects:
-
-```bash
-npm run test-mcp-custom-dom-all
 ```
 
 ## Limitations

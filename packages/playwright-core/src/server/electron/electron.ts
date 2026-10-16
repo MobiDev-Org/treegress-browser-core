@@ -19,24 +19,25 @@ import os from 'os';
 import path from 'path';
 import * as readline from 'readline';
 
-import { ManualPromise } from '../../utils';
-import { wrapInASCIIBox } from '../utils/ascii';
-import { RecentLogsCollector } from '../utils/debugLogger';
-import { eventsHelper } from '../utils/eventsHelper';
-import { validateBrowserContextOptions } from '../browserContext';
+import { wrapInASCIIBox } from '@utils/ascii';
+import { RecentLogsCollector } from '@utils/debugLogger';
+import { eventsHelper } from '@utils/eventsHelper';
+import { envArrayToObject, launchProcess } from '@utils/processLauncher';
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { libPath } from '../../package';
+import { BrowserContext, validateBrowserContextOptions } from '../browserContext';
 import { CRBrowser } from '../chromium/crBrowser';
 import { CRConnection } from '../chromium/crConnection';
 import { createHandle, CRExecutionContext } from '../chromium/crExecutionContext';
-import { toConsoleMessageLocation } from '../chromium/crProtocolHelper';
+import { stackTraceToLocation } from '../chromium/crProtocolHelper';
 import { ConsoleMessage } from '../console';
 import { helper } from '../helper';
 import { SdkObject } from '../instrumentation';
 import * as js from '../javascript';
-import { envArrayToObject, launchProcess } from '../utils/processLauncher';
 import { WebSocketTransport } from '../transport';
+import { nullProgress } from '../progress';
 
 import type { BrowserOptions, BrowserProcess } from '../browser';
-import type { BrowserContext } from '../browserContext';
 import type { CRBrowserContext } from '../chromium/crBrowser';
 import type { CRSession } from '../chromium/crConnection';
 import type { CRPage } from '../chromium/crPage';
@@ -45,7 +46,7 @@ import type { Page } from '../page';
 import type { Playwright } from '../playwright';
 import type { Progress } from '../progress';
 import type * as types from '../types';
-import type * as channels from '@protocol/channels';
+import type * as channels from '../channels';
 import type * as childProcess from 'child_process';
 import type { BrowserWindow } from 'electron';
 
@@ -84,9 +85,9 @@ export class ElectronApplication extends SdkObject {
       this._nodeElectronHandlePromise.resolve(new js.JSHandle(this._nodeExecutionContext!, 'object', 'ElectronModule', remoteObject.objectId!));
     });
     this._nodeSession.on('Runtime.consoleAPICalled', event => this._onConsoleAPI(event));
+    this._browserContext.on(BrowserContext.Events.Page, page => this._onPage(page));
     const appClosePromise = new Promise(f => this.once(ElectronApplication.Events.Close, f));
     this._browserContext.setCustomCloseHandler(async () => {
-      await this._browserContext.stopVideoRecording();
       const electronHandle = await this._nodeElectronHandlePromise;
       await electronHandle.evaluate(({ app }) => app.quit()).catch(() => {});
       this._nodeConnection.close();
@@ -114,7 +115,7 @@ export class ElectronApplication extends SdkObject {
     if (!this._nodeExecutionContext)
       return;
     const args = event.args.map(arg => createHandle(this._nodeExecutionContext!, arg));
-    const message = new ConsoleMessage(null, null, event.type, undefined, args, toConsoleMessageLocation(event.stackTrace), event.timestamp);
+    const message = new ConsoleMessage(null, null, event.type, undefined, args, stackTraceToLocation(event.stackTrace), event.timestamp);
     this.emit(ElectronApplication.Events.Console, message);
   }
 
@@ -132,19 +133,41 @@ export class ElectronApplication extends SdkObject {
     return this._browserContext;
   }
 
-  async close() {
+  async close(progress: Progress) {
     // This will call BrowserContext.setCustomCloseHandler.
-    await this._browserContext.close({ reason: 'Application exited' });
+    await this._browserContext.close(progress, { reason: 'Application exited' });
   }
 
-  async browserWindow(page: Page): Promise<js.JSHandle<BrowserWindow>> {
+  private _onPage(page: Page) {
+    if (process.env.PLAYWRIGHT_ELECTRON_LEGACY_PAGE_CLOSE)
+      return;
+    // Target.closeTarget can hang on Electron when the close races a committing
+    // navigation. Close from the main process instead. We close the webContents
+    // rather than the BrowserWindow because BrowserWindow.close() always runs the
+    // beforeunload handler, while webContents.close() lets us opt in or out of it.
+    page.setCustomCloseHandler(async runBeforeUnload => {
+      const electronHandle = await this._nodeElectronHandlePromise;
+      const closed = await electronHandle.evaluate(({ webContents }, { targetId, runBeforeUnload }) => {
+        const wc = webContents.fromDevToolsTargetId(targetId);
+        if (!wc || wc.isDestroyed())
+          return false;
+        wc.close({ waitForBeforeUnload: runBeforeUnload });
+        return true;
+      }, { targetId: (page.delegate as CRPage)._targetId, runBeforeUnload }).catch(() => false);
+      // Fall back to the default close if the webContents could not be found.
+      if (!closed)
+        await page.delegate.closePage(runBeforeUnload);
+    });
+  }
+
+  async browserWindow(progress: Progress, page: Page): Promise<js.JSHandle<BrowserWindow>> {
     // Assume CRPage as Electron is always Chromium.
     const targetId = (page.delegate as CRPage)._targetId;
-    const electronHandle = await this._nodeElectronHandlePromise;
-    return await electronHandle.evaluateHandle(({ BrowserWindow, webContents }, targetId) => {
+    const electronHandle = await progress.race(this._nodeElectronHandlePromise);
+    return await progress.race(electronHandle.evaluateHandle(({ BrowserWindow, webContents }, targetId) => {
       const wc = webContents.fromDevToolsTargetId(targetId);
       return BrowserWindow.fromWebContents(wc!)!;
-    }, targetId);
+    }, targetId));
   }
 }
 
@@ -156,15 +179,22 @@ export class Electron extends SdkObject {
 
   async launch(progress: Progress, options: Omit<channels.ElectronLaunchParams, 'timeout'>): Promise<ElectronApplication> {
     let app: ElectronApplication | undefined = undefined;
-    // --inspect=0 must be the last playwright's argument, loader.ts relies on it.
-    let electronArguments = ['--inspect=0', ...(options.args || [])];
+    // --remote-debugging-port=0 must be the last playwright's argument, loader.ts relies on it.
+    let electronArguments = ['--inspect=0', '--remote-debugging-port=0', ...(options.args || [])];
 
     if (os.platform() === 'linux') {
       if (!options.chromiumSandbox && electronArguments.indexOf('--no-sandbox') === -1)
         electronArguments.unshift('--no-sandbox');
     }
 
-    const artifactsDir = await progress.race(fs.promises.mkdtemp(ARTIFACTS_FOLDER));
+    let artifactsDir: string;
+    const tempDirectories: string[] = [];
+    if (options.artifactsDir) {
+      artifactsDir = options.artifactsDir;
+    } else {
+      artifactsDir = await progress.race(fs.promises.mkdtemp(ARTIFACTS_FOLDER));
+      tempDirectories.push(artifactsDir);
+    }
     const browserLogsCollector = new RecentLogsCollector();
     const env = options.env ? envArrayToObject(options.env) : process.env;
 
@@ -187,7 +217,7 @@ export class Electron extends SdkObject {
       }
       // Only use our own loader for non-packaged apps.
       // Packaged apps might have their own command line handling.
-      electronArguments.unshift('-r', require.resolve('./loader'));
+      electronArguments.unshift('-r', libPath('server', 'electron', 'loader.js'));
     }
     let shell = false;
     if (process.platform === 'win32') {
@@ -205,7 +235,7 @@ export class Electron extends SdkObject {
     // will make the debugger attach to Electron's Node. But Playwright
     // also needs to attach to drive the automation. Disable external debugging.
     delete env.NODE_OPTIONS;
-    const { launchedProcess, gracefullyClose, kill } = await launchProcess({
+    const { launchedProcess, gracefullyClose, kill } = await progress.race(launchProcess({
       command,
       args: electronArguments,
       env,
@@ -216,13 +246,13 @@ export class Electron extends SdkObject {
       shell,
       stdio: 'pipe',
       cwd: options.cwd,
-      tempDirectories: [artifactsDir],
-      attemptToGracefullyClose: () => app!.close(),
+      tempDirectories,
+      attemptToGracefullyClose: () => app!.close(nullProgress),
       handleSIGINT: true,
       handleSIGTERM: true,
       handleSIGHUP: true,
       onExit: () => app?.emit(ElectronApplication.Events.Close),
-    });
+    }));
 
     // All waitForLines must be started immediately.
     // Otherwise the lines might come before we are ready.
@@ -250,10 +280,10 @@ export class Electron extends SdkObject {
         nodeTransport.close();
       }).catch(() => {});
 
-      const chromeMatch = await Promise.race([
+      const chromeMatch = await progress.race(Promise.race([
         chromeMatchPromise,
         waitForXserverError,
-      ]);
+      ]));
       const chromeTransport = await WebSocketTransport.connect(progress, chromeMatch[1]);
       const browserProcess: BrowserProcess = {
         onclose: undefined,
@@ -277,6 +307,8 @@ export class Electron extends SdkObject {
         downloadsPath: artifactsDir,
         tracesDir: options.tracesDir || artifactsDir,
         originalLaunchOptions: {},
+        // A window that has not navigated yet has no renderer, but it is not crashed.
+        noInspectorEnableOnConnect: true,
       };
       validateBrowserContextOptions(contextOptions, browserOptions);
       const browser = await progress.race(CRBrowser.connect(this.attribution.playwright, chromeTransport, browserOptions));
@@ -284,7 +316,7 @@ export class Electron extends SdkObject {
       await progress.race(app.initialize());
       return app;
     } catch (error) {
-      await kill();
+      await progress.race(kill());
       throw error;
     }
   }

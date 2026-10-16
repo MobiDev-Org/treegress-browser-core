@@ -15,6 +15,7 @@
  */
 import { test, expect } from './npmTest';
 import { chromium } from '@playwright/test';
+import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import https from 'https';
@@ -63,6 +64,24 @@ test('install command should work', async ({ exec, checkInstalledSoftwareOnDisk 
         await exec('node sanity.js', pkg, 'chromium firefox webkit');
     });
   }
+});
+
+test('install command should suppress progress bar with --no-progress', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41099' } }, async ({ exec, checkInstalledSoftwareOnDisk }) => {
+  await exec('npm i playwright');
+  const result = await exec('npx playwright install chromium --no-progress');
+  expect(result).toHaveLoggedSoftwareDownload(['chromium', 'chromium-headless-shell', 'ffmpeg', ...extraInstalledSoftware]);
+  await checkInstalledSoftwareOnDisk(['chromium', 'chromium-headless-shell', 'ffmpeg', ...extraInstalledSoftware]);
+  expect(result).not.toContain('% of');
+  expect(result).not.toContain('■');
+});
+
+test('install command should suppress progress bar with PLAYWRIGHT_DOWNLOAD_NO_PROGRESS', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41099' } }, async ({ exec, checkInstalledSoftwareOnDisk }) => {
+  await exec('npm i playwright');
+  const result = await exec('npx playwright install chromium', { env: { PLAYWRIGHT_DOWNLOAD_NO_PROGRESS: '1' } });
+  expect(result).toHaveLoggedSoftwareDownload(['chromium', 'chromium-headless-shell', 'ffmpeg', ...extraInstalledSoftware]);
+  await checkInstalledSoftwareOnDisk(['chromium', 'chromium-headless-shell', 'ffmpeg', ...extraInstalledSoftware]);
+  expect(result).not.toContain('% of');
+  expect(result).not.toContain('■');
 });
 
 test('install command should work with HTTPS_PROXY', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/36650' } }, async ({ exec, checkInstalledSoftwareOnDisk }) => {
@@ -144,6 +163,20 @@ test('install command should work with HTTPS proxy for HTTP downloads', async ({
   });
   expect(requestCount).toBeGreaterThan(0);
   httpsProxyServer.close();
+});
+
+test('install --no-remove should keep unused browsers', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42214' } }, async ({ exec, _browsersPath }) => {
+  await exec('npm i playwright');
+  const staleDirectory = path.join(_browsersPath, 'webkit-1000');
+  await fs.promises.mkdir(staleDirectory, { recursive: true });
+
+  const result = await exec('npx playwright install ffmpeg --no-remove');
+  expect(result).not.toContain('Removing unused browser');
+  expect(fs.existsSync(staleDirectory)).toBe(true);
+
+  const result2 = await exec('npx playwright install ffmpeg');
+  expect(result2).toContain('Removing unused browser');
+  expect(fs.existsSync(staleDirectory)).toBe(false);
 });
 
 test('should be able to remove browsers', async ({ exec, checkInstalledSoftwareOnDisk }) => {

@@ -45,7 +45,7 @@ test('browser_route mocks response with JSON body', async ({ client, server }) =
   // Click the button to trigger the fetch
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'Fetch button', ref: 'e2' },
+    arguments: { element: 'Fetch button', target: 'e2' },
   });
 
   // Wait for the mocked response to be rendered
@@ -58,7 +58,7 @@ test('browser_route mocks response with JSON body', async ({ client, server }) =
   expect(await client.callTool({
     name: 'browser_snapshot',
   })).toHaveResponse({
-    snapshot: expect.stringContaining('Alice'),
+    inlineSnapshot: expect.stringContaining('Alice'),
   });
 });
 
@@ -84,7 +84,7 @@ test('browser_route mocks response with custom status', async ({ client, server 
 
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'Fetch button', ref: 'e2' },
+    arguments: { element: 'Fetch button', target: 'e2' },
   });
 
   // Wait for the status to be rendered
@@ -96,7 +96,7 @@ test('browser_route mocks response with custom status', async ({ client, server 
   expect(await client.callTool({
     name: 'browser_snapshot',
   })).toHaveResponse({
-    snapshot: expect.stringContaining('Status: 404'),
+    inlineSnapshot: expect.stringContaining('Status: 404'),
   });
 });
 
@@ -129,11 +129,29 @@ test('browser_route modifies request headers', async ({ client, server }) => {
   const requestPromise = server.waitForRequest('/api/check');
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'Fetch button', ref: 'e2' },
+    arguments: { element: 'Fetch button', target: 'e2' },
   });
 
   await requestPromise;
   expect(receivedHeaders['x-custom-header']).toBe('test-value');
+});
+
+test('browser_route errors on header lines without a colon', async ({ client, server }) => {
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.EMPTY_PAGE },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_route',
+    arguments: {
+      pattern: '**/api/check',
+      headers: ['NotAHeader', 'X-Custom-Header: test-value'],
+    },
+  })).toHaveResponse({
+    isError: true,
+    error: expect.stringContaining('Invalid header "NotAHeader"'),
+  });
 });
 
 test('browser_route_list shows active routes', async ({ client, server }) => {
@@ -238,4 +256,31 @@ test('browser_unroute removes all routes', async ({ client, server }) => {
     name: 'browser_route_list',
   }));
   expect(list.result).toContain('No active routes');
+});
+
+test('browser_route applies to isolated contexts', async ({ client, server }) => {
+  server.setContent('/', `<body>Original</body>`, 'text/html');
+
+  await client.callTool({
+    name: 'browser_tabs',
+    arguments: { action: 'new', isolatedContext: 'alice' },
+  });
+  await client.callTool({
+    name: 'browser_route',
+    arguments: { pattern: '**/', body: '<body>Mocked</body>', contentType: 'text/html' },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining('Mocked'),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_tabs',
+    arguments: { action: 'new', url: server.PREFIX, isolatedContext: 'bob' },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining('Mocked'),
+  });
 });

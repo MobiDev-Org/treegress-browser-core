@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { NodeSnapshot } from '@trace/snapshot';
+import type { NodeSnapshot } from '@isomorphic/trace/trace';
 
 export type SnapshotData = {
   doctype?: string,
@@ -73,6 +73,8 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
     return obj[kCachedData];
   }
 
+  const kObserverConfig: MutationObserverInit = { attributes: true, subtree: true };
+
   function removeHash(url: string) {
     try {
       const u = new URL(url);
@@ -90,8 +92,18 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
     private _readingStyleSheet = false;  // To avoid invalidating due to our own reads.
     private _fakeBase: HTMLBaseElement;
     private _observer: MutationObserver;
+    private _observedDocument: Document | undefined;
+    private _targetGeneration = 0;
+    private _nativeShadowRoot: typeof ShadowRoot;
+    private _nativeFirstChild: (this: Node) => Node | null;
+    private _nativeNextSibling: (this: Node) => Node | null;
 
     constructor() {
+      // Some pages overwrite the following native functions, so capture them in advance.
+      this._nativeShadowRoot = window.ShadowRoot;
+      this._nativeFirstChild = Object.getOwnPropertyDescriptor(window.Node.prototype, 'firstChild')!.get!;
+      this._nativeNextSibling = Object.getOwnPropertyDescriptor(window.Node.prototype, 'nextSibling')!.get!;
+
       const invalidateCSSGroupingRule = (rule: CSSGroupingRule) => {
         if (rule.parentStyleSheet)
           this._invalidateStyleSheet(rule.parentStyleSheet);
@@ -115,9 +127,7 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
       this._fakeBase = document.createElement('base');
 
       this._observer = new MutationObserver(list => this._handleMutations(list));
-      const observerConfig = { attributes: true, subtree: true };
-      this._observer.observe(document, observerConfig);
-      this._refreshListenersWhenNeeded();
+      this._ensureObservingCurrentDocument();
     }
 
     private _refreshListenersWhenNeeded() {
@@ -148,18 +158,20 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
 
     private _refreshListeners() {
       (document as any).addEventListener('__playwright_mark_target__', (event: CustomEvent) => {
-        if (!event.detail)
+        const target = event.composedPath()[0] as Element;
+        if (target?.nodeType !== Node.ELEMENT_NODE)
           return;
-        const callId = event.detail as string;
-        (event.composedPath()[0] as any).__playwright_target__ = callId;
+        (target as any).__playwright_target__ = this._targetGeneration;
       });
-      (document as any).addEventListener('__playwright_unmark_target__', (event: CustomEvent) => {
-        if (!event.detail)
-          return;
-        const callId = event.detail as string;
-        if ((event.composedPath()[0] as any).__playwright_target__ === callId)
-          delete (event.composedPath()[0] as any).__playwright_target__;
+      (document as any).addEventListener('__playwright_reset_targets__', () => {
+        ++this._targetGeneration;
       });
+    }
+
+    private _shadowRoot(element: Element): ShadowRoot | null {
+      // Some frameworks define fake `element.shadowRoot` properties, thus an `instanceof` check.
+      const shadowRoot = element.shadowRoot;
+      return shadowRoot instanceof this._nativeShadowRoot ? shadowRoot : null;
     }
 
     private _interceptNativeMethod(obj: any, method: string, cb: (thisObj: any, result: any) => void) {
@@ -213,6 +225,19 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
         ensureCachedData(mutation.target).attributesCached = undefined;
     }
 
+    private _ensureObservingCurrentDocument() {
+      // A window can swap its document without re-running the init script (e.g.
+      // a popup reusing its initial about:blank document), leaving our observers
+      // and listeners bound to the stale one. Re-attach on swap.
+      // https://github.com/microsoft/playwright/issues/40895
+      if (this._observedDocument === document)
+        return;
+      this._observedDocument = document;
+      this._observer.disconnect();
+      this._observer.observe(document, kObserverConfig);
+      this._refreshListenersWhenNeeded();
+    }
+
     private _invalidateStyleSheet(sheet: CSSStyleSheet) {
       if (this._readingStyleSheet)
         return;
@@ -255,17 +280,17 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
       (iframeElement as any)[kSnapshotFrameId] = frameId;
     }
 
-    reset() {
+    resetHistory() {
       this._staleStyleSheets.clear();
 
       const visitNode = (node: Node | ShadowRoot) => {
         resetCachedData(node);
         if (node.nodeType === Node.ELEMENT_NODE) {
-          const element = node as Element;
-          if (element.shadowRoot)
-            visitNode(element.shadowRoot);
+          const shadowRoot = this._shadowRoot(node as Element);
+          if (shadowRoot)
+            visitNode(shadowRoot);
         }
-        for (let child = node.firstChild; child; child = child.nextSibling)
+        for (let child = this._nativeFirstChild.call(node); child; child = this._nativeNextSibling.call(child))
           visitNode(child);
       };
       visitNode(document.documentElement);
@@ -339,15 +364,18 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
       }
     }
 
-    captureSnapshot(needsReset: boolean): SnapshotData | undefined {
+    captureSnapshot(reset?: 'history' | 'targets'): SnapshotData | undefined {
       const timestamp = performance.now();
       const snapshotNumber = ++this._lastSnapshotNumber;
-      if (needsReset)
-        this.reset();
+      if (reset === 'history')
+        this.resetHistory();
+      if (reset)
+        ++this._targetGeneration;
       let nodeCounter = 0;
       let shadowDomNesting = 0;
       let headNesting = 0;
 
+      this._ensureObservingCurrentDocument();
       // Ensure we are up to date.
       this._handleMutations(this._observer.takeRecords());
 
@@ -371,8 +399,13 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
         }
         if (removeNoScript && nodeName === 'NOSCRIPT')
           return;
-        if (nodeName === 'META' && (node as HTMLMetaElement).httpEquiv.toLowerCase() === 'content-security-policy')
-          return;
+        if (nodeName === 'META') {
+          const httpEquiv = (node as HTMLMetaElement).httpEquiv.toLowerCase();
+          // Drop META directives that can navigate, set cookies, or otherwise
+          // affect the trace viewer when the recorded snapshot is rendered.
+          if (httpEquiv === 'content-security-policy' || httpEquiv === 'refresh' || httpEquiv === 'set-cookie')
+            return;
+        }
         // Skip iframes which are inside document's head as they are not visible.
         // See https://github.com/microsoft/playwright/issues/12005.
         if ((nodeName === 'IFRAME' || nodeName === 'FRAME') && headNesting)
@@ -496,15 +529,15 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
             expectValue(element.scrollLeft);
             attrs[kScrollLeftAttribute] = '' + element.scrollLeft;
           }
-          if (element.shadowRoot) {
+          const shadowRoot = this._shadowRoot(element);
+          if (shadowRoot) {
             ++shadowDomNesting;
-            visitChild(element.shadowRoot);
+            visitChild(shadowRoot);
             --shadowDomNesting;
           }
-          if ('__playwright_target__' in element) {
+          if ((element as any).__playwright_target__ === this._targetGeneration) {
             expectValue(kTargetAttribute);
-            expectValue(element['__playwright_target__']);
-            attrs[kTargetAttribute] = element['__playwright_target__'] as string;
+            attrs[kTargetAttribute] = '';
           }
         }
 
@@ -514,7 +547,7 @@ export function frameSnapshotStreamer(snapshotStreamer: string, removeNoScript: 
           this._fakeBase.setAttribute('href', document.baseURI);
           visitChild(this._fakeBase);
         }
-        for (let child = node.firstChild; child; child = child.nextSibling)
+        for (let child = this._nativeFirstChild.call(node); child; child = this._nativeNextSibling.call(child))
           visitChild(child);
         if (nodeName === 'HEAD')
           --headNesting;

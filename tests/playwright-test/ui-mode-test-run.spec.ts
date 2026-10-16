@@ -61,7 +61,7 @@ test('should run visible', async ({ runUITest }) => {
         ⊘ skipped
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -81,7 +81,7 @@ test('should run visible', async ({ runUITest }) => {
           - treeitem "[icon-circle-slash] skipped"
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('4/8 passed (50%)');
+  await expect(page.getByTestId('status-line')).toHaveText('8/8 (100%) — 4 passed, 3 failed, 1 skipped');
 });
 
 test('should show running progress', async ({ runUITest }) => {
@@ -96,11 +96,30 @@ test('should show running progress', async ({ runUITest }) => {
   });
 
   await page.getByTitle('Run all').click();
-  await expect(page.getByTestId('status-line')).toHaveText('Running 1/4 passed (25%)');
-  await page.getByTitle('Stop').click();
-  await expect(page.getByTestId('status-line')).toHaveText('1/4 passed (25%)');
+  await expect(page.getByTestId('status-line')).toHaveText('Running 1/4 (25%) — 1 passed');
+  await page.getByTestId('stop-button').click();
+  await expect(page.getByTestId('status-line')).toHaveText('2/4 (50%) — 1 passed, 1 skipped');
   await page.getByTitle('Reload').click();
   await expect(page.getByTestId('status-line')).toBeHidden();
+});
+
+test('should stop on first failure', async ({ runUITest }) => {
+  const { page } = await runUITest({
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('test 1', async () => {});
+      test('test 2', async () => { expect(1).toBe(2); });
+      test('test 3', async () => {});
+      test('test 4', async () => {});
+    `,
+  });
+
+  await page.getByText('Testing Options').click();
+  await page.getByLabel('Stop on first failure').check();
+
+  await page.getByTitle('Run all').click();
+  // After test 2 fails, the runner stops dispatching: tests 3 and 4 never start.
+  await expect(page.getByTestId('status-line')).toHaveText('2/4 (50%) — 1 passed, 1 failed');
 });
 
 test('should run on hover', async ({ runUITest }) => {
@@ -121,7 +140,7 @@ test('should run on hover', async ({ runUITest }) => {
         ◯ fails
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts" [expanded]:
         - group:
@@ -150,7 +169,7 @@ test('should run on double click', async ({ runUITest }) => {
         ◯ fails
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts" [expanded]:
         - group:
@@ -180,7 +199,7 @@ test('should run on Enter', async ({ runUITest }) => {
         ❌ fails <=
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -221,7 +240,7 @@ test('should run by project', async ({ runUITest }) => {
         ⊘ skipped
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -259,7 +278,7 @@ test('should run by project', async ({ runUITest }) => {
       ► ◯ skipped
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -292,7 +311,7 @@ test('should run by project', async ({ runUITest }) => {
       ► ❌ fails
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -326,7 +345,7 @@ test('should run by project', async ({ runUITest }) => {
       ► ⊘ skipped
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -365,7 +384,7 @@ test('should stop', async ({ runUITest }) => {
   });
 
   await expect(page.getByTitle('Run all')).toBeEnabled();
-  await expect(page.getByTitle('Stop')).toBeDisabled();
+  await expect(page.getByTestId('stop-button')).toBeDisabled();
 
   await page.getByTitle('Run all').click();
 
@@ -377,7 +396,7 @@ test('should stop', async ({ runUITest }) => {
         🕦 test 3
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-loading] a.test.ts" [expanded]:
         - group:
@@ -388,9 +407,9 @@ test('should stop', async ({ runUITest }) => {
   `);
 
   await expect(page.getByTitle('Run all')).toBeDisabled();
-  await expect(page.getByTitle('Stop')).toBeEnabled();
+  await expect(page.getByTestId('stop-button')).toBeEnabled();
 
-  await page.getByTitle('Stop').click();
+  await page.getByTestId('stop-button').click();
 
   await expect.poll(dumpTestTree(page)).toBe(`
     ▼ ◯ a.test.ts
@@ -400,7 +419,7 @@ test('should stop', async ({ runUITest }) => {
         ◯ test 3
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts" [expanded]:
         - group:
@@ -438,7 +457,7 @@ test('should run folder', async ({ runUITest }) => {
         ◯ passes
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] folder-b" [expanded] [selected]:
         - group:
@@ -471,7 +490,7 @@ test('should show time', async ({ runUITest }) => {
         ⊘ skipped
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-error] a.test.ts" [expanded]:
         - group:
@@ -491,7 +510,7 @@ test('should show time', async ({ runUITest }) => {
           - treeitem "[icon-circle-slash] skipped"
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('4/8 passed (50%)');
+  await expect(page.getByTestId('status-line')).toHaveText('8/8 (100%) — 4 passed, 3 failed, 1 skipped');
 });
 
 test('should show test.fail as passing', async ({ runUITest }) => {
@@ -515,14 +534,14 @@ test('should show test.fail as passing', async ({ runUITest }) => {
         ✅ should fail XXms
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
           - treeitem ${/\[icon-check\] should fail \d+m?s/}
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
 });
 
 test('should ignore repeatEach', async ({ runUITest }) => {
@@ -551,14 +570,14 @@ test('should ignore repeatEach', async ({ runUITest }) => {
         ✅ should pass
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
           - treeitem ${/\[icon-check\] should pass/}
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
 });
 
 test('should remove output folder before test run', async ({ runUITest }) => {
@@ -586,14 +605,14 @@ test('should remove output folder before test run', async ({ runUITest }) => {
         ✅ should pass
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
           - treeitem ${/\[icon-check\] should pass/}
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
 
   await page.getByTitle('Run all').click();
   await expect.poll(dumpTestTree(page)).toBe(`
@@ -601,14 +620,14 @@ test('should remove output folder before test run', async ({ runUITest }) => {
         ✅ should pass
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
           - treeitem ${/\[icon-check\] should pass/}
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
 });
 
 test('should show proper total when using deps', async ({ runUITest }) => {
@@ -649,7 +668,7 @@ test('should show proper total when using deps', async ({ runUITest }) => {
         ◯ run @chromium
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-circle-outline] a.test.ts" [expanded]:
         - group:
@@ -660,7 +679,7 @@ test('should show proper total when using deps', async ({ runUITest }) => {
           - treeitem "[icon-circle-outline] run @chromium chromium"
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
 
   await page.getByTitle('run @chromium').dblclick();
   await expect.poll(dumpTestTree(page)).toBe(`
@@ -669,7 +688,7 @@ test('should show proper total when using deps', async ({ runUITest }) => {
         ✅ run @chromium <=
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
@@ -680,7 +699,7 @@ test('should show proper total when using deps', async ({ runUITest }) => {
             - button "Watch"
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('2/2 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('2/2 (100%) — 2 passed');
 });
 
 test('should respect --tsconfig option', {
@@ -739,14 +758,14 @@ test('should respect --tsconfig option', {
         ✅ test
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
           - treeitem ${/\[icon-check\] test/}
   `);
 
-  await expect(page.getByTestId('status-line')).toHaveText('1/1 passed (100%)');
+  await expect(page.getByTestId('status-line')).toHaveText('1/1 (100%) — 1 passed');
 });
 
 test('should respect --ignore-snapshots option', {
@@ -768,7 +787,7 @@ test('should respect --ignore-snapshots option', {
         ✅ snapshot
   `);
 
-  await expect(page.getByTestId('test-tree')).toMatchAriaSnapshot(`
+  await expect(page).toMatchAriaSnapshot(`
     - tree:
       - treeitem "[icon-check] a.test.ts" [expanded]:
         - group:
@@ -787,12 +806,12 @@ test('should not leak websocket connections', {
   });
 
   const [ws1] = await Promise.all([
-    page.waitForEvent('websocket'),
+    page.waitForEvent('websocket', w => !w.url().includes('hmr')),
     page.getByTitle('Reload').click(),
   ]);
 
   await Promise.all([
-    page.waitForEvent('websocket'),
+    page.waitForEvent('websocket', w => !w.url().includes('hmr')),
     page.getByTitle('Reload').click(),
   ]);
 

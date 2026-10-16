@@ -18,20 +18,20 @@
 import os from 'os';
 import path from 'path';
 
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { wrapInASCIIBox } from '@utils/ascii';
 import { FFBrowser } from './ffBrowser';
 import { kBrowserCloseMessageId } from './ffConnection';
-import { wrapInASCIIBox } from '../utils/ascii';
 import { BrowserType, kNoXServerRunningError } from '../browserType';
-import { ManualPromise } from '../../utils/isomorphic/manualPromise';
 
 import type { Browser, BrowserOptions } from '../browser';
 import type { SdkObject } from '../instrumentation';
 import type { ConnectionTransport } from '../transport';
 import type * as types from '../types';
-import type { RecentLogsCollector } from '../utils/debugLogger';
+import type { RecentLogsCollector } from '@utils/debugLogger';
 import type { BrowserContext } from '../browserContext';
-import type * as channels from '@protocol/channels';
-import type { Progress } from '@protocol/progress';
+import type * as channels from '../channels';
+import type { Progress } from '../progress';
 
 export class Firefox extends BrowserType {
   private _bidiFirefox: BrowserType;
@@ -47,7 +47,7 @@ export class Firefox extends BrowserType {
     return super.launch(progress, options, protocolLogger);
   }
 
-  override async launchPersistentContext(progress: Progress, userDataDir: string, options: channels.BrowserTypeLaunchPersistentContextOptions & { cdpPort?: number, internalIgnoreHTTPSErrors?: boolean, socksProxyPort?: number }): Promise<BrowserContext> {
+  override async launchPersistentContext(progress: Progress, userDataDir: string, options: channels.BrowserTypeLaunchPersistentContextOptions & { internalIgnoreHTTPSErrors?: boolean, socksProxyPort?: number }): Promise<BrowserContext> {
     if (options.channel?.startsWith('moz-'))
       return this._bidiFirefox.launchPersistentContext(progress, userDataDir, options);
     return super.launchPersistentContext(progress, userDataDir, options);

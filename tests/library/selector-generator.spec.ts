@@ -28,8 +28,8 @@ async function generate(pageOrFrame: Page | Frame, target: string, expected?: st
   }, expected);
 }
 
-async function generateMultiple(pageOrFrame: Page | Frame, target: string): Promise<string> {
-  return pageOrFrame.$eval(target, e => (window as any).__injectedScript.generateSelector(e, { multiple: true, testIdAttributeName: 'data-testid' }).selectors);
+async function generateNoText(pageOrFrame: Page | Frame, target: string): Promise<string> {
+  return pageOrFrame.$eval(target, e => (window as any).__injectedScript.generateSelector(e, { noText: true, testIdAttributeName: 'data-testid' }).selector);
 }
 
 it.describe('selector generator', () => {
@@ -40,7 +40,7 @@ it.describe('selector generator', () => {
     // we properly wait for `extendInjectedScript` call to finish. Otherwise
     // if the page is created later, there is a race between ConsoleAPI
     // initialization and playwright.selector(e) call in `generate()` function above.
-    await (context as any)._enableRecorder({ language: 'javascript' });
+    await (context as any)._showRecorder({ language: 'javascript' });
   });
 
   it('should prefer button over inner span', async ({ page }) => {
@@ -88,6 +88,73 @@ it.describe('selector generator', () => {
   it('should try to improve role name', async ({ page }) => {
     await page.setContent(`<div role=button>Issues 23</div>`);
     expect(await generate(page, 'div')).toBe('internal:role=button[name="Issues"i]');
+  });
+
+  it('should use description when name is not unique', async ({ page }) => {
+    await page.setContent(`
+      <button aria-description="Upload report">Submit</button>
+      <button aria-description="Upload photo">Submit</button>
+    `);
+    expect(await generate(page, 'button[aria-description="Upload report"]')).toBe('internal:role=button[name="Submit"i][description="Upload report"i]');
+    expect(await generate(page, 'button[aria-description="Upload photo"]')).toBe('internal:role=button[name="Submit"i][description="Upload photo"i]');
+  });
+
+  it('should not use description when name is unique', async ({ page }) => {
+    await page.setContent(`
+      <button aria-description="Some description">Submit</button>
+      <button aria-description="Other description">Cancel</button>
+    `);
+    expect(await generate(page, 'button[aria-description="Some description"]')).toBe('internal:role=button[name="Submit"i]');
+  });
+
+  it('should use description from aria-describedby', async ({ page }) => {
+    await page.setContent(`
+      <span id="desc1">Save form data</span>
+      <span id="desc2">Save as draft</span>
+      <button aria-describedby="desc1">Submit</button>
+      <button aria-describedby="desc2">Submit</button>
+    `);
+    expect(await generate(page, 'button[aria-describedby="desc1"]')).toBe('internal:role=button[name="Submit"i][description="Save form data"i]');
+    expect(await generate(page, 'button[aria-describedby="desc2"]')).toBe('internal:role=button[name="Submit"i][description="Save as draft"i]');
+  });
+
+  it('should fall back to nth when name and description are both not unique', async ({ page }) => {
+    await page.setContent(`
+      <button aria-description="Same desc">Submit</button>
+      <button aria-description="Same desc">Submit</button>
+    `);
+    expect(await generate(page, 'button:first-of-type')).toBe('internal:role=button[name="Submit"i] >> nth=0');
+  });
+
+  it('should use consistent exactness for name and description', {
+    annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41032' }
+  }, async ({ page }) => {
+    // The public getByRole API has a single `exact` flag that covers both
+    // `name` and `description`, so the producer must not emit a candidate
+    // that mixes substring name with exact description (or vice versa).
+    await page.setContent(`
+      <table>
+        <tr title="table row 1">
+          <td>foo</td><td>bar</td><td>baz</td><td>foo</td><td>bar</td><td>baz</td><td>foo</td><td>bar</td><td>baz</td>
+        </tr>
+        <tr title="table row 2">
+          <td>foo</td><td>bar</td><td>baz</td><td>foo</td><td>bar</td><td>baz</td><td>foo</td><td>bar</td><td>baz</td>
+        </tr>
+      </table>
+    `);
+    const selector = await generate(page, 'tr[title="table row 1"]');
+    // Both name and description must share the same case-sensitivity flag.
+    expect(selector).not.toMatch(/\[name="[^"]*"i\]\[description="[^"]*"s\]/);
+    expect(selector).not.toMatch(/\[name="[^"]*"s\]\[description="[^"]*"i\]/);
+  });
+
+  it('should use description when role has no name', async ({ page }) => {
+    await page.setContent(`
+      <div role="alert" aria-description="Error in field A"></div>
+      <div role="alert" aria-description="Error in field B"></div>
+    `);
+    expect(await generate(page, 'div[aria-description="Error in field A"]')).toBe('internal:role=alert[description="Error in field A"s]');
+    expect(await generate(page, 'div[aria-description="Error in field B"]')).toBe('internal:role=alert[description="Error in field B"s]');
   });
 
   it('should try to improve text', async ({ page }) => {
@@ -486,6 +553,14 @@ it.describe('selector generator', () => {
     expect(await generate(page, 'button')).toBe('internal:role=button[name=\"ariaLabel\"i]');
   });
 
+  it('should generate title selector', async ({ page }) => {
+    await page.setContent(`<div>
+      <button title="Send to" aria-description="High-Speed Parcel Delivery">Send</button>
+      <button aria-description="High-Speed Parcel Delivery">Send</button>
+    </div>`);
+    expect(await generate(page, 'button')).toBe('internal:attr=[title=\"Send to\"i]');
+  });
+
   it('should ignore empty role for candidate consideration', async ({ page }) => {
     await page.setContent(`<button role="" id="buttonId"></button>`);
     expect(await generate(page, 'button')).toBe('#buttonId');
@@ -518,7 +593,7 @@ it.describe('selector generator', () => {
     expect.soft(await generate(page, '#target1')).toBe('internal:role=textbox[name=\"Target1\"i]');
     expect.soft(await generate(page, '#target2')).toBe('internal:role=button[name=\"Target2\"i]');
     expect.soft(await generate(page, '#target3')).toBe('internal:label=\"Target3\"i');
-    expect.soft(await generate(page, '#target4')).toBe('internal:label=\"Target4\"i');
+    expect.soft(await generate(page, '#target4')).toBe('internal:role=progressbar[name=\"Target4\"i]');
     expect.soft(await generate(page, '#target5')).toBe('#target5');
     expect.soft(await generate(page, '#target6')).toBe('internal:text="text"i');
 
@@ -529,14 +604,6 @@ it.describe('selector generator', () => {
   it('should prefer role other input[type]', async ({ page }) => {
     await page.setContent(`<input type=checkbox><div data-testid=wrapper><input type=checkbox></div>`);
     expect(await generate(page, '[data-testid=wrapper] > input')).toBe('internal:testid=[data-testid="wrapper"s] >> internal:role=checkbox');
-  });
-
-  it('should generate title selector', async ({ page }) => {
-    await page.setContent(`<div>
-      <button title="Send to">Send</button>
-      <button>Send</button>
-    </div>`);
-    expect(await generate(page, 'button')).toBe('internal:attr=[title=\"Send to\"i]');
   });
 
   it('should generate exact text when necessary', async ({ page }) => {
@@ -603,44 +670,51 @@ it.describe('selector generator', () => {
     });
   });
 
-  it('should generate multiple: noText in role', async ({ page }) => {
-    await page.setContent(`
-      <button>Click me</button>
-    `);
-    expect(await generateMultiple(page, 'button')).toEqual([`internal:role=button[name="Click me"i]`, `internal:role=button`]);
+  it('should generate noText: no text engine', async ({ page }) => {
+    await page.setContent(`<div>Some text</div>`);
+    expect(await generateNoText(page, 'div')).toBe(`div`);
   });
 
-  it('should generate multiple: noText in text', async ({ page }) => {
-    await page.setContent(`
-      <div>Some div</div>
-    `);
-    expect(await generateMultiple(page, 'div')).toEqual([`internal:text="Some div"i`, `div`]);
+  it('should generate noText: no name from content', async ({ page }) => {
+    await page.setContent(`<button><span>Send</span></button>`);
+    expect(await generateNoText(page, 'button')).toBe(`internal:role=button`);
   });
 
-  it('should generate multiple: noId', async ({ page }) => {
-    await page.setContent(`
-      <div id=first><button>Click me</button></div>
-      <div id=second><button>Click me</button></div>
-    `);
-    expect(await generateMultiple(page, '#second button')).toEqual([
-      `#second >> internal:role=button[name="Click me"i]`,
-      `#second >> internal:role=button`,
-      `internal:role=button[name="Click me"i] >> nth=1`,
-      `internal:role=button >> nth=1`,
-    ]);
+  it('should generate noText: name from aria-label', async ({ page }) => {
+    await page.setContent(`<button aria-label="Send message"><span>Send</span></button>`);
+    expect(await generateNoText(page, 'button')).toBe(`internal:role=button[name="Send message"i]`);
   });
 
-  it('should generate multiple: noId noText', async ({ page }) => {
+  it('should generate noText: name from external aria-labelledby', async ({ page }) => {
+    await page.setContent(`<span id="label">Editor</span><div role="textbox" aria-labelledby="label" contenteditable>Text</div>`);
+    expect(await generateNoText(page, 'div[role=textbox]')).toBe(`internal:role=textbox[name="Editor"i]`);
+  });
+
+  it('should generate noText: ignore aria-labelledby pointing inside the element', async ({ page }) => {
+    await page.setContent(`<div role="textbox" aria-labelledby="child" contenteditable><p id="child">Title</p><p>Text</p></div>`);
+    expect(await generateNoText(page, 'div[role=textbox]')).toBe(`internal:role=textbox`);
+  });
+
+  it('should generate noText: contenteditable heading', async ({ page }) => {
+    await page.setContent(`<h1 contenteditable>Page title</h1>`);
+    expect(await generateNoText(page, 'h1')).toBe(`internal:role=heading`);
+  });
+
+  it('should generate noText: description from external aria-describedby', async ({ page }) => {
     await page.setContent(`
-      <div id=first><span>Some span</span></div>
-      <div id=second><span>Some span</span></div>
+      <span id="desc1">First</span><span id="desc2">Second</span>
+      <div role="textbox" aria-label="Editor" aria-describedby="desc1" contenteditable>foo</div>
+      <div role="textbox" aria-label="Editor" aria-describedby="desc2" contenteditable>bar</div>
     `);
-    expect(await generateMultiple(page, '#second span')).toEqual([
-      `#second >> internal:text="Some span"i`,
-      `#second span`,
-      `internal:text="Some span"i >> nth=1`,
-      `span >> nth=1`,
-    ]);
+    expect(await generateNoText(page, 'div[aria-describedby=desc1]')).toBe(`internal:role=textbox[name="Editor"i][description="First"i]`);
+  });
+
+  it('should generate noText: ignore aria-describedby pointing inside the element', async ({ page }) => {
+    await page.setContent(`
+      <div role="textbox" aria-label="Editor" aria-describedby="child" contenteditable><p id="child">First</p></div>
+      <div role="textbox" aria-label="Editor" contenteditable>Second</div>
+    `);
+    expect(await generateNoText(page, 'div[aria-describedby=child]')).toBe(`internal:role=textbox[name="Editor"i] >> nth=0`);
   });
 
   it('should prefer role with hasText to css with hasText', async ({ page }) => {
@@ -656,10 +730,7 @@ it.describe('selector generator', () => {
         </li>
       </ul>
     `);
-    expect(await generateMultiple(page, 'input')).toEqual([
-      `internal:role=listitem >> internal:has-text=\"buy flowers\"i >> internal:label=\"Toggle Todo\"i`,
-      `internal:label=\"Toggle Todo\"i >> nth=0`,
-    ]);
+    expect(await generate(page, 'input')).toBe(`internal:role=listitem >> internal:has-text=\"buy flowers\"i >> internal:label=\"Toggle Todo\"i`);
   });
 
   it('should not use icon fonts aria name', async ({ page }) => {

@@ -15,13 +15,16 @@
  */
 
 import path from 'path';
+import { Writable } from 'stream';
 
-import { getPackageManagerExecCommand, parseErrorStack } from 'playwright-core/lib/utils';
-import { ms as milliseconds } from 'playwright-core/lib/utilsBundle';
-import { colors as realColors, noColors } from 'playwright-core/lib/utils';
+import realColors from 'colors/safe';
+import { noColors } from '@isomorphic/colors';
+import { msToString } from '@isomorphic/formatUtils';
+import { parseErrorStack } from '@utils/stackTrace';
+import { getPackageManagerExecCommand } from '@utils/env';
+import { fitToWidth } from '@utils/stringWidth';
 
-import { ansiRegex, resolveReporterOutputPath, stripAnsiEscapes } from '../util';
-import { getEastAsianWidth } from '../utilsBundle';
+import { resolveReporterOutputPath, stripAnsiEscapes } from '../util';
 
 import type { ReporterV2 } from './reporterV2';
 import type { FullConfig, FullResult, Location, Suite, TestCase, TestError, TestResult, TestStep } from '../../types/testReporter';
@@ -75,6 +78,20 @@ const originalProcessStdout = process.stdout;
 // eslint-disable-next-line no-restricted-properties
 const originalProcessStderr = process.stderr;
 
+class StripAnsiStream extends Writable {
+  private _target: NodeJS.WriteStream;
+
+  constructor(target: NodeJS.WriteStream) {
+    super();
+    this._target = target;
+  }
+
+  override write(chunk: any, encodingOrCallback?: any, callback?: any): boolean {
+    const cb = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback;
+    return this._target.write(stripAnsiEscapes(chunk.toString()), cb);
+  }
+}
+
 // Output goes to terminal.
 export const terminalScreen: TerminalScreen = (() => {
   let isTTY = !!originalProcessStdout.isTTY;
@@ -106,7 +123,8 @@ export const terminalScreen: TerminalScreen = (() => {
 
   let useColors = isTTY;
   if (process.env.DEBUG_COLORS === '0' || process.env.DEBUG_COLORS === 'false' ||
-      process.env.FORCE_COLOR === '0' || process.env.FORCE_COLOR === 'false')
+      process.env.FORCE_COLOR === '0' || process.env.FORCE_COLOR === 'false' ||
+      (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== ''))
     useColors = false;
   else if (process.env.DEBUG_COLORS || process.env.FORCE_COLOR)
     useColors = true;
@@ -118,8 +136,8 @@ export const terminalScreen: TerminalScreen = (() => {
     ttyWidth,
     ttyHeight,
     colors,
-    stdout: originalProcessStdout,
-    stderr: originalProcessStderr,
+    stdout: useColors ? originalProcessStdout : new StripAnsiStream(originalProcessStdout) as unknown as NodeJS.WriteStream,
+    stderr: useColors ? originalProcessStderr : new StripAnsiStream(originalProcessStderr) as unknown as NodeJS.WriteStream,
   };
 })();
 
@@ -145,6 +163,8 @@ export type TerminalReporterOptions = {
   screen?: TerminalScreen;
   omitFailures?: boolean;
   includeTestId?: boolean;
+  omitTags?: boolean;
+  lastResult?: boolean;
 };
 
 export class TerminalReporter implements ReporterV2 {
@@ -222,9 +242,10 @@ export class TerminalReporter implements ReporterV2 {
   protected generateStartingMessage() {
     const jobs = this.config.metadata.actualWorkers ?? this.config.workers;
     const shardDetails = this.config.shard ? `, shard ${this.config.shard.current} of ${this.config.shard.total}` : '';
+    const shuffleDetails = this.config.metadata.shuffleSeed ? `, shuffle seed ${this.config.metadata.shuffleSeed}` : '';
     if (!this.totalTestCount)
       return '';
-    return '\n' + this.screen.colors.dim('Running ') + this.totalTestCount + this.screen.colors.dim(` test${this.totalTestCount !== 1 ? 's' : ''} using `) + jobs + this.screen.colors.dim(` worker${jobs !== 1 ? 's' : ''}${shardDetails}`);
+    return '\n' + this.screen.colors.dim('Running ') + this.totalTestCount + this.screen.colors.dim(` test${this.totalTestCount !== 1 ? 's' : ''} using `) + jobs + this.screen.colors.dim(` worker${jobs !== 1 ? 's' : ''}${shardDetails}${shuffleDetails}`);
   }
 
   protected getSlowTests(): [string, number][] {
@@ -260,7 +281,7 @@ export class TerminalReporter implements ReporterV2 {
     if (didNotRun)
       tokens.push(this.screen.colors.yellow(`  ${didNotRun} did not run`));
     if (expected)
-      tokens.push(this.screen.colors.green(`  ${expected} passed`) + this.screen.colors.dim(` (${milliseconds(this.result.duration)})`));
+      tokens.push(this.screen.colors.green(`  ${expected} passed`) + this.screen.colors.dim(` (${msToString(this.result.duration)})`));
     if (fatalErrors.length && expected + unexpected.length + interrupted.length + flaky.length > 0)
       tokens.push(this.screen.colors.red(`  ${fatalErrors.length === 1 ? '1 error was not a part of any test' : fatalErrors.length + ' errors were not a part of any test'}, see above for details`));
 
@@ -328,7 +349,7 @@ export class TerminalReporter implements ReporterV2 {
   private _printSlowTests() {
     const slowTests = this.getSlowTests();
     slowTests.forEach(([file, duration]) => {
-      this.writeLine(this.screen.colors.yellow('  Slow test file: ') + file + this.screen.colors.yellow(` (${milliseconds(duration)})`));
+      this.writeLine(this.screen.colors.yellow('  Slow test file: ') + file + this.screen.colors.yellow(` (${msToString(duration)})`));
     });
     if (slowTests.length)
       this.writeLine(this.screen.colors.yellow('  Consider running tests from slow files in parallel. See: https://playwright.dev/docs/test-parallel'));
@@ -348,7 +369,7 @@ export class TerminalReporter implements ReporterV2 {
   }
 
   formatTestHeader(test: TestCase, options: { indent?: string, index?: number, mode?: 'default' | 'error' } = {}): string {
-    return formatTestHeader(this.screen, this.config, test, { ...options, includeTestId: this._options.includeTestId });
+    return formatTestHeader(this.screen, this.config, test, { ...options, includeTestId: this._options.includeTestId, omitTags: this._options.omitTags });
   }
 
   formatFailure(test: TestCase, index?: number): string {
@@ -383,13 +404,14 @@ function formatResultErrors(screen: Screen, test: TestCase, result: TestResult):
 export function formatFailure(screen: Screen, config: FullConfig, test: TestCase, index?: number, options?: TerminalReporterOptions): string {
   const lines: string[] = [];
   let printedHeader = false;
-  for (const result of test.results) {
+  const results = options?.lastResult ? test.results.slice(-1) : test.results;
+  for (const result of results) {
     const resultLines: string[] = [];
     const errors = formatResultFailure(screen, test, result, '    ');
     if (!errors.length)
       continue;
     if (!printedHeader) {
-      const header = formatTestHeader(screen, config, test, { indent: '  ', index, mode: 'error', includeTestId: options?.includeTestId });
+      const header = formatTestHeader(screen, config, test, { indent: '  ', index, mode: 'error', includeTestId: options?.includeTestId, omitTags: options?.omitTags });
       lines.push(screen.colors.red(header));
       printedHeader = true;
     }
@@ -517,11 +539,13 @@ function relativeTestPath(screen: Screen, config: FullConfig, test: TestCase): s
 }
 
 export function stepSuffix(step: TestStep | undefined) {
-  const stepTitles = step ? step.titlePath() : [];
+  const stepTitles: string[] = [];
+  for (let current = step; current; current = current.parent)
+    stepTitles.unshift(current.subtitle ? `${current.title} ${current.subtitle}` : current.title);
   return stepTitles.map(t => t.split('\n')[0]).map(t => ' › ' + t).join('');
 }
 
-function formatTestTitle(screen: Screen, config: FullConfig, test: TestCase, step?: TestStep, options: { includeTestId?: boolean } = {}): string {
+function formatTestTitle(screen: Screen, config: FullConfig, test: TestCase, step?: TestStep, options: { includeTestId?: boolean, omitTags?: boolean } = {}): string {
   // root, project, file, ...describes, test
   const [, projectName, , ...titles] = test.titlePath();
   const location = `${relativeTestPath(screen, config, test)}:${test.location.line}:${test.location.column}`;
@@ -529,11 +553,11 @@ function formatTestTitle(screen: Screen, config: FullConfig, test: TestCase, ste
   const projectLabel = options.includeTestId ? `project=` : '';
   const projectTitle = projectName ? `[${projectLabel}${projectName}] › ` : '';
   const testTitle = `${testId}${projectTitle}${location} › ${titles.join(' › ')}`;
-  const extraTags = test.tags.filter(t => !testTitle.includes(t) && !config.tags.includes(t));
+  const extraTags = options.omitTags ? [] : test.tags.filter(t => !testTitle.includes(t) && !config.tags.includes(t));
   return `${testTitle}${stepSuffix(step)}${extraTags.length ? ' ' + extraTags.join(' ') : ''}`;
 }
 
-function formatTestHeader(screen: Screen, config: FullConfig, test: TestCase, options: { indent?: string, index?: number, mode?: 'default' | 'error', includeTestId?: boolean } = {}): string {
+function formatTestHeader(screen: Screen, config: FullConfig, test: TestCase, options: { indent?: string, index?: number, mode?: 'default' | 'error', includeTestId?: boolean, omitTags?: boolean } = {}): string {
   const title = formatTestTitle(screen, config, test, undefined, options);
   const header = `${options.indent || ''}${options.index ? options.index + ') ' : ''}${title}`;
   let fullHeader = header;
@@ -613,59 +637,7 @@ export function prepareErrorStack(stack: string): {
   stackLines: string[];
   location?: Location;
 } {
-  return parseErrorStack(stack, path.sep, !!process.env.PWDEBUGIMPL);
-}
-
-function characterWidth(c: string) {
-  return getEastAsianWidth.eastAsianWidth(c.codePointAt(0)!);
-}
-
-function stringWidth(v: string) {
-  let width = 0;
-  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(v))
-    width += characterWidth(segment);
-  return width;
-}
-
-function suffixOfWidth(v: string, width: number) {
-  const segments = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(v)];
-  let suffixBegin = v.length;
-  for (const { segment, index } of segments.reverse()) {
-    const segmentWidth = stringWidth(segment);
-    if (segmentWidth > width)
-      break;
-    width -= segmentWidth;
-    suffixBegin = index;
-  }
-  return v.substring(suffixBegin);
-}
-
-// Leaves enough space for the "prefix" to also fit.
-export function fitToWidth(line: string, width: number, prefix?: string): string {
-  const prefixLength = prefix ? stripAnsiEscapes(prefix).length : 0;
-  width -= prefixLength;
-  if (stringWidth(line) <= width)
-    return line;
-
-  // Even items are plain text, odd items are control sequences.
-  const parts = line.split(ansiRegex);
-  const taken: string[] = [];
-  for (let i = parts.length - 1; i >= 0; i--) {
-    if (i % 2) {
-      // Include all control sequences to preserve formatting.
-      taken.push(parts[i]);
-    } else {
-      let part = suffixOfWidth(parts[i], width);
-      const wasTruncated = part.length < parts[i].length;
-      if (wasTruncated && parts[i].length > 0) {
-        // Add ellipsis if we are truncating.
-        part = '\u2026' + suffixOfWidth(parts[i], width - 1);
-      }
-      taken.push(part);
-      width -= stringWidth(part);
-    }
-  }
-  return taken.reverse().join('');
+  return parseErrorStack(stack);
 }
 
 function resolveFromEnv(name: string): string | undefined {

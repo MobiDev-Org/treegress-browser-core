@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import { getAsBooleanFromENV } from 'playwright-core/lib/utils';
-import { ms as milliseconds } from 'playwright-core/lib/utilsBundle';
+import { msToString } from '@isomorphic/formatUtils';
+import { getAsBooleanFromENV } from '@utils/env';
 
 import { markErrorsAsReported, TerminalReporter, stepSuffix } from './base';
 import { stripAnsiEscapes } from '../util';
@@ -38,11 +38,15 @@ class ListReporter extends TerminalReporter {
   private _stepIndex = new Map<TestStep, string>();
   private _needNewLine = false;
   private _printSteps: boolean;
+  private _printFailuresInline: boolean;
+  private _failureIndex = new Map<TestCase, number>();
   private _paused = new Set<TestResult>();
 
   constructor(options?: ListReporterOptions & CommonReporterOptions & TerminalReporterOptions) {
-    super(options);
+    const printFailuresInline = getAsBooleanFromENV('PLAYWRIGHT_LIST_PRINT_FAILURES_INLINE', options?.printFailuresInline);
+    super({ ...options, omitTags: getAsBooleanFromENV('PLAYWRIGHT_LIST_OMIT_TAGS', options?.omitTags), lastResult: printFailuresInline });
     this._printSteps = getAsBooleanFromENV('PLAYWRIGHT_LIST_PRINT_STEPS', options?.printSteps);
+    this._printFailuresInline = printFailuresInline;
   }
 
   override onBegin(suite: Suite) {
@@ -126,7 +130,7 @@ class ListReporter extends TerminalReporter {
       text = this.screen.colors.red(title);
     else
       text = title;
-    text += this.screen.colors.dim(` (${milliseconds(step.duration)})`);
+    text += this.screen.colors.dim(` (${msToString(step.duration)})`);
 
     this._updateOrAppendLine(this._stepRows, step, text, prefix);
   }
@@ -191,6 +195,22 @@ class ListReporter extends TerminalReporter {
     const wasPaused = this._paused.delete(result);
     if (!wasPaused)
       this._updateTestLine(test, result);
+    const isFailure = result.status !== 'skipped' && result.status !== test.expectedStatus;
+    if (!wasPaused && this._printFailuresInline && isFailure)
+      this._printFailure(test);
+  }
+
+  private _printFailure(test: TestCase) {
+    this._maybeWriteNewLine();
+    // Retries of the same test share one failure index.
+    let index = this._failureIndex.get(test);
+    if (index === undefined) {
+      index = this._failureIndex.size + 1;
+      this._failureIndex.set(test, index);
+    }
+    const message = '\n' + this.formatFailure(test, index) + '\n';
+    this._updateLineCountAndNewLineFlagForOutput(message);
+    this.screen.stdout.write(message);
   }
 
   private _updateTestLine(test: TestCase, result: TestResult) {
@@ -219,7 +239,7 @@ class ListReporter extends TerminalReporter {
         prefix = this._testPrefix(index, this.screen.colors.red(statusMark));
         text = this.screen.colors.red(title);
       }
-      text += this._retrySuffix(result) + this.screen.colors.dim(` (${milliseconds(result.duration)})`);
+      text += this._retrySuffix(result) + this.screen.colors.dim(` (${msToString(result.duration)})`);
     }
 
     this._updateOrAppendLine(this._testRows, test, text, prefix);
@@ -290,7 +310,7 @@ class ListReporter extends TerminalReporter {
   override async onEnd(result: FullResult) {
     await super.onEnd(result);
     this.screen.stdout.write('\n');
-    this.epilogue(true);
+    this.epilogue(!this._printFailuresInline);
   }
 }
 

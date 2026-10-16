@@ -18,35 +18,33 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
-import { monotonicTime, removeFolders } from 'playwright-core/lib/utils';
-import { debug } from 'playwright-core/lib/utilsBundle';
+import debug from 'debug';
+import { ManualPromise } from '@isomorphic/manualPromise';
+import { monotonicTime } from '@isomorphic/time';
+import { removeFolders } from '@utils/fileUtils';
 
 import { Dispatcher  } from './dispatcher';
-import { FailureTracker } from './failureTracker';
 import { collectProjectsAndTestFiles, createRootSuite, loadFileSuites, loadGlobalHook, loadTestList } from './loadUtils';
 import { buildDependentProjects, buildTeardownToSetupsMap, filterProjects } from './projectUtils';
 import { applySuggestedRebaselines, clearSuggestedRebaselines } from './rebase';
 import { TaskRunner } from './taskRunner';
 import { detectChangedTestFiles } from './vcs';
-import { Suite } from '../common/test';
-import { createTestGroups } from '../runner/testGroups';
-import { cacheDir } from '../transform/compilationCache';
-import { removeDirAndLogToConsole } from '../util';
+import { cc, config as commonConfig, FullConfigInternal, suiteUtils, test as testNs } from '../common';
+import { createTestGroups, shuffleTestGroups } from '../runner/testGroups';
+import { createTitleMatcher, forceRegExp, removeDirAndLogToConsole } from '../util';
 
 import type { TestGroup } from '../runner/testGroups';
 import type { EnvByProjectId } from './dispatcher';
-import type { TestRunnerPluginRegistration } from '../plugins';
 import type { Task } from './taskRunner';
-import type { FullResult } from '../../types/testReporter';
-import type { FullConfigInternal, FullProjectInternal } from '../common/config';
+import type { FullResult, TestError } from '../../types/testReporter';
+import type { Matcher, TestCaseFilter } from '../util';
 import type { InternalReporter } from '../reporters/internalReporter';
-import type { ManualPromise } from 'playwright-core/lib/utils';
 
 const readDirAsync = promisify(fs.readdir);
 
 type ProjectWithTestGroups = {
-  project: FullProjectInternal;
-  projectSuite: Suite;
+  project: commonConfig.FullProjectInternal;
+  projectSuite: testNs.Suite;
   testGroups: TestGroup[];
 };
 
@@ -55,20 +53,69 @@ type Phase = {
   projects: ProjectWithTestGroups[]
 };
 
+export type TestRunOptions = {
+  locations?: string[];
+  grep?: string;
+  grepInvert?: string;
+  onlyChanged?: string;
+  projectFilter?: string[];
+  includeNonDefaultProjects?: boolean;
+  listMode?: boolean;
+  passWithNoTests?: boolean;
+  lastFailed?: boolean;
+  lastFailedFile?: string;
+  testList?: string;
+  testListInvert?: string;
+  lastFailedTestIds?: string[];
+  pauseOnError?: boolean;
+  pauseAtEnd?: boolean;
+  onTestPaused?: (params: TestPausedParams) => void;
+  preserveOutputDir?: boolean;
+  shardWeights?: number[];
+};
+
+export type TestPausedParams = {
+  errors: TestError[];
+  sendMessage: (params: { request: any }) => Promise<{ response: any, error?: TestError }>;
+};
+
 export class TestRun {
   readonly config: FullConfigInternal;
+  readonly options: TestRunOptions;
   readonly reporter: InternalReporter;
-  readonly failureTracker: FailureTracker;
-  rootSuite: Suite | undefined = undefined;
+  rootSuite: testNs.Suite | undefined = undefined;
   readonly phases: Phase[] = [];
-  projectFiles: Map<FullProjectInternal, string[]> = new Map();
-  projectSuites: Map<FullProjectInternal, Suite[]> = new Map();
-  topLevelProjects: FullProjectInternal[] = [];
+  readonly filteredProjects: commonConfig.FullProjectInternal[];
+  projectFiles: Map<commonConfig.FullProjectInternal, string[]> = new Map();
+  projectSuites: Map<commonConfig.FullProjectInternal, testNs.Suite[]> = new Map();
+  topLevelProjects: commonConfig.FullProjectInternal[] = [];
+  hasWorkerErrors = false;
+  failedTestCount = 0;
+  readonly loadFileFilters: Matcher[] = [];
+  readonly preOnlyTestFilters: TestCaseFilter[] = [];
+  readonly postShardTestFilters: TestCaseFilter[] = [];
 
-  constructor(config: FullConfigInternal, reporter: InternalReporter, options?: { pauseOnError?: boolean, pauseAtEnd?: boolean }) {
+  constructor(config: FullConfigInternal, reporter: InternalReporter, options?: TestRunOptions) {
     this.config = config;
+    this.options = options ?? {};
     this.reporter = reporter;
-    this.failureTracker = new FailureTracker(config, options);
+    this.filteredProjects = filterProjects(config.projects, this.options.projectFilter, this.options.includeNonDefaultProjects);
+    config.config.filteredProjects = this.filteredProjects.map(p => p.project);
+  }
+
+  onTestPaused(params: TestPausedParams) {
+    this.options.onTestPaused?.(params);
+  }
+
+  hasReachedMaxFailures() {
+    const max = this.config.config.maxFailures;
+    return max > 0 && this.failedTestCount >= max;
+  }
+
+  result(): 'failed' | 'passed' {
+    const hasFailedTests = this.rootSuite?.allTests().some(test => !test.ok());
+    const hasFlakyTests = this.rootSuite?.allTests().some(test => test.outcome() === 'flaky');
+    return this.hasWorkerErrors || this.reporter.hasReporterErrors() || this.hasReachedMaxFailures() || hasFailedTests || (this.config.config.failOnFlakyTests && hasFlakyTests) ? 'failed' : 'passed';
   }
 }
 
@@ -93,31 +140,31 @@ export async function runTasksDeferCleanup(testRun: TestRun, tasks: Task<TestRun
 
 async function finishTaskRun(testRun: TestRun, status: FullResult['status']) {
   if (status === 'passed')
-    status = testRun.failureTracker.result();
+    status = testRun.result();
   const modifiedResult = await testRun.reporter.onEnd({ status });
   if (modifiedResult && modifiedResult.status)
     status = modifiedResult.status;
   await testRun.reporter.onExit();
+  // A reporter may have thrown during onEnd/onExit (or earlier), which is not
+  // reflected in testRun.result() computed above. Fail the run in that case.
+  if (status === 'passed' && testRun.reporter.hasReporterErrors())
+    status = 'failed';
   return status;
 }
 
 export function createGlobalSetupTasks(config: FullConfigInternal) {
-  const tasks: Task<TestRun>[] = [];
-  if (!config.configCLIOverrides.preserveOutputDir)
-    tasks.push(createRemoveOutputDirsTask());
-  tasks.push(
-      ...createPluginSetupTasks(config),
-      ...config.globalTeardowns.map(file => createGlobalTeardownTask(file, config)).reverse(),
-      ...config.globalSetups.map(file => createGlobalSetupTask(file, config)),
-  );
-  return tasks;
+  return [
+    createRemoveOutputDirsTask(),
+    ...createPluginSetupTasks(config),
+    ...config.globalTeardowns.map(file => createGlobalTeardownTask(file, config)).reverse(),
+    ...config.globalSetups.map(file => createGlobalSetupTask(file, config)),
+  ];
 }
 
 export function createRunTestsTasks(config: FullConfigInternal) {
   return [
     createPhasesTask(),
     createReportBeginTask(),
-    ...config.plugins.map(plugin => createPluginBeginTask(plugin)),
     createRunTestsTask(),
   ];
 }
@@ -126,9 +173,7 @@ export function createClearCacheTask(config: FullConfigInternal): Task<TestRun> 
   return {
     title: 'clear cache',
     setup: async () => {
-      await removeDirAndLogToConsole(cacheDir);
-      for (const plugin of config.plugins)
-        await plugin.instance?.clearCache?.();
+      await removeDirAndLogToConsole(cc.cacheDir);
     },
   };
 }
@@ -157,18 +202,6 @@ export function createPluginSetupTasks(config: FullConfigInternal): Task<TestRun
       await plugin.instance?.teardown?.();
     },
   }));
-}
-
-function createPluginBeginTask(plugin: TestRunnerPluginRegistration): Task<TestRun> {
-  return {
-    title: 'plugin begin',
-    setup: async testRun => {
-      await plugin.instance?.begin?.(testRun.rootSuite!);
-    },
-    teardown: async () => {
-      await plugin.instance?.end?.();
-    },
-  };
 }
 
 function createGlobalSetupTask(file: string, config: FullConfigInternal): Task<TestRun> {
@@ -207,10 +240,11 @@ function createGlobalTeardownTask(file: string, config: FullConfigInternal): Tas
 function createRemoveOutputDirsTask(): Task<TestRun> {
   return {
     title: 'clear output',
-    setup: async ({ config }) => {
+    setup: async testRun => {
+      if (testRun.options.preserveOutputDir)
+        return;
       const outputDirs = new Set<string>();
-      const projects = filterProjects(config.projects, config.cliProjectFilter);
-      projects.forEach(p => outputDirs.add(p.project.outputDir));
+      testRun.filteredProjects.forEach(p => outputDirs.add(p.project.outputDir));
 
       await Promise.all(Array.from(outputDirs).map(outputDir => removeFolders([outputDir]).then(async ([error]) => {
         if (!error)
@@ -233,17 +267,15 @@ export function createListFilesTask(): Task<TestRun> {
   return {
     title: 'load tests',
     setup: async (testRun, errors) => {
-      const { rootSuite, topLevelProjects } = await createRootSuite(testRun, errors, false);
-      testRun.rootSuite = rootSuite;
-      testRun.failureTracker.onRootSuite(rootSuite, topLevelProjects);
+      await createRootSuite(testRun, errors, false);
       await collectProjectsAndTestFiles(testRun, false);
       for (const [project, files] of testRun.projectFiles) {
-        const projectSuite = new Suite(project.project.name, 'project');
+        const projectSuite = new testNs.Suite(project.project.name, 'project');
         projectSuite._fullProject = project;
-        testRun.rootSuite._addSuite(projectSuite);
+        testRun.rootSuite!._addSuite(projectSuite);
         const suites = files.map(file => {
           const title = path.relative(testRun.config.config.rootDir, file);
-          const suite =  new Suite(title, 'file');
+          const suite =  new testNs.Suite(title, 'file');
           suite.location = { file, line: 0, column: 0 };
           projectSuite._addSuite(suite);
           return suite;
@@ -254,42 +286,60 @@ export function createListFilesTask(): Task<TestRun> {
   };
 }
 
-export function createLoadTask(mode: 'out-of-process' | 'in-process', options: { filterOnly: boolean, failOnLoadErrors: boolean, doNotRunDepsOutsideProjectFilter?: boolean, populateDependencies?: boolean }): Task<TestRun> {
+export function createLoadTask(mode: 'out-of-process' | 'in-process', options: { filterOnly: boolean, failOnLoadErrors: boolean, doNotRunDepsOutsideProjectFilter?: boolean }): Task<TestRun> {
   return {
     title: 'load tests',
     setup: async (testRun, errors, softErrors) => {
+      if (testRun.options.locations?.length) {
+        const { testFilter, fileFilter } = suiteUtils.createFiltersFromArguments(testRun.options.locations);
+        testRun.loadFileFilters.push(fileFilter);
+        testRun.preOnlyTestFilters.push(testFilter);
+      }
+
+      if (testRun.options.testList) {
+        const { testFilter, fileFilter } = await loadTestList(testRun.config, testRun.options.testList);
+        testRun.preOnlyTestFilters.push(testFilter);
+        testRun.loadFileFilters.push(fileFilter);
+      }
+
+      if (testRun.options.testListInvert) {
+        // Note: invert list does not mean we can filter files. For example, the following invert list
+        // can still run tests from foo.spec.ts:
+        //
+        // foo.spec.ts > some test
+        const { testFilter } = await loadTestList(testRun.config, testRun.options.testListInvert);
+        testRun.preOnlyTestFilters.push(test => !testFilter(test));
+      }
+
+      if (testRun.options.grep || testRun.options.grepInvert) {
+        const grepMatcher = testRun.options.grep ? createTitleMatcher(forceRegExp(testRun.options.grep)) : () => true;
+        const grepInvertMatcher = testRun.options.grepInvert ? createTitleMatcher(forceRegExp(testRun.options.grepInvert)) : () => false;
+        testRun.preOnlyTestFilters.push(test => {
+          const grepTitle = test._grepTitleWithTags();
+          return !grepInvertMatcher(grepTitle) && grepMatcher(grepTitle);
+        });
+      }
+
+      if (testRun.options.lastFailedTestIds) {
+        const failedTestIds = new Set(testRun.options.lastFailedTestIds);
+        testRun.postShardTestFilters.push(test => failedTestIds.has(test.id));
+      }
+
       await collectProjectsAndTestFiles(testRun, !!options.doNotRunDepsOutsideProjectFilter);
       await loadFileSuites(testRun, mode, options.failOnLoadErrors ? errors : softErrors);
 
-      if (testRun.config.cliOnlyChanged || options.populateDependencies) {
-        for (const plugin of testRun.config.plugins)
-          await plugin.instance?.populateDependencies?.();
+      if (testRun.options.onlyChanged) {
+        const changedFiles = await detectChangedTestFiles(testRun.options.onlyChanged, testRun.config.configDir);
+        testRun.preOnlyTestFilters.push(test => changedFiles.has(test.location.file));
       }
 
-      if (testRun.config.cliOnlyChanged) {
-        const changedFiles = await detectChangedTestFiles(testRun.config.cliOnlyChanged, testRun.config.configDir);
-        testRun.config.preOnlyTestFilters.push(test => changedFiles.has(test.location.file));
-      }
-
-      if (testRun.config.cliTestList) {
-        const testListFilter = await loadTestList(testRun.config, testRun.config.cliTestList);
-        testRun.config.preOnlyTestFilters.push(testListFilter);
-      }
-
-      if (testRun.config.cliTestListInvert) {
-        const testListInvertFilter = await loadTestList(testRun.config, testRun.config.cliTestListInvert);
-        testRun.config.preOnlyTestFilters.push(test => !testListInvertFilter(test));
-      }
-
-      const { rootSuite, topLevelProjects } = await createRootSuite(testRun, options.failOnLoadErrors ? errors : softErrors, !!options.filterOnly);
-      testRun.rootSuite = rootSuite;
-      testRun.failureTracker.onRootSuite(rootSuite, topLevelProjects);
+      await createRootSuite(testRun, options.failOnLoadErrors ? errors : softErrors, !!options.filterOnly);
       // Fail when no tests.
-      if (options.failOnLoadErrors && !testRun.rootSuite.allTests().length
-          && !testRun.config.cliPassWithNoTests
-          && !testRun.config.config.shard && !testRun.config.cliOnlyChanged
-          && !testRun.config.cliTestList && !testRun.config.cliTestListInvert) {
-        if (testRun.config.cliArgs.length) {
+      if (options.failOnLoadErrors && !testRun.rootSuite?.allTests().length
+          && !testRun.options.passWithNoTests
+          && !testRun.config.config.shard && !testRun.options.onlyChanged
+          && !testRun.options.testList && !testRun.options.testListInvert) {
+        if (testRun.options.locations?.length) {
           throw new Error([
             `No tests found.`,
             `Make sure that arguments are regular expressions matching test files.`,
@@ -308,8 +358,8 @@ export function createApplyRebaselinesTask(): Task<TestRun> {
     setup: async () => {
       clearSuggestedRebaselines();
     },
-    teardown: async ({ config, reporter }) => {
-      await applySuggestedRebaselines(config, reporter);
+    teardown: async testRun => {
+      await applySuggestedRebaselines(testRun.config, testRun.reporter, testRun.filteredProjects);
     },
   };
 }
@@ -320,11 +370,14 @@ function createPhasesTask(): Task<TestRun> {
     setup: async testRun => {
       let maxConcurrentTestGroups = 0;
 
-      const processed = new Set<FullProjectInternal>();
+      const processed = new Set<commonConfig.FullProjectInternal>();
       const projectToSuite = new Map(testRun.rootSuite!.suites.map(suite => [suite._fullProject!, suite]));
       const allProjects = [...projectToSuite.keys()];
       const teardownToSetups = buildTeardownToSetupsMap(allProjects);
-      const teardownToSetupsDependents = new Map<FullProjectInternal, FullProjectInternal[]>();
+      // Teardown projects keep running after maxFailures is reached, so that cleanup
+      // is not skipped. Nothing to ignore when maxFailures cannot stop the run.
+      const ignoreMaxFailuresProjectIds = new Set(testRun.config.config.maxFailures > 0 ? [...teardownToSetups.keys()].map(project => project.id) : []);
+      const teardownToSetupsDependents = new Map<commonConfig.FullProjectInternal, commonConfig.FullProjectInternal[]>();
       for (const [teardown, setups] of teardownToSetups) {
         const closure = buildDependentProjects(setups, allProjects);
         closure.delete(teardown);
@@ -333,7 +386,7 @@ function createPhasesTask(): Task<TestRun> {
 
       for (let i = 0; i < projectToSuite.size; i++) {
         // Find all projects that have all their dependencies processed by previous phases.
-        const phaseProjects: FullProjectInternal[] = [];
+        const phaseProjects: commonConfig.FullProjectInternal[] = [];
         for (const project of projectToSuite.keys()) {
           if (processed.has(project))
             continue;
@@ -343,14 +396,17 @@ function createPhasesTask(): Task<TestRun> {
           phaseProjects.push(project);
         }
 
-        // Create a new phase.
         for (const project of phaseProjects)
           processed.add(project);
-        if (phaseProjects.length) {
+        // Projects that ignore maxFailures run in their own phase.
+        for (const ignoreMaxFailures of [false, true]) {
+          const projects = phaseProjects.filter(project => ignoreMaxFailuresProjectIds.has(project.id) === ignoreMaxFailures);
+          if (!projects.length)
+            continue;
           let testGroupsInPhase = 0;
-          const phase: Phase = { dispatcher: new Dispatcher(testRun.config, testRun.reporter, testRun.failureTracker), projects: [] };
+          const phase: Phase = { dispatcher: new Dispatcher(testRun, { ignoreMaxFailures }), projects: [] };
           testRun.phases.push(phase);
-          for (const project of phaseProjects) {
+          for (const project of projects) {
             const projectSuite = projectToSuite.get(project)!;
             const testGroups = createTestGroups(projectSuite, testRun.config.config.workers);
             phase.projects.push({ project, projectSuite, testGroups });
@@ -362,6 +418,8 @@ function createPhasesTask(): Task<TestRun> {
       }
 
       testRun.config.config.metadata.actualWorkers = Math.min(testRun.config.config.workers, maxConcurrentTestGroups);
+      if (testRun.config.configCLIOverrides.shuffle)
+        testRun.config.config.metadata.shuffleSeed = testRun.config.configCLIOverrides.shuffle;
     },
   };
 }
@@ -369,12 +427,12 @@ function createPhasesTask(): Task<TestRun> {
 function createRunTestsTask(): Task<TestRun> {
   return {
     title: 'test suite',
-    setup: async ({ phases, failureTracker }) => {
-      const successfulProjects = new Set<FullProjectInternal>();
+    setup: async testRun => {
+      const successfulProjects = new Set<commonConfig.FullProjectInternal>();
       const extraEnvByProjectId: EnvByProjectId = new Map();
-      const teardownToSetups = buildTeardownToSetupsMap(phases.map(phase => phase.projects.map(p => p.project)).flat());
+      const teardownToSetups = buildTeardownToSetupsMap(testRun.phases.map(phase => phase.projects.map(p => p.project)).flat());
 
-      for (const { dispatcher, projects } of phases) {
+      for (const { dispatcher, projects } of testRun.phases) {
         // Each phase contains dispatcher and a set of test groups.
         // We don't want to run the test groups belonging to the projects
         // that depend on the projects that failed previously.
@@ -393,6 +451,9 @@ function createRunTestsTask(): Task<TestRun> {
             phaseTestGroups.push(...testGroups);
         }
 
+        if (testRun.config.configCLIOverrides.shuffle)
+          shuffleTestGroups(phaseTestGroups, testRun.config.configCLIOverrides.shuffle);
+
         if (phaseTestGroups.length) {
           await dispatcher!.run(phaseTestGroups, extraEnvByProjectId);
           await dispatcher.stop();
@@ -404,7 +465,7 @@ function createRunTestsTask(): Task<TestRun> {
 
         // If the worker broke, fail everything, we have no way of knowing which
         // projects failed.
-        if (!failureTracker.hasWorkerErrors()) {
+        if (!testRun.hasWorkerErrors) {
           for (const { project, projectSuite } of projects) {
             const hasFailedDeps = project.deps.some(p => !successfulProjects.has(p));
             if (!hasFailedDeps && !projectSuite.allTests().some(test => !test.ok()))
@@ -416,29 +477,6 @@ function createRunTestsTask(): Task<TestRun> {
     teardown: async ({ phases }) => {
       for (const { dispatcher } of phases.reverse())
         await dispatcher.stop();
-    },
-  };
-}
-
-export function createStartDevServerTask(): Task<TestRun> {
-  return {
-    title: 'start dev server',
-    setup: async ({ config }, errors, softErrors) => {
-      if (config.plugins.some(plugin => !!plugin.devServerCleanup)) {
-        errors.push({ message: `DevServer is already running` });
-        return;
-      }
-      for (const plugin of config.plugins)
-        plugin.devServerCleanup = await plugin.instance?.startDevServer?.();
-      if (!config.plugins.some(plugin => !!plugin.devServerCleanup))
-        errors.push({ message: `DevServer is not available in the package you are using. Did you mean to use component testing?` });
-    },
-
-    teardown: async ({ config }) => {
-      for (const plugin of config.plugins) {
-        await plugin.devServerCleanup?.();
-        plugin.devServerCleanup = undefined;
-      }
     },
   };
 }

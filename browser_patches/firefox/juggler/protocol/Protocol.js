@@ -77,6 +77,8 @@ pageTypes.Size = {
 pageTypes.Viewport = {
   viewportSize: pageTypes.Size,
   deviceScaleFactor: t.Optional(t.Number),
+  screenSize: t.Optional(pageTypes.Size),
+  isMobile: t.Optional(t.Boolean),
 };
 
 pageTypes.DOMQuad = {
@@ -203,9 +205,6 @@ const Browser = {
       canceled: t.Optional(t.Boolean),
       error: t.Optional(t.String),
     },
-    'videoRecordingFinished': {
-      screencastId: t.String,
-    },
   },
 
   methods: {
@@ -274,7 +273,7 @@ const Browser = {
     'setHTTPCredentials': {
       params: {
         browserContextId: t.Optional(t.String),
-        credentials: t.Nullable(networkTypes.HTTPCredentials),
+        credentials: t.Nullable(t.Array(networkTypes.HTTPCredentials)),
       },
     },
     'setRequestInterception': {
@@ -430,13 +429,13 @@ const Browser = {
         contrast: t.Nullable(t.Enum(['less', 'more', 'custom', 'no-preference'])),
       },
     },
-    'setVideoRecordingOptions': {
+    'setScreencastOptions': {
       params: {
         browserContextId: t.Optional(t.String),
         options: t.Optional({
-          dir: t.String,
           width: t.Number,
           height: t.Number,
+          quality: t.Number,
         }),
       },
     },
@@ -506,6 +505,7 @@ const Network = {
     'setRequestInterception': {
       params: {
         enabled: t.Boolean,
+        bypassServiceWorker: t.Optional(t.Boolean),
       },
     },
     'setExtraHTTPHeaders': {
@@ -634,6 +634,7 @@ const Page = {
       frameId: t.String,
       message: t.String,
       stack: t.String,
+      location: runtimeTypes.ScriptLocation,
     },
     'frameAttached': {
       frameId: t.String,
@@ -697,10 +698,6 @@ const Page = {
       workerId: t.String,
       message: t.String,
     },
-    'videoRecordingStarted': {
-      screencastId: t.String,
-      file: t.String,
-    },
     'webSocketCreated': {
       frameId: t.String,
       wsid: t.String,
@@ -722,12 +719,14 @@ const Page = {
       wsid: t.String,
       opcode: t.Number,
       data: t.String,
+      timestamp: t.Number,
     },
     'webSocketFrameReceived': {
       frameId: t.String,
       wsid: t.String,
       opcode: t.Number,
       data: t.String,
+      timestamp: t.Number,
     },
     'screencastFrame': {
       data: t.String,
@@ -760,6 +759,9 @@ const Page = {
     'setViewportSize': {
       params: {
         viewportSize: t.Nullable(pageTypes.Size),
+        deviceScaleFactor: t.Optional(t.Number),
+        screenSize: t.Optional(pageTypes.Size),
+        isMobile: t.Optional(t.Boolean),
       },
     },
     'setZoom': {
@@ -834,7 +836,6 @@ const Page = {
       },
     },
     'reload': {
-      params: { },
     },
     'adoptNode': {
       params: {
@@ -849,7 +850,7 @@ const Page = {
     },
     'screenshot': {
       params: {
-        mimeType: t.Enum(['image/png', 'image/jpeg']),
+        mimeType: t.Enum(['image/png', 'image/jpeg', 'image/webp']),
         clip: pageTypes.Clip,
         quality: t.Optional(t.Number),
         omitDeviceScaleFactor: t.Optional(t.Boolean),
@@ -922,7 +923,6 @@ const Page = {
       }
     },
     'crash': {
-      params: {}
     },
     'handleDialog': {
       params: {
@@ -949,14 +949,8 @@ const Page = {
         height: t.Number,
         quality: t.Number,
       },
-      returns: {
-        screencastId: t.String,
-      },
     },
     'screencastFrameAck': {
-      params: {
-        screencastId: t.String,
-      },
     },
     'stopScreencast': {
     },

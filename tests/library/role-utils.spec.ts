@@ -22,7 +22,7 @@ test.skip(({ mode }) => mode !== 'default');
 
 async function getNameAndRole(page: Page, selector: string) {
   return await page.$eval(selector, e => {
-    const name = (window as any).__injectedScript.utils.getElementAccessibleName(e);
+    const name = (window as any).__injectedScript.utils.getElementAccessibleNameText(e);
     const role = (window as any).__injectedScript.utils.getAriaRole(e);
     return { name, role };
   });
@@ -85,7 +85,7 @@ for (let range = 0; range <= ranges.length; range++) {
             if (!element)
               throw new Error(`Unable to resolve "${step.selector}"`);
             const injected = (window as any).__injectedScript;
-            const received = step.property === 'name' ? injected.utils.getElementAccessibleName(element) : injected.utils.getElementAccessibleDescription(element);
+            const received = step.property === 'name' ? injected.utils.getElementAccessibleNameText(element) : injected.utils.getElementAccessibleDescription(element).text;
             result.push({ selector: step.selector, expected: step.value, received });
           }
           return result;
@@ -140,7 +140,7 @@ test('wpt accname non-manual', async ({ page, asset, server, browserName }) => {
           const injected = (window as any).__injectedScript;
           const title = element.getAttribute('data-testname');
           const expected = element.getAttribute('data-expectedlabel');
-          const received = injected.utils.getElementAccessibleName(element);
+          const received = injected.utils.getElementAccessibleNameText(element);
           result.push({ title, expected, received });
         }
         return result;
@@ -201,7 +201,7 @@ test('axe-core accessible-text', async ({ page, asset, server }) => {
           const element = injected.querySelector(injected.parseSelector('css=' + selector), document, false);
           if (!element)
             throw new Error(`Unable to resolve "${selector}"`);
-          return injected.utils.getElementAccessibleName(element);
+          return injected.utils.getElementAccessibleNameText(element);
         });
       }, targets);
       expect.soft(received, `checking ${JSON.stringify(testCase)}`).toEqual(expected);
@@ -299,6 +299,7 @@ test('native controls', async ({ page }) => {
     <label for="text1">TEXT1</label><input id="text1" type=text>
     <input id="text2" type=text title="TEXT2">
     <input id="text3" type=text placeholder="TEXT3">
+    <input id="number1" type=number placeholder="NUMBER1">
 
     <label for="image1">IMAGE1</label><input id="image1" type=image>
     <input id="image2" type=image alt="IMAGE2">
@@ -316,6 +317,7 @@ test('native controls', async ({ page }) => {
   expect.soft(await getNameAndRole(page, '#text1')).toEqual({ role: 'textbox', name: 'TEXT1' });
   expect.soft(await getNameAndRole(page, '#text2')).toEqual({ role: 'textbox', name: 'TEXT2' });
   expect.soft(await getNameAndRole(page, '#text3')).toEqual({ role: 'textbox', name: 'TEXT3' });
+  expect.soft(await getNameAndRole(page, '#number1')).toEqual({ role: 'spinbutton', name: 'NUMBER1' });
   expect.soft(await getNameAndRole(page, '#image1')).toEqual({ role: 'button', name: 'IMAGE1' });
   expect.soft(await getNameAndRole(page, '#image2')).toEqual({ role: 'button', name: 'IMAGE2' });
   expect.soft(await getNameAndRole(page, '#image3')).toEqual({ role: 'button', name: 'IMAGE3' });
@@ -325,6 +327,36 @@ test('native controls', async ({ page }) => {
   expect.soft(await getNameAndRole(page, '#button4')).toEqual({ role: 'button', name: 'BUTTON4' });
   expect.soft(await getNameAndRole(page, '#file1')).toEqual({ role: 'button', name: 'Choose File' });
   expect.soft(await getNameAndRole(page, '#file2')).toEqual({ role: 'button', name: 'FILE2' });
+});
+
+test('input type=search maps to searchbox unless list points at a datalist', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41899' },
+}, async ({ page }) => {
+  await page.setContent(`
+    <input id="search1" type=search>
+    <input id="search2" type=search list=nope>
+    <input id="search3" type=search list=dv><div id=dv></div>
+    <input id="search4" type=search list=dl><datalist id=dl></datalist>
+  `);
+  expect.soft(await getNameAndRole(page, '#search1')).toEqual({ role: 'searchbox', name: '' });
+  expect.soft(await getNameAndRole(page, '#search2')).toEqual({ role: 'searchbox', name: '' });
+  expect.soft(await getNameAndRole(page, '#search3')).toEqual({ role: 'searchbox', name: '' });
+  expect.soft(await getNameAndRole(page, '#search4')).toEqual({ role: 'combobox', name: '' });
+});
+
+test('meter and progress get their name from an associated label', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41891' },
+}, async ({ page }) => {
+  await page.setContent(`
+    <label for="meter1">Battery</label><meter id="meter1" value=0.5></meter>
+    <label for="progress1">Loading</label><progress id="progress1" value=0.3></progress>
+    <label>Charge <meter id="meter2" value=0.5></meter></label>
+    <label for="meter3">Ignored</label><meter id="meter3" aria-label="Overridden" value=0.5></meter>
+  `);
+  expect.soft(await getNameAndRole(page, '#meter1')).toEqual({ role: 'meter', name: 'Battery' });
+  expect.soft(await getNameAndRole(page, '#progress1')).toEqual({ role: 'progressbar', name: 'Loading' });
+  expect.soft(await getNameAndRole(page, '#meter2')).toEqual({ role: 'meter', name: 'Charge' });
+  expect.soft(await getNameAndRole(page, '#meter3')).toEqual({ role: 'meter', name: 'Overridden' });
 });
 
 test('native controls labelled-by', async ({ page }) => {
@@ -436,6 +468,22 @@ test('control embedded in a target element', async ({ page }) => {
       <input type="text" value="Foo bar">
     </h1>
   `);
+  expect.soft(await getNameAndRole(page, 'h1')).toEqual({ role: 'heading', name: 'Foo bar' });
+});
+
+test('searchbox embedded control should contribute its value', async ({ page }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42341' });
+
+  await page.setContent(`
+    <button id="b1" aria-labelledby="l1"></button><div id="l1" hidden><input type="text" value="Query"></div>
+    <button id="b2" aria-labelledby="l2"></button><div id="l2" hidden><input type="search" value="Query"></div>
+    <label for="c1">Flash the screen <input type="search" value="5"> times.</label>
+    <input type="checkbox" id="c1">
+    <h1><input type="search" value="Foo bar"></h1>
+  `);
+  expect.soft(await getNameAndRole(page, '#b1')).toEqual({ role: 'button', name: 'Query' });
+  expect.soft(await getNameAndRole(page, '#b2')).toEqual({ role: 'button', name: 'Query' });
+  expect.soft(await getNameAndRole(page, '#c1')).toEqual({ role: 'checkbox', name: 'Flash the screen 5 times.' });
   expect.soft(await getNameAndRole(page, 'h1')).toEqual({ role: 'heading', name: 'Foo bar' });
 });
 

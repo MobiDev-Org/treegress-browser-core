@@ -14,16 +14,13 @@
  * limitations under the License.
  */
 
-const { app } = require('electron');
-
-const { chromiumSwitches } = require('../chromium/chromiumSwitches');
+import { app } from 'electron';
+import { chromiumSwitches } from '../chromium/chromiumSwitches';
 
 // Always pass user arguments first, see https://github.com/microsoft/playwright/issues/16614 and
 // https://github.com/microsoft/playwright/issues/29198.
 // [Electron, -r, loader.js[, --no-sandbox>], --inspect=0, --remote-debugging-port=0, ...args]
-process.argv.splice(1, process.argv.indexOf('--inspect=0'));
-
-app.commandLine.appendSwitch('remote-debugging-port', '0');
+process.argv.splice(1, process.argv.indexOf('--remote-debugging-port=0'));
 
 for (const arg of chromiumSwitches()) {
   const match = arg.match(/--([^=]*)=?(.*)/)!;

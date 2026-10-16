@@ -14,43 +14,27 @@
  * limitations under the License.
  */
 
-import { useSetting, clsx, msToString, useMeasure } from '@web/uiUtils';
+import { useSetting, useMeasure } from '@web/uiUtils';
+import { msToString } from '@isomorphic/formatUtils';
 import { GlassPane } from '@web/shared/glassPane';
 import * as React from 'react';
 import type { Boundaries } from './geometry';
 import { FilmStrip } from './filmStrip';
 import type { FilmStripPreviewPoint } from './filmStrip';
-import type { ActionTraceEventInContext, ResourceEntry, TraceModel } from '@isomorphic/trace/traceModel';
+import type { TraceModel } from '@isomorphic/trace/traceModel';
+import type { ActionEntry } from '@isomorphic/trace/entries';
 import './timeline.css';
-import type { Language } from '@isomorphic/locatorGenerators';
-import type { ConsoleEntry } from './consoleTab';
 import type { ActionGroup } from '@isomorphic/protocolFormatter';
-
-type TimelineBar = {
-  action?: ActionTraceEventInContext;
-  resourceKey?: string;
-  consoleMessage?: ConsoleEntry;
-  leftPosition: number;
-  rightPosition: number;
-  leftTime: number;
-  rightTime: number;
-  active: boolean;
-  error: boolean;
-};
 
 export const Timeline: React.FunctionComponent<{
   model: TraceModel | undefined,
-  consoleEntries: ConsoleEntry[] | undefined,
-  networkResources: ResourceEntry[] | undefined,
   boundaries: Boundaries,
-  highlightedAction: ActionTraceEventInContext | undefined,
-  highlightedResourceKey: string | undefined,
-  highlightedConsoleEntryOrdinal: number | undefined,
-  onSelected: (action: ActionTraceEventInContext) => void,
+  onSelected: (action: ActionEntry) => void,
   selectedTime: Boundaries | undefined,
   setSelectedTime: (time: Boundaries | undefined) => void,
-  sdkLanguage: Language,
-}> = ({ model, boundaries, consoleEntries, networkResources, onSelected, highlightedAction, highlightedResourceKey, highlightedConsoleEntryOrdinal, selectedTime, setSelectedTime, sdkLanguage }) => {
+  highlightedTime?: Boundaries,
+  scrubber?: React.ReactNode,
+}> = ({ model, boundaries, onSelected, selectedTime, setSelectedTime, highlightedTime, scrubber }) => {
   const [measure, ref] = useMeasure<HTMLDivElement>();
   const [dragWindow, setDragWindow] = React.useState<{ startX: number, endX: number, pivot?: number, type: 'resize' | 'move' } | undefined>();
   const [previewPoint, setPreviewPoint] = React.useState<FilmStripPreviewPoint | undefined>();
@@ -71,61 +55,13 @@ export const Timeline: React.FunctionComponent<{
 
   const actions = React.useMemo(() => model?.filteredActions(actionsFilter), [model, actionsFilter]);
 
-  const bars = React.useMemo(() => {
-    const bars: TimelineBar[] = [];
-    for (const entry of actions || []) {
-      bars.push({
-        action: entry,
-        leftTime: entry.startTime,
-        rightTime: entry.endTime || boundaries.maximum,
-        leftPosition: timeToPosition(measure.width, boundaries, entry.startTime),
-        rightPosition: timeToPosition(measure.width, boundaries, entry.endTime || boundaries.maximum),
-        active: false,
-        error: !!entry.error,
-      });
-    }
-
-    for (const resource of model?.resources || []) {
-      const startTime = resource._monotonicTime!;
-      const endTime = resource._monotonicTime! + resource.time;
-      bars.push({
-        resourceKey: resource.id,
-        leftTime: startTime,
-        rightTime: endTime,
-        leftPosition: timeToPosition(measure.width, boundaries, startTime),
-        rightPosition: timeToPosition(measure.width, boundaries, endTime),
-        active: false,
-        error: false,
-      });
-    }
-
-    for (const consoleMessage of consoleEntries || []) {
-      bars.push({
-        consoleMessage,
-        leftTime: consoleMessage.timestamp,
-        rightTime: consoleMessage.timestamp,
-        leftPosition: timeToPosition(measure.width, boundaries, consoleMessage.timestamp),
-        rightPosition: timeToPosition(measure.width, boundaries, consoleMessage.timestamp),
-        active: false,
-        error: consoleMessage.isError,
-      });
-    }
-
-    return bars;
-  }, [model, actions, consoleEntries, boundaries, measure]);
-
-  React.useMemo(() => {
-    for (const bar of bars) {
-      if (highlightedAction)
-        bar.active = bar.action === highlightedAction;
-      else if (highlightedResourceKey)
-        bar.active = bar.resourceKey === highlightedResourceKey;
-      else if (highlightedConsoleEntryOrdinal !== undefined)
-        bar.active = bar.consoleMessage === consoleEntries?.[highlightedConsoleEntryOrdinal];
-      else
-        bar.active = false;
-    }
-  }, [bars, highlightedAction, highlightedResourceKey, highlightedConsoleEntryOrdinal, consoleEntries]);
+  const highlight = React.useMemo(() => {
+    if (!highlightedTime)
+      return undefined;
+    const left = timeToPosition(measure.width, boundaries, highlightedTime.minimum);
+    const right = timeToPosition(measure.width, boundaries, highlightedTime.maximum);
+    return { left, width: Math.max(2, right - left) };
+  }, [highlightedTime, boundaries, measure]);
 
   const onMouseDown = React.useCallback((event: React.MouseEvent) => {
     setPreviewPoint(undefined);
@@ -218,10 +154,8 @@ export const Timeline: React.FunctionComponent<{
     if (!ref.current)
       return;
     const x = event.clientX - ref.current.getBoundingClientRect().left;
-    const time = positionToTime(measure.width, boundaries, x);
-    const action = actions?.findLast(action => action.startTime <= time);
-    setPreviewPoint({ x, clientY: event.clientY, action, sdkLanguage });
-  }, [boundaries, measure, actions, ref, sdkLanguage]);
+    setPreviewPoint({ x, clientY: event.clientY });
+  }, [ref]);
 
   const onMouseLeave = React.useCallback(() => {
     setPreviewPoint(undefined);
@@ -249,32 +183,9 @@ export const Timeline: React.FunctionComponent<{
           </div>;
         })
       }</div>
-      <div style={{ height: 8 }}></div>
       <FilmStrip boundaries={boundaries} previewPoint={previewPoint} />
-      <div className='timeline-bars'>{
-        bars
-            .filter(bar => !bar.action || bar.action.class !== 'Test')
-            .map((bar, index) => {
-              return <div key={index}
-                className={clsx('timeline-bar',
-                    bar.action && 'action',
-                    bar.resourceKey && 'network',
-                    bar.consoleMessage && 'console-message',
-                    bar.active && 'active',
-                    bar.error && 'error')}
-                style={{
-                  left: bar.leftPosition,
-                  width: Math.max(5, bar.rightPosition - bar.leftPosition),
-                  top: barTop(bar),
-                  bottom: 0,
-                }}
-              ></div>;
-            })
-      }</div>
-      <div className='timeline-marker' style={{
-        display: (previewPoint !== undefined) ? 'block' : 'none',
-        left: (previewPoint?.x || 0) + 'px',
-      }} />
+      {scrubber}
+      {highlight && <div className='timeline-highlight' style={{ left: highlight.left, width: highlight.width }}></div>}
       {selectedTime && <div className='timeline-window'>
         <div className='timeline-window-curtain left' style={{ width: curtainLeft }}></div>
         <div className='timeline-window-resizer' style={{ left: -5 }}></div>
@@ -324,8 +235,4 @@ function timeToPosition(clientWidth: number, boundaries: Boundaries, time: numbe
 
 function positionToTime(clientWidth: number, boundaries: Boundaries, x: number): number {
   return x / clientWidth * (boundaries.maximum - boundaries.minimum) + boundaries.minimum;
-}
-
-function barTop(bar: TimelineBar): number {
-  return bar.resourceKey ? 25 : 20;
 }

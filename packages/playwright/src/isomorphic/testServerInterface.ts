@@ -28,7 +28,6 @@ export interface TestServerInterface {
     closeOnDisconnect?: boolean,
     interceptStdio?: boolean,
     watchTestDirs?: boolean,
-    populateDependenciesOnList?: boolean,
   }): Promise<void>;
 
   ping(params: {}): Promise<void>;
@@ -56,16 +55,6 @@ export interface TestServerInterface {
     status: reporterTypes.FullResult['status']
   }>;
 
-  startDevServer(params: {}): Promise<{
-    report: ReportEntry[];
-    status: reporterTypes.FullResult['status']
-  }>;
-
-  stopDevServer(params: {}): Promise<{
-    report: ReportEntry[];
-    status: reporterTypes.FullResult['status']
-  }>;
-
   clearCache(params: {}): Promise<void>;
 
   listFiles(params: {
@@ -83,7 +72,7 @@ export interface TestServerInterface {
     locations?: string[];
     grep?: string;
     grepInvert?: string;
-    onlyChanged?: string;
+    onlyChanged?: boolean;
   }): Promise<{
     report: ReportEntry[],
     status: reporterTypes.FullResult['status']
@@ -96,9 +85,9 @@ export interface TestServerInterface {
     testIds?: string[];
     headed?: boolean;
     workers?: number | string;
-    updateSnapshots?: 'all' | 'changed' | 'missing' | 'none';
+    maxFailures?: number;
+    updateSnapshots?: 'all' | 'changed' | 'missing' | 'none' | 'default';
     updateSourceMethod?: 'overwrite' | 'patch' | '3way';
-    runAgents?: 'all' | 'missing' | 'none';
     reporters?: string[],
     trace?: 'on' | 'off';
     video?: 'on' | 'off';

@@ -18,14 +18,16 @@
 import fs from 'fs';
 import path from 'path';
 
-import { formatMatcherMessage, escapeTemplateString, isString, printReceivedStringContainExpectedSubstring } from 'playwright-core/lib/utils';
+import { escapeTemplateString, isString } from '@isomorphic/stringUtils';
+import { existsAsync } from '@utils/fileUtils';
 
-import { fileExistsAsync } from '../util';
-import { currentTestInfo } from '../common/globals';
+import { expectTypes, formatMatcherMessage, printReceivedStringContainExpectedSubstring } from './matcherHint';
+import { expectConfig } from './expect';
 
 import type { MatcherResult } from './matcherHint';
-import type { ExpectMatcherStateInternal, LocatorEx } from './matchers';
+import type { ExpectMatcherStateInternal, FrameEx, LocatorEx } from './matchers';
 import type { MatcherReceived } from '@injected/ariaSnapshot';
+import type { Page } from 'playwright-core';
 
 
 type ToMatchAriaSnapshotExpected = {
@@ -34,22 +36,26 @@ type ToMatchAriaSnapshotExpected = {
   timeout?: number;
 } | string;
 
+const kImpossibleAriaMatch = `- none "Generating new baseline"`;
+
 export async function toMatchAriaSnapshot(
   this: ExpectMatcherStateInternal,
-  locator: LocatorEx,
+  receiver: LocatorEx | Page,
   expectedParam?: ToMatchAriaSnapshotExpected,
-  options: { timeout?: number } = {},
+  options: { timeout?: number, signal?: AbortSignal } = {},
 ): Promise<MatcherResult<string | RegExp, string>> {
   const matcherName = 'toMatchAriaSnapshot';
+  expectTypes(receiver, ['Page', 'Locator'], matcherName);
+  const locator = (receiver as any)._apiName === 'Page' ? undefined : receiver as LocatorEx;
 
-  const testInfo = currentTestInfo();
+  const testInfo = expectConfig().testInfo;
   if (!testInfo)
-    throw new Error(`toMatchAriaSnapshot() must be called during the test`);
+    throw new Error(`${matcherName}() must be called during the test`);
 
-  if (testInfo._projectInternal.project.ignoreSnapshots)
+  if (expectConfig().ignoreSnapshots)
     return { pass: !this.isNot, message: () => '', name: 'toMatchAriaSnapshot', expected: '' };
 
-  const updateSnapshots = testInfo.config.updateSnapshots;
+  const updateSnapshots = expectConfig().updateSnapshots;
 
   let expected: string;
   let timeout: number;
@@ -62,31 +68,34 @@ export async function toMatchAriaSnapshot(
     expectedPath = testInfo._resolveSnapshotPaths('aria', expectedParam?.name, 'updateSnapshotIndex').absoluteSnapshotPath;
     // in 1.51, we changed the default template to use .aria.yml extension
     // for backwards compatibility, we check for the legacy .yml extension
-    if (!(await fileExistsAsync(expectedPath)) && await fileExistsAsync(legacyPath))
+    if (!(await existsAsync(expectedPath)) && await existsAsync(legacyPath))
       expectedPath = legacyPath;
     expected = await fs.promises.readFile(expectedPath, 'utf8').catch(() => '');
     timeout = expectedParam?.timeout ?? this.timeout;
   }
 
-  const generateMissingBaseline = updateSnapshots === 'missing' && !expected;
-  if (generateMissingBaseline) {
-    if (this.isNot) {
-      const message = `Matchers using ".not" can't generate new baselines`;
-      return { pass: this.isNot, message: () => message, name: 'toMatchAriaSnapshot' };
-    } else {
-      // When generating new baseline, run entire pipeline against impossible match.
-      expected = `- none "Generating new baseline"`;
-    }
+  const isMissingBaseline = (updateSnapshots === 'missing' || updateSnapshots === 'default') && !expected;
+  if (isMissingBaseline && this.isNot) {
+    const message = `Matchers using ".not" can't generate new baselines`;
+    return { pass: this.isNot, message: () => message, name: 'toMatchAriaSnapshot' };
+  }
+  const generateBaseline = !this.isNot && (updateSnapshots === 'all' || isMissingBaseline);
+  if (generateBaseline) {
+    // When generating new baseline, run entire pipeline against impossible match.
+    expected = kImpossibleAriaMatch;
   }
 
   expected = unshift(expected);
 
-  const globalChildren = testInfo._projectInternal.expect?.toMatchAriaSnapshot?.children;
+  const globalChildren = expectConfig().toMatchAriaSnapshot?.children;
   if (globalChildren && !expected.match(/^- \/children:/m))
     expected = `- /children: ${globalChildren}\n` + expected;
 
-  const { matches: pass, received, log, timedOut, errorMessage } = await locator._expect('to.match.aria', { expectedValue: expected, isNot: this.isNot, timeout });
-  const typedReceived = received as MatcherReceived;
+  const expectParams = { expectedValue: expected, isNot: this.isNot, timeout, signal: options.signal, title: this.title };
+  const { matches: pass, received, log, timedOut, errorMessage } = locator ?
+    await (locator as LocatorEx)._expect('to.match.aria', expectParams) :
+    await ((receiver as Page).mainFrame() as FrameEx)._expect('to.match.aria', expectParams);
+  const typedReceived = received?.value as MatcherReceived;
 
   const message = () => {
     let printedExpected: string | undefined;
@@ -106,7 +115,7 @@ export async function toMatchAriaSnapshot(
       promise: this.promise,
       matcherName,
       expectation: 'expected',
-      locator: locator.toString(),
+      locator: locator?.toString(),
       timeout,
       timedOut,
       printedExpected,
@@ -121,34 +130,30 @@ export async function toMatchAriaSnapshot(
     return { pass: this.isNot, message, name: 'toMatchAriaSnapshot', expected };
 
   if (!this.isNot) {
-    if ((updateSnapshots === 'all') ||
-        (updateSnapshots === 'changed' && pass === this.isNot) ||
-        generateMissingBaseline) {
+    if (generateBaseline || (updateSnapshots === 'changed' && pass === this.isNot)) {
       if (expectedPath) {
         await fs.promises.mkdir(path.dirname(expectedPath), { recursive: true });
         await fs.promises.writeFile(expectedPath, typedReceived.regex, 'utf8');
         const relativePath = path.relative(process.cwd(), expectedPath);
-        if (updateSnapshots === 'missing') {
+        if (isMissingBaseline) {
           const message = `A snapshot doesn't exist at ${relativePath}, writing actual.`;
-          testInfo._hasNonRetriableError = true;
-          testInfo._failWithError(new Error(message));
-        } else {
-          const message = `A snapshot is generated at ${relativePath}.`;
+          if (updateSnapshots === 'default')
+            return { pass: true, message: () => '', name: 'toMatchAriaSnapshot', softError: new Error(message), shouldNotRetryTest: true };
           /* eslint-disable no-console */
           console.log(message);
+          return { pass: true, message: () => '', name: 'toMatchAriaSnapshot' };
         }
+        const message = `A snapshot is generated at ${relativePath}.`;
+        /* eslint-disable no-console */
+        console.log(message);
         return { pass: true, message: () => '', name: 'toMatchAriaSnapshot' };
       } else {
         const suggestedRebaseline = `\`\n${escapeTemplateString(indent(typedReceived.regex, '{indent}  '))}\n{indent}\``;
-        if (updateSnapshots === 'missing') {
+        if (isMissingBaseline && updateSnapshots === 'default') {
           const message = 'A snapshot is not provided, generating new baseline.';
-          testInfo._hasNonRetriableError = true;
-          testInfo._failWithError(new Error(message));
+          return { pass: true, message: () => '', name: 'toMatchAriaSnapshot', suggestedRebaseline, softError: new Error(message), shouldNotRetryTest: true };
         }
-        // TODO: ideally, we should return "pass: true" here because this matcher passes
-        // when regenerating baselines. However, we can only access suggestedRebaseline in case
-        // of an error, so we fail here and workaround it in the expect implementation.
-        return { pass: false, message: () => '', name: 'toMatchAriaSnapshot', suggestedRebaseline };
+        return { pass: true, message: () => '', name: 'toMatchAriaSnapshot', suggestedRebaseline };
       }
     }
   }
@@ -158,7 +163,7 @@ export async function toMatchAriaSnapshot(
     expected,
     message,
     pass,
-    actual: received,
+    actual: typedReceived?.raw,
     log,
     timeout: timedOut ? timeout : undefined,
   };

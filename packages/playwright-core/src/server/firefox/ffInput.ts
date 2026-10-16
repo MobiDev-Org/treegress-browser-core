@@ -21,6 +21,25 @@ import type { Progress } from '../progress';
 import type * as types from '../types';
 import type { FFSession } from './ffConnection';
 
+// Firefox exposes AudioVolume* as KeyboardEvent.key values, but synthesized
+// volume keys need Firefox-specific code/keyCode values (Volume* and 181-183).
+// See https://searchfox.org/firefox-main/source/dom/webidl/KeyEvent.webidl
+const kFirefoxKeyOverrides = new Map<string, Pick<input.KeyDescription, 'code' | 'keyCodeWithoutLocation'>>([
+  ['AudioVolumeMute', { code: 'VolumeMute', keyCodeWithoutLocation: 181 }],
+  ['AudioVolumeDown', { code: 'VolumeDown', keyCodeWithoutLocation: 182 }],
+  ['AudioVolumeUp', { code: 'VolumeUp', keyCodeWithoutLocation: 183 }],
+]);
+
+function toFirefoxKeyDescription(description: input.KeyDescription): input.KeyDescription {
+  const override = kFirefoxKeyOverrides.get(description.key);
+  if (!override)
+    return description;
+  return {
+    ...description,
+    ...override,
+  };
+}
+
 function toModifiersMask(modifiers: Set<types.KeyboardModifier>): number {
   let mask = 0;
   if (modifiers.has('Alt'))
@@ -63,14 +82,15 @@ export class RawKeyboardImpl implements input.RawKeyboard {
   }
 
   async keydown(progress: Progress, modifiers: Set<types.KeyboardModifier>, keyName: string, description: input.KeyDescription, autoRepeat: boolean): Promise<void> {
-    let text = description.text;
+    const keyDescription = toFirefoxKeyDescription(description);
+    let text = keyDescription.text;
     // Firefox will figure out Enter by itself
     if (text === '\r')
       text = '';
-    const { code, key, location } = description;
+    const { code, key, location } = keyDescription;
     await progress.race(this._client.send('Page.dispatchKeyEvent', {
       type: 'keydown',
-      keyCode: description.keyCodeWithoutLocation,
+      keyCode: keyDescription.keyCodeWithoutLocation,
       code,
       key,
       repeat: autoRepeat,
@@ -80,11 +100,12 @@ export class RawKeyboardImpl implements input.RawKeyboard {
   }
 
   async keyup(progress: Progress, modifiers: Set<types.KeyboardModifier>, keyName: string, description: input.KeyDescription): Promise<void> {
-    const { code, key, location } = description;
+    const keyDescription = toFirefoxKeyDescription(description);
+    const { code, key, location } = keyDescription;
     await progress.race(this._client.send('Page.dispatchKeyEvent', {
       type: 'keyup',
       key,
-      keyCode: description.keyCodeWithoutLocation,
+      keyCode: keyDescription.keyCodeWithoutLocation,
       code,
       location,
       repeat: false
@@ -141,7 +162,7 @@ export class RawMouseImpl implements input.RawMouse {
 
   async wheel(progress: Progress, x: number, y: number, buttons: Set<types.MouseButton>, modifiers: Set<types.KeyboardModifier>, deltaX: number, deltaY: number): Promise<void> {
     // Wheel events hit the compositor first, so wait one frame for it to be synced.
-    await this._page!.mainFrame().evaluateExpression(`new Promise(requestAnimationFrame)`, { world: 'utility' });
+    await this._page!.mainFrame().evaluateExpression(progress, `new Promise(requestAnimationFrame)`, { world: 'utility' });
     await progress.race(this._client.send('Page.dispatchWheelEvent', {
       deltaX,
       deltaY,

@@ -16,9 +16,10 @@
 
 import path from 'path';
 import fs from 'fs';
-import { spawnAsync } from '../../packages/playwright-core/lib/server/utils/spawnAsync';
-import { removeFolders } from '../../packages/playwright-core/lib/server/utils/fileUtils';
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
 import { TMP_WORKSPACES } from './npmTest';
+
+const { spawnAsync, removeFolders } = utils;
 
 const PACKAGE_BUILDER_SCRIPT = path.join(__dirname, '..', '..', 'utils', 'pack_package.js');
 
@@ -54,8 +55,6 @@ async function globalSetup() {
       build('playwright-browser-chromium', '@playwright/browser-chromium'),
       build('playwright-browser-firefox', '@playwright/browser-firefox'),
       build('playwright-browser-webkit', '@playwright/browser-webkit'),
-      build('playwright-ct-react', '@playwright/experimental-ct-react'),
-      build('playwright-ct-core', '@playwright/experimental-ct-core'),
     ]);
 
     const buildPlaywrightTestPlugin = async () => {

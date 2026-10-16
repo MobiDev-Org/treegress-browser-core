@@ -22,7 +22,7 @@ import { TeleSuiteUpdater, type TeleSuiteUpdaterProgress, type TeleSuiteUpdaterT
 import type { TeleTestCase } from '@testIsomorphic/teleReceiver';
 import type * as reporterTypes from 'playwright/types/testReporter';
 import { SplitView } from '@web/components/splitView';
-import type { SourceLocation } from '@isomorphic/trace/traceModel';
+import type { SourceLocation, TraceModel } from '@isomorphic/trace/traceModel';
 import './uiModeView.css';
 import { ToolbarButton } from '@web/components/toolbarButton';
 import { Toolbar } from '@web/components/toolbar';
@@ -61,7 +61,7 @@ const queryParams = {
   reporters: searchParams.has('reporter') ? searchParams.getAll('reporter') : undefined,
   pathSeparator: searchParams.get('pathSeparator') || '/',
 };
-if (queryParams.updateSnapshots && !['all', 'changed', 'none', 'missing'].includes(queryParams.updateSnapshots))
+if (queryParams.updateSnapshots && !['all', 'changed', 'none', 'missing', 'default'].includes(queryParams.updateSnapshots))
   queryParams.updateSnapshots = undefined;
 
 const isMac = navigator.platform === 'MacIntel';
@@ -72,6 +72,26 @@ function escapeRegex(text: string) {
   if (text.startsWith('/'))
     text = text.substring(1);
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function renderStatusLine(progress: TeleSuiteUpdaterProgress, total: number, isRunning: boolean) {
+  const finished = progress.passed + progress.failed + progress.skipped;
+  const pct = total ? (finished / total) * 100 | 0 : 0;
+  const counts: React.ReactNode[] = [];
+  if (progress.passed > 0)
+    counts.push(`${progress.passed} passed`);
+  if (progress.failed > 0)
+    counts.push(<span key='failed' className='status-line-failed'>{progress.failed} failed</span>);
+  if (progress.skipped > 0)
+    counts.push(`${progress.skipped} skipped`);
+  return <div data-testid='status-line' className='status-line'>
+    <div>
+      {isRunning && 'Running '}
+      {finished}/{total} ({pct}%)
+      {counts.length > 0 && ' — '}
+      {counts.map((count, i) => <React.Fragment key={i}>{i > 0 ? ', ' : ''}{count}</React.Fragment>)}
+    </div>
+  </div>;
 }
 
 export const UIModeView: React.FC<{}> = ({
@@ -105,11 +125,13 @@ export const UIModeView: React.FC<{}> = ({
   const [settingsVisible, setSettingsVisible] = React.useState(false);
   const [testingOptionsVisible, setTestingOptionsVisible] = React.useState(false);
   const [revealSource, setRevealSource] = React.useState(false);
+  const [traceModel, setTraceModel] = React.useState<TraceModel | undefined>();
   const onRevealSource = React.useCallback(() => setRevealSource(true), [setRevealSource]);
 
   const [singleWorker, setSingleWorker] = useSetting<boolean>('single-worker', false);
-  const [updateSnapshots, setUpdateSnapshots] = useSetting<reporterTypes.FullConfig['updateSnapshots']>('updateSnapshots', 'missing');
+  const [updateSnapshots, setUpdateSnapshots] = useSetting<reporterTypes.FullConfig['updateSnapshots']>('updateSnapshots', 'default');
   const [onlyChanged, setOnlyChanged] = useSetting<boolean>('only-changed', false);
+  const [stopOnFailure, setStopOnFailure] = useSetting<boolean>('stop-on-failure', false);
   const [mergeFiles] = useSetting('mergeFiles', false);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -198,7 +220,7 @@ export const UIModeView: React.FC<{}> = ({
         if (status !== 'passed')
           return;
 
-        const result = await testServerConnection.listTests({ projects: queryParams.projects, locations: queryParams.args, grep: queryParams.grep, grepInvert: queryParams.grepInvert, onlyChanged: onlyChanged ? 'HEAD' : undefined });
+        const result = await testServerConnection.listTests({ projects: queryParams.projects, locations: queryParams.args, grep: queryParams.grep, grepInvert: queryParams.grepInvert, onlyChanged });
         teleSuiteUpdater.processListReport(result.report);
 
         testServerConnection.onReport(params => {
@@ -300,6 +322,7 @@ export const UIModeView: React.FC<{}> = ({
         updateSnapshots,
         reporters: queryParams.reporters,
         workers: singleWorker ? 1 : undefined,
+        maxFailures: stopOnFailure ? 1 : undefined,
         trace: 'on',
       });
       // Clear pending tests in case of interrupt.
@@ -310,7 +333,7 @@ export const UIModeView: React.FC<{}> = ({
       setTestModel({ ...testModel });
       setRunningState(oldState => oldState ? ({ ...oldState, completed: true }) : undefined);
     });
-  }, [projectFilters, isRunningTest, testModel, testServerConnection, updateSnapshots, singleWorker]);
+  }, [projectFilters, isRunningTest, testModel, testServerConnection, updateSnapshots, singleWorker, stopOnFailure]);
 
   const runVisibleTests = React.useCallback(() => runTests('bounce-if-busy', testTree.collectTestIds(testTree.rootItem)), [runTests, testTree]);
 
@@ -322,7 +345,7 @@ export const UIModeView: React.FC<{}> = ({
       commandQueue.current = commandQueue.current.then(async () => {
         setIsLoading(true);
         try {
-          const result = await testServerConnection.listTests({ projects: queryParams.projects, locations: queryParams.args, grep: queryParams.grep, grepInvert: queryParams.grepInvert, onlyChanged: onlyChanged ? 'HEAD' : undefined });
+          const result = await testServerConnection.listTests({ projects: queryParams.projects, locations: queryParams.args, grep: queryParams.grep, grepInvert: queryParams.grepInvert, onlyChanged });
           teleSuiteUpdater.processListReport(result.report);
         } catch (e) {
           // eslint-disable-next-line no-console
@@ -457,6 +480,7 @@ export const UIModeView: React.FC<{}> = ({
           <TraceView
             pathSeparator={queryParams.pathSeparator}
             item={selectedItem}
+            onModelChange={setTraceModel}
             rootDir={testModel?.config?.rootDir}
             revealSource={revealSource}
             onOpenExternally={location => testServerConnection?.openNoReply({ location: { file: location.file, line: location.line, column: location.column } })}
@@ -469,8 +493,7 @@ export const UIModeView: React.FC<{}> = ({
           <div className='section-title'>Playwright</div>
           <ToolbarButton icon='refresh' title='Reload' onClick={() => reloadTests()} disabled={isRunningTest || isLoading}></ToolbarButton>
           <div style={{ position: 'relative' }}>
-            <ToolbarButton icon={'terminal'} title={'Toggle output — ' + (isMac ? '⌃`' : 'Ctrl + `')} toggled={isShowingOutput} onClick={() => { setIsShowingOutput(!isShowingOutput); }} />
-            {outputContainsError && <div title='Output contains error' style={{ position: 'absolute', top: 2, right: 2, width: 7, height: 7, borderRadius: '50%', backgroundColor: 'var(--vscode-notificationsErrorIcon-foreground)' }} />}
+            <ToolbarButton icon={'terminal'} title={'Toggle output — ' + (isMac ? '⌃`' : 'Ctrl + `')} toggled={isShowingOutput} errorBadge={outputContainsError ? 'Output contains error' : undefined} onClick={() => { setIsShowingOutput(!isShowingOutput); }} />
           </div>
           {!hasBrowsers && <ToolbarButton icon='lightbulb-autofix' style={{ color: 'var(--vscode-list-warningForeground)' }} title='Playwright browsers are missing' onClick={openInstallDialog} />}
         </Toolbar>
@@ -487,14 +510,9 @@ export const UIModeView: React.FC<{}> = ({
           runTests={runVisibleTests} />
         <Toolbar className='section-toolbar' noMinHeight={true}>
           {!isRunningTest && !progress && <div className='section-title'>Tests</div>}
-          {!isRunningTest && progress && <div data-testid='status-line' className='status-line'>
-            <div>{progress.passed}/{progress.total} passed ({(progress.passed / progress.total) * 100 | 0}%)</div>
-          </div>}
-          {isRunningTest && progress && <div data-testid='status-line' className='status-line'>
-            <div>Running {progress.passed}/{runningState.testIds.size} passed ({(progress.passed / runningState.testIds.size) * 100 | 0}%)</div>
-          </div>}
+          {progress && renderStatusLine(progress, isRunningTest ? runningState.testIds.size : progress.total, !!isRunningTest)}
           <ToolbarButton icon='play' title='Run all — F5' onClick={runVisibleTests} disabled={isRunningTest || isLoading}></ToolbarButton>
-          <ToolbarButton icon='debug-stop' title={'Stop — ' + (isMac ? '⇧F5' : 'Shift + F5')} onClick={() => testServerConnection?.stopTests({})} disabled={!isRunningTest || isLoading}></ToolbarButton>
+          <ToolbarButton icon='debug-stop' title={'Stop — ' + (isMac ? '⇧F5' : 'Shift + F5')} onClick={() => testServerConnection?.stopTests({})} disabled={!isRunningTest || isLoading} testId={'stop-button'}></ToolbarButton>
           <ToolbarButton icon='eye' title='Watch all' toggled={watchAll} onClick={() => {
             setWatchedTreeIds({ value: new Set() });
             setWatchAll(!watchAll);
@@ -533,7 +551,9 @@ export const UIModeView: React.FC<{}> = ({
         </Toolbar>
         {testingOptionsVisible && <SettingsView settings={[
           { type: 'check', value: singleWorker, set: setSingleWorker, name: 'Single worker' },
+          { type: 'check', value: stopOnFailure, set: setStopOnFailure, name: 'Stop on first failure' },
           { type: 'select', options: [
+            { label: 'Default', value: 'default' },
             { label: 'All', value: 'all' },
             { label: 'Changed', value: 'changed' },
             { label: 'Missing', value: 'missing' },
@@ -548,7 +568,7 @@ export const UIModeView: React.FC<{}> = ({
           />
           <div className='section-title'>Settings</div>
         </Toolbar>
-        {settingsVisible && <DefaultSettingsView location='ui-mode' />}
+        {settingsVisible && <DefaultSettingsView location='ui-mode' model={traceModel} />}
       </div>
       }
     />

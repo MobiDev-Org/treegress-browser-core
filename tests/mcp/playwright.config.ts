@@ -21,17 +21,18 @@ import { defineConfig } from '@playwright/test';
 import type { TestOptions } from './fixtures';
 import type { ReporterDescription } from '@playwright/test';
 
+process.env.PWTEST_UNDER_TEST = '1';
+
 dotenv.config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
 
 const rootTestDir = path.join(__dirname, '..');
 const testDir = path.join(rootTestDir, 'mcp');
-const outputDir = path.join(__dirname, '..', '..', 'test-results');
 
 const reporters = () => {
   const result: ReporterDescription[] = process.env.CI ? [
     ['dot'],
-    ['json', { outputFile: path.join(outputDir, 'report.json') }],
     ['blob', { outputDir: path.join(__dirname, '..', '..', 'blob-report') }],
+    ['../config/parquetReporter.ts'],
   ] : [
     ['list']
   ];
@@ -49,9 +50,12 @@ export default defineConfig<TestOptions>({
   testDir: rootTestDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  workers: process.env.CI ? 2 : undefined,
+  workers: process.env.CI ? 1 : undefined,
   reporter: reporters(),
   tag: process.env.PW_TAG,
+  // Persistent context launch (the MCP default) is genuinely slow on Windows;
+  // most tests in this suite use it.
+  timeout: process.platform === 'win32' ? 60000 : 30000,
   projects: [
     { name: 'chrome', metadata: { ...metadata, browserName: 'chromium', channel: 'chrome' }, testDir },
     { name: 'chromium', use: { mcpBrowser: 'chromium' }, metadata: { ...metadata, browserName: 'chromium' }, testDir },

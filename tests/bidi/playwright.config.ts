@@ -15,7 +15,7 @@
  */
 
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: path.join(__dirname, '..', '..', '.env'), override: true });
+loadEnv({ path: path.join(__dirname, '..', '..', '.env'), override: true, quiet: true });
 process.env.PWTEST_UNDER_TEST = '1';
 
 import { type Config, type PlaywrightTestOptions, type PlaywrightWorkerOptions, type ReporterDescription } from '@playwright/test';
@@ -46,7 +46,9 @@ const reporters = () => {
     hasDebugOutput ? ['list'] : ['dot'],
     ['json', { outputFile: path.join(outputDir, 'report.json') }],
     ['blob'],
+    ['../config/parquetReporter.ts'],
     ['./csvReporter', { outputFile: path.join(outputDir, 'report.csv') }],
+    ['./expectationReporter', { rebase: false }],
   ] : [
     ['html', { open: 'on-failure' }],
     ['./csvReporter', { outputFile: path.join(outputDir, 'report.csv') }],
@@ -65,7 +67,7 @@ const config: Config<PlaywrightWorkerOptions & PlaywrightTestOptions & TestModeW
   maxFailures: 0,
   timeout: 15 * 1000,
   globalTimeout: 90 * 60 * 1000,
-  workers: process.env.CI ? 4 : undefined,
+  workers: undefined,
   fullyParallel: !process.env.CI,
   forbidOnly: !!process.env.CI,
   retries: 0, // No retries even on CI for now.

@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
+import { tools } from '../../packages/playwright-core/lib/coreBundle';
+import { utils, iso } from '../../packages/playwright-core/lib/coreBundle';
+
+import type { iso as isoType } from '../../packages/playwright-core/lib/coreBundle';
 import type { Locator, Frame, Page } from 'playwright-core';
-import { ZipFile } from '../../packages/playwright-core/lib/server/utils/zipFile';
-import type { StackFrame } from '../../packages/protocol/src/channels';
-import { parseClientSideCallMetadata } from '../../packages/playwright-core/lib/utils/isomorphic/traceUtils';
-import { TraceLoader } from '../../packages/playwright-core/src/utils/isomorphic/trace/traceLoader';
-import { TraceModel } from '../../packages/playwright-core/src/utils/isomorphic/trace/traceModel';
-import type { ActionTraceEvent, TraceEvent } from '@trace/trace';
-import { renderTitleForCall } from '../../packages/playwright-core/lib/utils/isomorphic/protocolFormatter';
-import { ZipTraceLoaderBackend } from '../../packages/playwright-core/lib/server/trace/viewer/traceParser';
-import type { SnapshotStorage } from '../../packages/playwright-core/src/utils/isomorphic/trace/snapshotStorage';
+import type { StackFrame, ActionTraceEvent, TraceEvent } from '@isomorphic/trace/trace';
+
+const { TraceLoader, TraceModel } = iso;
+type TraceModel = InstanceType<typeof TraceModel>;
+type SnapshotStorage = isoType.SnapshotStorage;
 
 export type BoundingBox = Awaited<ReturnType<Locator['boundingBox']>>;
 
@@ -104,8 +104,20 @@ export function suppressCertificateWarning() {
   };
 }
 
+// Traces of several contexts are merged into one, each keeping its own coverage entry.
+export async function parseTraceCoverage(file: string): Promise<any | undefined> {
+  const { resources } = await parseTraceRaw(file);
+  const entries = [...resources.keys()].filter(name => name.match(/(^|-)trace\.coverage$/));
+  if (!entries.length)
+    return undefined;
+  const coverage = new Map<string, any>();
+  for (const entry of entries)
+    iso.mergeIstanbulCoverage(coverage, JSON.parse(resources.get(entry)!.toString()));
+  return iso.sortedIstanbulCoverage(coverage);
+}
+
 export async function parseTraceRaw(file: string): Promise<{ events: any[], resources: Map<string, Buffer>, actions: string[], actionObjects: ActionTraceEvent[], stacks: Map<string, StackFrame[]> }> {
-  const zipFS = new ZipFile(file);
+  const zipFS = new utils.ZipFile(file);
   const resources = new Map<string, Buffer>();
   for (const entry of await zipFS.entries())
     resources.set(entry, await zipFS.read(entry));
@@ -128,11 +140,9 @@ export async function parseTraceRaw(file: string): Promise<{ events: any[], reso
           actionMap.set(event.callId, action);
         } else if (event.type === 'input') {
           const existing = actionMap.get(event.callId);
-          existing.inputSnapshot = event.inputSnapshot;
           existing.point = event.point;
         } else if (event.type === 'after') {
           const existing = actionMap.get(event.callId);
-          existing.afterSnapshot = event.afterSnapshot;
           existing.endTime = event.endTime;
           existing.error = event.error;
           existing.result = event.result;
@@ -150,7 +160,7 @@ export async function parseTraceRaw(file: string): Promise<{ events: any[], reso
 
   const stacks: Map<string, StackFrame[]> = new Map();
   for (const stacksFile of [...resources.keys()].filter(name => name.endsWith('.stacks'))) {
-    for (const [key, value] of parseClientSideCallMetadata(JSON.parse(resources.get(stacksFile)!.toString())))
+    for (const [key, value] of iso.parseClientSideCallMetadata(JSON.parse(resources.get(stacksFile)!.toString())))
       stacks.set(key, value);
   }
 
@@ -159,21 +169,23 @@ export async function parseTraceRaw(file: string): Promise<{ events: any[], reso
   return {
     events,
     resources,
-    actions: actionObjects.map(a => renderTitleForCall({ ...a, type: a.class })),
+    actions: actionObjects.map(a => iso.renderFullTitleForCall({ ...a, type: a.class })),
     actionObjects,
     stacks,
   };
 }
 
 export async function parseTrace(file: string): Promise<{ snapshots: SnapshotStorage, model: TraceModel }> {
-  const backend = new ZipTraceLoaderBackend(file);
+  const dir = file + '.extracted';
+  await tools.extractTrace(file, dir);
+  const backend = new tools.DirTraceLoaderBackend(dir);
   const loader = new TraceLoader();
-  await loader.load(backend, () => {});
-  return { model: new TraceModel(file, loader.contextEntries), snapshots: loader.storage() };
+  await loader.load(backend);
+  return { model: new TraceModel(dir, loader.contextEntries), snapshots: loader.storage() };
 }
 
 export async function parseHar(file: string): Promise<Map<string, Buffer>> {
-  const zipFS = new ZipFile(file);
+  const zipFS = new utils.ZipFile(file);
   const resources = new Map<string, Buffer>();
   for (const entry of await zipFS.entries())
     resources.set(entry, await zipFS.read(entry));
@@ -201,6 +213,11 @@ export async function rafraf(target: Page | Frame, count = 1) {
   }
 }
 
+export async function ensureSomeFrames(page: Page) {
+  await rafraf(page, 100);
+  await page.screenshot();
+}
+
 export function roundBox(box: BoundingBox): BoundingBox {
   return {
     x: Math.round(box.x),
@@ -223,7 +240,39 @@ export function unshift(snapshot: string): string {
   return lines.filter(t => t.trim()).map(line => line.substring(whitespacePrefixLength)).join('\n');
 }
 
-const ansiRegex = new RegExp('[\\u001B\\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~]))', 'g');
+const ansiRegex = new RegExp('[\\u001B\\u009B][[\\]()#?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)|(?:(?:\\d{0,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~]))', 'g');
 export function stripAnsi(str: string): string {
   return str.replace(ansiRegex, '');
+}
+
+export function inheritAndCleanEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    // BEGIN: Reserved CI
+    CI: undefined,
+    BUILD_URL: undefined,
+    CI_COMMIT_SHA: undefined,
+    CI_JOB_URL: undefined,
+    CI_PROJECT_URL: undefined,
+    GITHUB_ACTIONS: undefined,
+    GITHUB_REPOSITORY: undefined,
+    GITHUB_RUN_ID: undefined,
+    GITHUB_SERVER_URL: undefined,
+    GITHUB_SHA: undefined,
+    GITHUB_EVENT_PATH: undefined,
+    // END: Reserved CI
+    PW_TEST_HTML_REPORT_OPEN: undefined,
+    PLAYWRIGHT_HTML_OPEN: undefined,
+    PW_TEST_DEBUG_REPORTERS: undefined,
+    PW_TEST_REPORTER: undefined,
+    PW_TEST_REPORTER_WS_ENDPOINT: undefined,
+    PW_TEST_SOURCE_TRANSFORM: undefined,
+    PW_TEST_SOURCE_TRANSFORM_SCOPE: undefined,
+    PWTEST_BOT_NAME: undefined,
+    PWTEST_SHARD_WEIGHTS: undefined,
+    TEST_WORKER_INDEX: undefined,
+    TEST_PARALLEL_INDEX: undefined,
+    NODE_OPTIONS: undefined,
+    ...env,
+  };
 }

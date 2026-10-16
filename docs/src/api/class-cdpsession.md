@@ -69,7 +69,7 @@ client.send("Animation.setPlaybackRate", params);
 
 ## event: CDPSession.close
 * since: v1.59
-* langs: js
+- argument: <[CDPSession]>
 
 Emitted when the session is closed, either because the target was closed or `session.detach()` was called.
 
@@ -86,8 +86,8 @@ their names ahead of time.
 **Usage**
 
 ```js
-session.on('event', ({ name, params }) => {
-  console.log(`CDP event: ${name}`, params);
+session.on('event', ({ method, params }) => {
+  console.log(`CDP event: ${method}`, params);
 });
 ```
 
@@ -141,7 +141,7 @@ Optional method parameters.
 Optional method parameters.
 
 ## method: CDPSession.event
-* since: v.1.30
+* since: v1.30
 * langs: csharp
 - returns: <[CDPSessionEvent]>
 

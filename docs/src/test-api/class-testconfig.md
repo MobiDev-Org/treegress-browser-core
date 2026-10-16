@@ -75,18 +75,19 @@ The structure of the git commit metadata is subject to change.
   - `toHaveScreenshot` ?<[Object]> Configuration for the [`method: PageAssertions.toHaveScreenshot#1`] method.
     - `animations` ?<[ScreenshotAnimations]<"allow"|"disabled">> See [`option: Page.screenshot.animations`] in [`method: Page.screenshot`]. Defaults to `"disabled"`.
     - `caret` ?<[ScreenshotCaret]<"hide"|"initial">> See [`option: Page.screenshot.caret`] in [`method: Page.screenshot`]. Defaults to `"hide"`.
-    - `maxDiffPixels` ?<[int]> An acceptable amount of pixels that could be different, unset by default.
-    - `maxDiffPixelRatio` ?<[float]> An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by default.
+    - `maxDiffPixels` ?<[int]> An acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which pixels are considered different.
+    - `maxDiffPixelRatio` ?<[float]> An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by default. Note that `threshold` defines which pixels are considered different.
     - `scale` ?<[ScreenshotScale]<"css"|"device">> See [`option: Page.screenshot.scale`] in [`method: Page.screenshot`]. Defaults to `"css"`.
     - `stylePath` ?<[string]|[Array]<[string]>> See [`option: Page.screenshot.style`] in [`method: Page.screenshot`].
     - `threshold` ?<[float]> An acceptable perceived color difference between the same pixel in compared images, ranging from `0` (strict) and `1` (lax). `"pixelmatch"` comparator computes color difference in [YIQ color space](https://en.wikipedia.org/wiki/YIQ) and defaults `threshold` value to `0.2`.
+    - `type` ?<[ScreenshotType]<"png"|"webp">> Format of the screenshots taken when the snapshot name is omitted, defaults to `"png"`. Snapshots with an explicit name use the format matching their `.png` or `.webp` extension.
     - `pathTemplate` ?<[string]> A template controlling location of the screenshots. See [`property: TestConfig.snapshotPathTemplate`] for details.
   - `toMatchAriaSnapshot` ?<[Object]> Configuration for the [`method: LocatorAssertions.toMatchAriaSnapshot#2`] method.
     - `pathTemplate` ?<[string]> A template controlling location of the aria snapshots. See [`property: TestConfig.snapshotPathTemplate`] for details.
     - `children` ?<["contain" | "equal" | "deep-equal"]> Controls how children of the snapshot root are matched against the actual accessibility tree. This is equivalent to adding a `/children` property at the top of every aria snapshot template. Individual snapshots can override this by including an explicit `/children` property.
   - `toMatchSnapshot` ?<[Object]> Configuration for the [`method: SnapshotAssertions.toMatchSnapshot#1`] method.
-    - `maxDiffPixels` ?<[int]> An acceptable amount of pixels that could be different, unset by default.
-    - `maxDiffPixelRatio` ?<[float]> An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by default.
+    - `maxDiffPixels` ?<[int]> An acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which pixels are considered different.
+    - `maxDiffPixelRatio` ?<[float]> An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by default. Note that `threshold` defines which pixels are considered different.
     - `threshold` ?<[float]> An acceptable perceived color difference between the same pixel in compared images, ranging from `0` (strict) and `1` (lax). `"pixelmatch"` comparator computes color difference in [YIQ color space](https://en.wikipedia.org/wiki/YIQ) and defaults `threshold` value to `0.2`.
   - `toPass` ?<[Object]> Configuration for the [expect(value).toPass()](../test-assertions.md#expecttopass) method.
     - `intervals` ?<[Array]<[int]>> Probe intervals for toPass method in milliseconds.
@@ -448,7 +449,7 @@ export default defineConfig({
 
 ## property: TestConfig.reporter
 * since: v1.10
-- type: ?<[string]|[Array]<[Object]>|[BuiltInReporter]<"list"|"dot"|"line"|"github"|"json"|"junit"|"null"|"html">>
+- type: ?<[string]|[Array]<[Object]>|[BuiltInReporter]<"list"|"dot"|"line"|"github"|"json"|"junit"|"null"|"html"|"blob"|"perfetto">>
   - `0` <[string]> Reporter name or module or file path
   - `1` <[Object]> An object with reporter options if any
 
@@ -515,14 +516,26 @@ export default defineConfig({
 });
 ```
 
-## property: TestConfig.runAgents
-* since: v1.58
-- type: ?<['RunAgentsMode]<"all"|"missing"|"none">>
+## property: TestConfig.retryStrategy
+* since: v1.62
+- type: ?<[RetryStrategy]<"immediate"|"isolated">>
 
-Whether to run LLM agent for [PageAgent]:
-* "all" disregards existing cache and performs all actions via LLM
-* "missing" only performs actions that don't have generated cache actions
-* "none" does not talk to LLM at all, relies on the cached actions (default)
+Controls when failed tests are retried. Defaults to `'immediate'`.
+* `'immediate'` - A failed test is retried as soon as a worker is available, interleaved with the rest of the run. This is the default.
+* `'isolated'` - Retries are run at the end, after all other tests have finished, one by one in a single worker. This minimizes the interference between retried tests and the rest of the suite, at the expense of the total run time.
+
+Learn more about [test retries](../test-retries.md#retries).
+
+**Usage**
+
+```js title="playwright.config.ts"
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: 2,
+  retryStrategy: 'isolated',
+});
+```
 
 ## property: TestConfig.shard
 * since: v1.10
@@ -652,13 +665,14 @@ export default defineConfig({
 
 ## property: TestConfig.updateSnapshots
 * since: v1.10
-- type: ?<[UpdateSnapshots]<"all"|"changed"|"missing"|"none">>
+- type: ?<[UpdateSnapshots]<"all"|"changed"|"missing"|"none"|"default">>
 
-Whether to update expected snapshots with the actual results produced by the test run. Defaults to `'missing'`.
+Whether to update expected snapshots with the actual results produced by the test run. Defaults to `'default'`.
 * `'all'` - All tests that are executed will update snapshots.
 * `'changed'` - All tests that are executed will update snapshots that did not match. Matching snapshots will not be updated. Also creates missing snapshots.
-* `'missing'` - Missing snapshots are created, for example when authoring a new test and running it for the first time. This is the default.
+* `'missing'` - Missing snapshots are created, for example when authoring a new test and running it for the first time. Tests that only create missing snapshots pass.
 * `'none'` - No snapshots are updated.
+* `'default'` - Missing snapshots are created, but the tests that create them fail, so that the run does not silently pass in CI. This is the default.
 
 Learn more about [snapshots](../test-snapshots.md).
 
@@ -668,7 +682,7 @@ Learn more about [snapshots](../test-snapshots.md).
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-  updateSnapshots: 'missing',
+  updateSnapshots: 'default',
 });
 ```
 

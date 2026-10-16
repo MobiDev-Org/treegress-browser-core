@@ -1,22 +1,22 @@
 [*]
+@isomorphic/**
+@utils/**
 common/
-./utils.ts
-./utilsBundle.ts
+node_modules/commander
+node_modules/debug
+node_modules/mime
+node_modules/minimatch
 
 [program.ts]
 **
 
-[index.ts]
-@testIsomorphic/**
-./prompt.ts
-./worker/testTracing.ts
-./mcp/sdk/
-./mcp/test/
-./transform/babelBundle.ts
-./agents/
-
-[internalsForTest.ts]
+[testActions.ts]
 **
 
+[reportActions.ts]
+**
+
+[index.ts]
+./mcp/test/
+
 [errorContext.ts]
-./transform/babelBundle.ts

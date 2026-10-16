@@ -16,7 +16,6 @@
  */
 
 import { contextTest as it, expect } from '../config/browserTest';
-import type { JSHandle } from '@playwright/test';
 
 it('expose binding should work', async ({ context }) => {
   let bindingSource: any;
@@ -90,20 +89,6 @@ it('should be callable from-inside addInitScript', async ({ context, server }) =
   await expect.poll(() => args).toEqual(['context', 'page']);
 });
 
-it('exposeBindingHandle should work', async ({ context }) => {
-  let target!: JSHandle<any>;
-  await context.exposeBinding('logme', (source, t) => {
-    target = t;
-    return 17;
-  }, { handle: true });
-  const page = await context.newPage();
-  const result = await page.evaluate(async function() {
-    return (window as any)['logme']({ foo: 42 });
-  });
-  expect(await target.evaluate(x => x.foo)).toBe(42);
-  expect(result).toEqual(17);
-});
-
 it('should work with CSP', async ({ page, context, server }) => {
   server.setCSP('/empty.html', 'default-src "self"');
   await page.goto(server.EMPTY_PAGE);
@@ -111,4 +96,25 @@ it('should work with CSP', async ({ page, context, server }) => {
   await context.exposeBinding('hi', () => called = true);
   await page.evaluate(() => (window as any).hi());
   expect(called).toBe(true);
+});
+
+it('should call binding from pagehide handler when navigating away', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43064' },
+}, async ({ context, page, server, browserName }) => {
+  it.fixme(browserName === 'chromium', 'Chromium drops CDP events from the old document after the frame host swap');
+  const calls: string[] = [];
+  await context.exposeBinding('reportFromPage', (_source, message: string) => { calls.push(message); });
+  const html = (body: string) => `<!doctype html>${body}<script>addEventListener('pagehide', () => window.reportFromPage('pagehide of ' + location.pathname));</script>`;
+  server.setRoute('/a.html', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(html(`<a id="next" href="/b.html">next</a>`));
+  });
+  server.setRoute('/b.html', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(html(`<p>b</p>`));
+  });
+  await page.goto(server.PREFIX + '/a.html');
+  await page.click('#next');
+  await page.waitForURL('**/b.html');
+  await expect.poll(() => calls).toContain('pagehide of /a.html');
 });
